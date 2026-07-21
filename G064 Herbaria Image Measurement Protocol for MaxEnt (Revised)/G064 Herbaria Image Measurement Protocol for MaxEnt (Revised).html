@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>G064 Herbaria Image Measurement Protocol for MaxEnt (Revised).md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<div style="width: 50%; margin: 0 auto;">
+<h1 id="g064-herbaria-image-measurement-protocol-for-maxent-revised">G064 Herbaria Image Measurement Protocol for MaxEnt (Revised)</h1>
+<h4 id="by-cristopher-ferreon-kat-tisshaw-aaron-rhodes">By Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes</h4>
+<p>Revised July 7, 2026</p>
+<h1 id=""></h1>
+<h4 id="summary">Summary</h4>
+<p>This protocol outlines obtaining georeferenced GBIF herbaria data and measuring associated plant traits in ImageJ to determine the climatic suitability of large and small form Guinea grass using known morphological trait differences. From the dataset acquired using this protocol, we then use the Presence-absence prediction tool (MaxEnt) in ArcPro to estimate the climatic suitability for each taxon using the known locations associated with global climate
+patterns.</p>
+<h4 id="contents">Contents</h4>
+<h3 id="1-gbif-download">1. GBIF Download</h3>
+<ul>
+<li>Use filters to ensure reliable geographic and taxonomic data</li>
+</ul>
+<h3 id="2-data-preparation">2. Data Preparation</h3>
+<ul>
+<li>Use multimedia links associated with each occurrence to locate and download high quality images of herbarium vouchers</li>
+</ul>
+<h3 id="3-measuring-images-in-imagejimagej2fiji">3. Measuring images in ImageJ/ImageJ2/Fiji</h3>
+<h3 id="4-glossaryrationales">4. Glossary/Rationales</h3>
+<hr>
+<h1 id="1-gbif-download">1. GBIF Download</h1>
+<h3 id="11-access-this-url-on-your-web-browser">1.1 Access this url on your web browser:</h3>
+<ul>
+<li><a href="https://www.gbif.org/">https://www.gbif.org/</a></li>
+</ul>
+<h3 id="12-type-a-species-name-in-the-search-bar-and-select-occurrences">1.2 type a species name in the search bar, and select occurrences</h3>
+<p><img src="assets/select_occurances.png" alt="alt text"></p>
+<h3 id="13-apply-the-following-filters">1.3. Apply the following filters</h3>
+<ul>
+<li>Occurrence Status: Present</li>
+<li>Basis of Record: Preserved Specimen</li>
+<li>Location:
+<ul>
+<li>Has Coordinate: Yes</li>
+</ul>
+</li>
+<li>Issues and Flags (<em>Italics</em> indicate inspection ideal):
+<ul>
+<li>Coordinate reprojected</li>
+<li><em>Country mismatch</em></li>
+<li>Country invalid</li>
+<li>Country derived from coordinates</li>
+<li>Continent invalid</li>
+<li>Continent derived from coordinates</li>
+<li><em>Recorded date mismatch</em></li>
+<li><em>Recorded date invalid</em></li>
+<li><em>Recorded date unlikely</em></li>
+<li><em>Taxon match fuzzy</em></li>
+<li><em>Taxon match higherrank</em></li>
+<li>Scientific name ID not found</li>
+<li><em>Taxon concept ID not found</em></li>
+<li><em>Taxon ID not found</em></li>
+<li>Elevation min/max swapped</li>
+<li>Elevation non numeric</li>
+<li>Modified or Identified date invalid</li>
+<li>Type status invalid</li>
+<li><em>Multimedia date invalid</em></li>
+<li><em>Multimedia URI invalid</em></li>
+<li><em>Individual count conflicts with occurrence status</em></li>
+<li><em>Occurrence status unparsable</em></li>
+<li>Occurrence status inferred from individual count</li>
+<li>Ambiguous institution</li>
+<li>Ambiguous collection</li>
+<li>Institution or Collection match none</li>
+<li>Institution or Collection match fuzzy</li>
+<li>Institution collection mismatch</li>
+</ul>
+</li>
+</ul>
+<blockquote>
+<p><strong>Do NOT include the following</strong> as these all indicate unreliable geospatial data:</p>
+<ul>
+<li>Coordinate rounded</li>
+<li>Geodetic datum invalid</li>
+<li>Geodetic datum assumed WGS84</li>
+<li>Coordinate precision invalid</li>
+<li>Coordinate uncertainty in metres invalid</li>
+<li>Any footprint invalid/mismatch</li>
+<li>Continent [or country] coordinate mismatch</li>
+<li>Continent country mismatch</li>
+</ul>
+</blockquote>
+<h3 id="14-download-the-data">1.4. Download the Data</h3>
+<h4 id="141-select-a-download-format-in-the-download-tab">1.4.1. Select a download format in the <strong>Download</strong> tab</h4>
+<p><img src="assets/download.png" alt="alt text"></p>
+<h4 id="142-configure-extension-options">1.4.2. Configure extension options</h4>
+<p><img src="assets/download_extensions.png" alt="alt text"></p>
+<h4 id="143-agree-to-terms">1.4.3. Agree to terms</h4>
+<p><img src="assets/download_terms.png" alt="alt text"></p>
+<h4 id="144-create-download">1.4.4. Create Download</h4>
+<blockquote>
+<p>Expect up to 3 hours for the download to complete. Most downloads will complete within 15 minutes</p>
+</blockquote>
+<p><img src="assets/image2.png" alt="alt text"></p>
+<h1 id=""></h1>
+<h1 id="2-data-preparation">2. Data Preparation</h1>
+<p>The following protocol references the GBIF download for Megathyrsus maximus (Jacq.)
+B.K.Simon &amp; S.W.L.Jacobs: GBIF.org (7 January 2026) GBIF Occurrence, <a href="https://doi.org/10.15468/dl.u4hgm5">https://doi.org/10.15468/dl.u4hgm5</a></p>
+<p>The GBIF download includes a zipped file containing txt files and browser html links</p>
+<p><img src="assets/download_result.png" alt="alt text"></p>
+<h3 id="21-data-cleaning">2.1. Data Cleaning</h3>
+<p>Use the R script below to link the two .csv spreadsheets “multimedia” and “occurrence” and perform other data cleaning for the project You'll end up with two spreadsheets, one will contain occurrences removed from the “master” because of duplicated coordinates. This spreadsheet will be processed after the master is finished, to backfill any occurrences where vouchers could not be accessed and measured.</p>
+<h3 id="211-r-script-by-kat-tisshaw">2.1.1. R Script by Kat Tisshaw</h3>
+<details>
+  <summary>Click to show R code</summary>
+<pre class="hljs"><code><div>library(tidyverse)
+library(CoordinateCleaner)
+
+gbif_db = read.csv(file.choose()) #choose the &quot;01-06-2025_occurrence.csv&quot; file
+media_db = read.csv(file.choose()) #choose the &quot;01-06-2025_multimedia.csv&quot; file
+
+# within the multimedia spreadsheet, you need to first update the names of columns with &quot;_multimedia&quot; because these column names are
+#exactly the same in the occurrence spreadsheet, but they have different contents.
+media_db &lt;- rename(media_db, type_multimedia = type, references_multimedia = references, publisher_multimedia = publisher,
+                   license_multimedia = license, rightsHolder_multimedia = rightsHolder)
+
+#remove any columns that only have NAs (this is only to make the spreadsheet easier to parse through)
+gbif_db &lt;- gbif_db %&gt;%
+  select(where(~ !all(is.na(.))))
+
+#join multimedia spreadsheet to gbif occurrence
+master_df &lt;- media_db %&gt;%
+  full_join(gbif_db, by = c(&quot;gbifID&quot;))
+
+#filtering the spreadsheet to only have latitudes and longitudes with 3 decimal places:
+master_df &lt;- master_df[grep(&quot;\\.[1-9][1-9][1-9]&quot;, master_df$decimalLatitude), ]
+master_df &lt;- master_df[grep(&quot;\\.[1-9][1-9][1-9]&quot;, master_df$decimalLongitude), ]
+
+#Check all entries in the scientific names and infraspecific epithet columns. Please note that sometimes the variety is in scientificName but
+#not infraspecific epithet, and vice versa. This means that if you're concerned with subspecies, you'll really need to observe the entries in
+#both columns and be careful that any aren't kept or removed erroneously.
+unique(gbif_db$scientificName)
+unique(gbif_db$infraspecificEpithet)
+
+#removed occurrences with the following scientificName:
+master_df &lt;- master_df %&gt;%
+  filter(!scientificName %in% c(&quot;Megathyrsus maximus var. coloratus (C.T.White) B.K.Simon &amp; S.W.L.Jacobs&quot;,
+                                &quot;Megathyrsus maximus var. pubiglumis (K.Schum.) B.K.Simon &amp; S.W.L.Jacobs&quot;,
+                                &quot;Panicum compressum Biv.&quot;,
+                                &quot;Panicum trichoglume K.Schum.&quot;,
+                                &quot;Panicum maximum var. effusum A.Camus&quot;,
+                                &quot;Panicum mahafalense A.Camus&quot;,
+                                &quot;Panicum maximum var. pubiglume K.Schum&quot;,
+                                &quot;Panicum maximum var. trichoglume Robyns&quot;))
+
+#Adjust this code acccording to available infraspecific epithets we don't want
+master_df &lt;- master_df %&gt;%
+  filter(!infraspecificEpithet %in% c(&quot;Megathyrsus maximus var. coloratus (C.T.White) B.K.Simon &amp; S.W.L.Jacobs&quot;,
+                                      &quot;Megathyrsus maximus var. pubiglumis (K.Schum.) B.K.Simon &amp; S.W.L.Jacobs&quot;,
+                                      &quot;Panicum compressum Biv.&quot;,
+                                      &quot;Panicum trichoglume K.Schum.&quot;,
+                                      &quot;Panicum maximum var. effusum A.Camus&quot;,
+                                      &quot;Panicum mahafalense A.Camus&quot;,
+                                      &quot;Panicum maximum var. pubiglume K.Schum&quot;,
+                                      &quot;Panicum maximum var. trichoglume Robyns&quot;))
+#Adjust this code acccording as well
+master_df &lt;- master_df %&gt;%
+  filter(!verbatimScientificName %in% c(&quot;Megathyrsus maximus var. coloratus (C.T.White) B.K.Simon &amp; S.W.L.Jacobs&quot;,
+                                      &quot;Megathyrsus maximus var. pubiglumis (K.Schum.) B.K.Simon &amp; S.W.L.Jacobs&quot;,
+                                      &quot;Panicum compressum Biv.&quot;,
+                                      &quot;Panicum trichoglume K.Schum.&quot;,
+                                      &quot;Panicum maximum var. effusum A.Camus&quot;,
+                                      &quot;Panicum mahafalense A.Camus&quot;,
+                                      &quot;Panicum maximum var. pubiglume K.Schum&quot;,
+                                      &quot;Panicum maximum var. trichoglume Robyns&quot;))
+
+#clean data using the wrapper function for all three tests
+master_df &lt;- clean_coordinates(
+  x = master_df,
+  lon = &quot;decimalLongitude&quot;,
+  lat = &quot;decimalLatitude&quot;,
+  species = &quot;species&quot;, #species column is needed for some functions - not sure if it's needed for mine here but added anyways
+  tests = c(&quot;centroids&quot;, &quot;seas&quot;,&quot;institutions&quot;),
+  value = &quot;clean&quot;) #returns a data frame with problematic records removed
+
+unique(master_df$issue)
+
+#these are all related to unreliable geospatial data:
+bad_issues &lt;- c(&quot;COORDINATE_ROUNDED&quot;,
+                &quot;GEODETIC_DATUM_INVALID&quot;,
+                &quot;GEODETIC_DATUM_ASSUMED_WGS84&quot;,
+                &quot;COORDINATE_PRECISION_INVALID&quot;,
+                &quot;COORDINATE_UNCERTAINTY_METERS_INVALID&quot;,
+                &quot;FOOTPRINT_INVALID&quot;,
+                &quot;FOOTPRINT_WKT_MISMATCH&quot;,
+                &quot;CONTINENT_COORDINATE_MISMATCH&quot;,
+                &quot;COUNTRY_COORDINATE_MISMATCH&quot;,
+                &quot;CONTINENT_COUNTRY_MISMATCH&quot;)
+
+#removes any occurrences with the unreliable geospatial data &quot;bad_issues&quot;:
+master_df &lt;- master_df %&gt;%
+  filter(is.na(issue) | !str_detect(issue, str_c(bad_issues, collapse = &quot;|&quot;)))
+
+unique(master_df$issue)
+
+inspect_issues &lt;- c(&quot;COUNTRY_MISMATCH&quot;,
+                    &quot;RECORDED_DATE_MISMATCH&quot;,
+                    &quot;RECORDED_DATE_INVALID&quot;,
+                    &quot;RECORDED_DATE_UNLIKELY&quot;,
+                    &quot;OCCURRENCE_STATUS_UNPARSABLE&quot;)
+
+master_df &lt;- master_df %&gt;%
+  mutate(inspect_flag = if_else(!is.na(issue) &amp;
+                                  str_detect(issue, str_c(inspect_issues, collapse = &quot;|&quot;)), TRUE, FALSE))
+#Export for manual inspection:
+write.csv(master_df,&quot;GBIFdownload_inspectFlags.csv&quot;) #Prior to inspecting rows, sort by Coordinate Uncertainty and
+#remove any occurrences over 5000m UNLESS precision is specified (and is a very small number). Create a notes column and
+#enter 'Remove' in rows where there are suspicious collections like &quot;cultivated&quot; or &quot;botanic gardens&quot; in the locality
+#column. Check other columns by using the Excel Data filter to get a list to scroll through (as I've noticed with other
+#GBIF data, data entries aren't always correct and notes are put in the wrong columns). Finally, inspect the occurrences
+#that are marked as TRUE in the inspect_flag column, add 'Remove' to notes if anything warrants removing.
+
+#reload spreadsheet:
+master_df = read.csv(file.choose(), na.strings = &quot;&quot;) #choose the updated &quot;GBIFdownload_inspectFlags.csv&quot; file
+
+#remove any columns flagged as &quot;Remove&quot;
+master_df &lt;- master_df %&gt;%
+  filter(is.na(Action) | Action != &quot;Remove&quot;)
+
+master_df_ND &lt;- master_df %&gt;%   #ND for no duplicates
+  distinct(decimalLatitude, decimalLongitude, .keep_all = TRUE)
+
+removed_coords &lt;- master_df %&gt;%
+  group_by(decimalLatitude, decimalLongitude) %&gt;%
+  filter(n() &gt; 1) %&gt;%      #take only duplicated coordinate groups
+  slice(-1) %&gt;%            #remove the first of a set that is duplicated from this df
+  ungroup()
+
+#code to remove any columns that only have NAs:
+removed_coords &lt;- removed_coords %&gt;%
+  select(where(~ !all(is.na(.))))
+
+write.csv(removed_coords,&quot;01-06-2025_DuplicateRecordsRemovedfromMaster.csv&quot;)
+
+write.csv(master_df_ND,&quot;01-06-2025_master.csv&quot;)
+
+
+#exported, changed to .xls file, and did further cleaning which required inspecting spreadsheet and removing occurrences that did not have a
+#valid entry for ANY of the following columns:
+# “identifier”
+# “references[_multimedia]”
+# “bibliographicCitation”
+# “references”
+# “associatedReferences”
+# &quot;occurrenceID&quot;
+</div></code></pre>
+</details>
+<h3 id="22-add-relevant-columns--data">2.2. Add Relevant Columns &amp; Data</h3>
+<p>Using the master spreadsheet, create new columns for your measurements:</p>
+<ul>
+<li>Panicle length (cm)</li>
+<li>Leaf width (cm)</li>
+<li>Seed length (cm)</li>
+</ul>
+<p>For readability, highlight the main columns that will be used to find the links to the vouchers to be measured, including:</p>
+<ul>
+<li>identifier</li>
+<li>biblographicCitation</li>
+<li>references_multimedia</li>
+<li>references</li>
+<li>associatedReferences</li>
+<li>occurenceID</li>
+</ul>
+<p><img src="assets/cleaning_highlight_columns.png" alt="alt text"></p>
+<blockquote>
+<p>Note: For this specific download, the 6 columns noted above each had at least one occurrence row where a valid link to the herbaria voucher specimen was found only within one of those columns, but this does not mean that in future downloads this is relevant; there may be more or less depending on your search criteria. Any other highlighted columns within the spreadsheets on Box are referenced while processing the data (catalog number, panicle length, leaf width, and seed length).</p>
+</blockquote>
+<p>Once the datasheet is set up, you will need to find images of the preserved specimens and upload them to a separate folder on your desktop. For each occurrence (specimen/image), first try searching up the link in the datasheet: this can be done quickly by double clicking the link in the “identifier” column, then clicking out and back on the link, which should turn blue after clicking out. If this does not work, copy and paste the link into the internet search bar.</p>
+<p><img src="assets/download_result_2.png" alt="alt text"></p>
+<blockquote>
+<p>Alternatively, if the link <strong>does not</strong> work, you can return to your GBIF browser (with the search filters still intact from the previous section) and search for the specific occurrence using the catalog number pasted into the “Search all fields” bar in the GBIF Occurrence Search. A single result should pop up; if there are multiple results, click the topmost option and check that the catalog number under the “Occurrence” heading matches.
+<img src="assets/image-1.png" alt="alt text">
+<img src="assets/image-2.png" alt="alt text">
+After clicking on the occurrence result, you should find image(s) of the sample. If not, or the image is unusable (not a preserved specimen, unclear image, etc.), mark this down on the datasheet and continue to the next occurrence row.
+<img src="assets/image-3.png" alt="alt text"></p>
+</blockquote>
+<p>Save the images into your computer’s designated folder. Within that folder, you can name each of the images by their catalog number to find them more easily.</p>
+<p><img src="assets/image-4.png" alt="alt text"></p>
+<h1 id=""></h1>
+<h1 id="3-measuring-images-in-imagejimagej2fiji">3. Measuring images in ImageJ/ImageJ2/Fiji</h1>
+<p>Once you have uploaded the images into a designated folder, you can begin measuring them in ImageJ. <a href="https://docs.google.com/document/d/1JSynXUCMSiwbqj4g4KALTdQ_guGFojMC/edit">Reference this protocol if you have not downloaded or are not familiar with working in the ImageJ program</a>. Alternatively, you may be able to use <a href="https://imagej.net/software/imagej2/">ImageJ2</a> or <a href="https://imagej.net/software/fiji/">Fiji</a> as they are just alternative versions of ImageJ.</p>
+<h3 id="31-load-in-images-into-imagej">3.1. Load in Images into ImageJ</h3>
+<p>Once you open ImageJ/ImageJ2/Fiji, you should see an empty interface window. Click “File” in the top left corner, select “Import,” and then click “Image Sequence.” A window should pop up; click “Open” in the bottom right corner to be directed to your computer files.</p>
+<p>From this, navigate to your designated folder and find the image you are looking for, either by scrolling through the images or by looking up the image name.</p>
+<blockquote>
+<p>Note: It’s helpful to have named the images by their catalog numbers, so you are able to copy and paste the number to quickly find the image.</p>
+</blockquote>
+<p>Once the image is open in ImageJ:</p>
+<ul>
+<li>if the image contains a visible ruler or scale bar, continue to <strong>Calibrate Herbaria Sheet with scale</strong> step. (3.2a)</li>
+<li>If there is no scale bar but the full paper sheet visible and appears to be standard size, assume the sheet width is the standard size of 29cm; continue to the Calibrating Herbaria sheet with no scale step. (3.2b)</li>
+<li>If the full paper sheet is not visible or sheet dimensions look off, do not take measurements, mark all traits as NA and note “no scale” or anything else applicable.</li>
+</ul>
+<h3 id="32a-calibrate-herbaria-sheet-with-scale">3.2a. Calibrate Herbaria Sheet with Scale</h3>
+<p>Using the “Straight Line” tool, which you can find by right clicking the <img src="assets/image-5.png" width="15" height="15" alt="Description"> icon, measure the ruler:</p>
+<ol>
+<li>Zoom in to a small section of the ruler</li>
+<li>Click and drag using the line tool from one hatch mark to the next
+<ul>
+<li>Note the units of measurement and make the line as straight as possible.</li>
+</ul>
+</li>
+</ol>
+<p>In the image below, one centimeter of the ruler is being measured.</p>
+<p><img src="assets/image-6.png" alt="alt text"></p>
+<blockquote>
+<p>Tip: Hold the shift key while dragging the line tool to make sure the line stays straight.</p>
+</blockquote>
+<p>After the line is made, click the “Analyze” tab on the ImageJ window, then select the “Set Scale” tab.</p>
+<p><img src="assets/image2-1.png" alt="alt text"></p>
+<p>Once the new tab appears, change the known distance to 1. You may change the unit of length to match the desired units (in this case cm), but it is not necessary. Click OK to confirm the scale input. In the example, the scale has now been set to 34 pixels per 1 cm distance.</p>
+<p><img src="assets/image2-2.png" alt="alt text"></p>
+<h3 id="32b-calibrate-herbaria-sheet-with-no-scale">3.2b. Calibrate Herbaria Sheet with no Scale</h3>
+<p>If the herbaria sheet has no scale bar or ruler, you can still calibrate the image in ImageJ by assuming the standard width of the paper is 29 cm (11 inches).</p>
+<p>Following the same instructions as above (3.2a):</p>
+<ol>
+<li>Use the “Straight Line” tool to measure a line across the full width of the paper.</li>
+<li>Go to the “Analyze” tab in the top menu bar and select “Set Scale”</li>
+<li>In the dialog box that appears, enter &quot;29&quot; as the &quot;Known distance&quot; and optionally select &quot;cm&quot; as the &quot;Unit of length.&quot; Click &quot;OK&quot; to apply the scale.</li>
+</ol>
+<h3 id="33-measuring-images-of-guinea-grass">3.3. Measuring Images of Guinea Grass</h3>
+<h4 id="331-guinea-grass-physiology-reference">3.3.1. Guinea Grass Physiology Reference</h4>
+<p>The measurements taken are panicle length, leaf width, and seed length. Below are some definitions and images as a reference for Guinea grass physiology.</p>
+<p><img src="assets/image2-3.png" alt="alt text"></p>
+<ul>
+<li>Panicle length: From the lowest panicle node to the tip of the panicle
+<ul>
+<li>Panicle: flowering portion of grass</li>
+<li>Node: a point from which plants branch</li>
+</ul>
+</li>
+<li>Leaf width: from margin to margin at the widest point of the leaf
+<ul>
+<li>Margin: the outer edge of a leaf</li>
+</ul>
+</li>
+<li>Seed length: from the point at which the seed branches out to the tip
+<ul>
+<li>Seed: each enclosed capsule at the end of each branching point</li>
+</ul>
+</li>
+</ul>
+<h4 id="332-measurements-in-imagejimagej2fiji">3.3.2. Measurements in ImageJ/ImageJ2/Fiji</h4>
+<ol>
+<li>In the ImageJ toolbar, switch the line tool to “Segmented Line” by clicking and holding the <img src="assets/image-5.png" width="15" height="15" alt="Description"> icon.</li>
+</ol>
+<p><img src="assets/image2-4.png" alt="alt text"></p>
+<ol start="2">
+<li>For this tool, click to start a line and click again to add a new section of the same line. Trace the structure carefully.</li>
+<li>To end the segmented line, double click in place at the end of the last measurement.</li>
+<li>Press Ctrl + M to get the measurement in the desired units under the “Length” label.</li>
+</ol>
+<p><img src="assets/image2-5.png" alt="alt text"></p>
+<p>Examples of leaf width and seed length:</p>
+<p><img src="assets/image2-6.png" alt="alt text"></p>
+<blockquote>
+<p>Note: Make sure that the structures are visible and measurable before recording measurement. If not, record NA in the datasheet for that measurement and add a note explaining why (no leaves/seeds, panicle unseen, image unclear, etc.). Examples of other issues you may encounter, and unmeasurable structures, are outlined below.</p>
+</blockquote>
+<h4 id="333-examples-of-unclearunmeasurable-structures">3.3.3. Examples of Unclear/Unmeasurable Structures</h4>
+<ul>
+<li>If the panicle of a sample is folded or covered, it may be helpful to look at the seeds and estimate where they taper in towards the stem, and measure from there.</li>
+</ul>
+<p><img src="assets/image2-7.png" alt="alt text"></p>
+<ul>
+<li>If a sample specimen does not have any leaves or seeds (or instead has flowers), mark those measurements as NA in the datasheet and make a note.</li>
+</ul>
+<p><img src="assets/image2-8.png" alt="alt text"></p>
+<h1 id=""></h1>
+<h1 id="4-glossaryrationales">4. Glossary/Rationales</h1>
+<p>Documented below is explaiations of why certain flags are generated by GBIF and why certain data records are removed from analyses for our purposes</p>
+<h3 id="41-basis-of-record-categories-excluded-from-search">4.1. Basis of Record Categories (Excluded from Search)</h3>
+<p>Observation: Unspecified observer, could be sensor-based, less metadata than human or machine observation (i.e., older/aggregated datasets, legacy monitoring programs).</p>
+<p>Machine observation: Detected by machine (i.e., camera traps, remote sensing).</p>
+<p>Human observation: A direct observation by someone without a collection (i.e., from field surveys, notes, or literature). Can’t be confirmed.</p>
+<p>Material sample: Physical sample that is not a whole organism (i.e., soil/litter samples with grass, eDNA).</p>
+<p>Material citation: A reference to, or citation of, one, a part of, or multiple specimens in publication or field notebook. Can’t be confirmed.</p>
+<p>Fossil specimen: Not relevant for contemporary climatic suitability.</p>
+<p>Living specimen: A living plant grown intentionally in cultivation (e.g., botanical garden, experimental plots). Not a natural occurrence location, although it could be naturalized/not currently maintained.</p>
+<p>Occurrence: Serves as an “NA” for Basis of Record.</p>
+<h3 id="42-issues-and-flags-explanations">4.2. Issues and Flags Explanations</h3>
+<p>Coordinate reprojected: Reprojected successfully to WGS84.</p>
+<p>Country mismatch: Interpreted Country [from coordinates?] and Country code contradict each other. Both country and coordinates are reported by the data publisher, and they don’t match; potentially from country/coordinate typo, low coordinate precision, borders/coastal areas, historical/admin change.</p>
+<p>Country invalid: Reported country code has a typo or doesn’t match GBIFs code/list (i.e., “West Africa”).</p>
+<p>Continent invalid: Reported continent has a typo or doesn’t match GBIF’s list.</p>
+<p>Recorded date mismatch, invalid, or unlikely: Typo and/or in the future/before Linnean times, or doesn’t make biological sense (i.e., dinosaur found in 2025). Check, then remove future dates since it indicates a suspicious/messy collection.</p>
+<p>Taxon match fuzzy: Typo or alias.</p>
+<p>Taxon match higherrank: Typo or alias, but remove records wherein specific species of interest, or variant, is not included.</p>
+<p>Scientific name ID not found: Typo or alias.</p>
+<p>Taxon concept ID not found: ID formatting errors, recently updated taxon, or mismatch back to Taxon ID.</p>
+<p>Taxon ID not found: Typo or alias, but remove when specific species of interest, or variant, is not included.</p>
+<p>Elevation min/max swapped: Indicates that it might have been a swapping error (since the min is higher than the max) but could also be a typo. Don’t use if you need elevation data specific to that observation (not relevant for our purposes).</p>
+<p>Elevation non numeric: GBIF expects a number (no units), so it automatically flags text or symbols.</p>
+<p>Modified or Identified date invalid: Date could be invalid (i.e., future, or day “34”), or not in the correct format.</p>
+<p>Type status invalid: Provided specimen type status has typo, formatting error, or is not in GBIF’s list (i.e., holotyp instead of holotype).</p>
+<p>Multimedia date invalid: Date could be invalid (i.e., future, or day “34”), or not in the correct format. Check and remove if it’s in the future or historical.</p>
+<p>Multimedia URI invalid: For studies measuring traits on herbarium datasheets, this means you won’t be able to access the URL with the herbarium sheet scan. You could try to search for the updated URL through the herbarium database online.</p>
+<p>References URI invalid: Reference might have been malformed or have invalid characters.</p>
+<p>Individual count conflicts with occurrence status: Consider removing observations where the count is “0” although the occurrence status is “Present”.</p>
+<p>Occurrence status unparsable: The value provided is something other than “Present” or “Absent”. Remove any that suggest the specimen was absent.</p>
+<p>Occurrence status inferred from individual count: No occurrence status was provided so anything with a count &gt; 0 is classified as “Present”, otherwise it’s classified as “Absent”.</p>
+<p>Ambiguous institution: Institution code matches more than one institution in GRSciColl or match was uncertain.</p>
+<p>Ambiguous collection: Provided collection code matches multiple collections in GRSciColl.</p>
+<p>Institution or Collection match none: No match was found in GRSciColl because it doesn’t exist or code is wrong.</p>
+<p>Institution or Collection match fuzzy: A likely but not exact match between a specimen’s institution or collection code/identifier in a dataset and its entry in GRSciColl.</p>
+<p>Institution collection mismatch: Provided collection code doesn’t match one listed for the specified institution.</p>
+</div>
+
+</body>
+</html>
