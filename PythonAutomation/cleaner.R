@@ -5,6 +5,11 @@
 # NOTE: I had noted at some point that this script contains a math error somewhere, I forget where but I remembered last night before falling asleep and thought that I should note it here so that I can fix it later. I think it has to do with the filtering of the decimalLatitude and decimalLongitude columns to only include those with 3 decimal places, but I'm not sure and I'm also not sure why I didn't fix it when I spotted it.
 
 ### relax on geolocation filtering restrictions, but keep the other filters in place. This is because some of the occurrences are from the 1800s and 1900s and the geolocation data is not as precise as it is today. The filtering of the decimalLatitude and decimalLongitude columns to only include those with 3 decimal places is too strict and removes too many occurrences that are still valid.
+### ^ do the above (!!!)
+
+# set a limited amount of time and script to run (10 minutes) and save what it has then move on and flag and repeat
+
+# use other humans to do tedious tasks
 
 args <- commandArgs(trailingOnly = TRUE) ### KDMOD
 
