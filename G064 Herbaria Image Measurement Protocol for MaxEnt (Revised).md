@@ -2,7 +2,7 @@
 
 # G064 Herbaria Image Measurement Protocol for MaxEnt (Revised)
 
-#### By Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes
+#### By Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, Kaustubh Duddala
 
 Revised July 7, 2026
 
@@ -12,6 +12,13 @@ Revised July 7, 2026
 
 This protocol outlines obtaining georeferenced GBIF herbaria data and measuring associated plant traits in ImageJ to determine the climatic suitability of large and small form Guinea grass using known morphological trait differences. From the dataset acquired using this protocol, we then use the Presence-absence prediction tool (MaxEnt) in ArcPro to estimate the climatic suitability for each taxon using the known locations associated with global climate
 patterns.
+
+<details>
+  <summary>See Automated Workflow (Revised)</summary>
+</details>
+<br>
+<details>
+  <summary>See Manual Protocol (Original)</summary>
 
 #### Contents
 
@@ -478,4 +485,5 @@ Institution or Collection match fuzzy: A likely but not exact match between a sp
 
 Institution collection mismatch: Provided collection code doesn’t match one listed for the specified institution.
 
+</details>
 </div>

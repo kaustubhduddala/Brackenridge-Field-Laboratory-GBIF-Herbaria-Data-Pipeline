@@ -95,25 +95,25 @@ def clean_and_prepare_data(extract_dir, output_csv="GBIFdownload_inspectFlags.cs
     master_df = pd.merge(media_db, gbif_db, on='gbifID', how='outer')
     print(f"2. Rows after merging with multimedia: {len(master_df)}")
 
-    # ==========================================
+    # ==============
     # REGEX: Coordinate Precision
-    # ==========================================
+    # ==============
     master_df = master_df[master_df['decimalLatitude'].astype(str).str.contains(r'\.\d{3}', na=False)]
     master_df = master_df[master_df['decimalLongitude'].astype(str).str.contains(r'\.\d{3}', na=False)]
     print(f"3. Rows remaining after 3-decimal Regex filter: {len(master_df)}")
 
-    # ==========================================
+    # ==============
     # EXCLUSION: Taxa Drop
-    # ==========================================
+    # ==============
     if exclude_taxa:
         master_df = master_df[~master_df['scientificName'].isin(exclude_taxa)]
         master_df = master_df[~master_df['infraspecificEpithet'].isin(exclude_taxa)]
         master_df = master_df[~master_df['verbatimScientificName'].isin(exclude_taxa)]
     print(f"4. Rows remaining after specific taxa drop: {len(master_df)}")
 
-    # ==========================================
+    # ==============
     # EXCLUSION: Bad Geospatial Issues
-    # ==========================================
+    # ==============
     bad_issues = [
         "COORDINATE_ROUNDED", "GEODETIC_DATUM_INVALID", "GEODETIC_DATUM_ASSUMED_WGS84",
         "COORDINATE_PRECISION_INVALID", "COORDINATE_UNCERTAINTY_METERS_INVALID",
@@ -127,9 +127,9 @@ def clean_and_prepare_data(extract_dir, output_csv="GBIFdownload_inspectFlags.cs
     ]
     print(f"5. Rows remaining after BAD geospatial issues drop: {len(master_df)}")
 
-    # ==========================================
+    # ==============
     # EXCLUSION: Missing Link Columns
-    # ==========================================
+    # ==============
     link_cols = [
         'identifier', 'references_multimedia', 'bibliographicCitation', 
         'references', 'associatedReferences', 'occurrenceID'
@@ -141,9 +141,9 @@ def clean_and_prepare_data(extract_dir, output_csv="GBIFdownload_inspectFlags.cs
         master_df = master_df.dropna(subset=existing_link_cols, how='all')
     print(f"6. Rows remaining after empty-link validation drop: {len(master_df)}")
 
-    # ==========================================
+    # ==============
     # FLAGS: Inspection Issues (Doesn't drop rows, just flags them)
-    # ==========================================
+    # ==============
     inspect_issues = [
         "COORDINATE_REPROJECTED", "COUNTRY_MISMATCH", "COUNTRY_INVALID", 
         "COUNTRY_DERIVED_FROM_COORDINATES", "CONTINENT_INVALID", 
