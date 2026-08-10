@@ -432,6 +432,49 @@ def extract_archive(zip_path, extract_dir):
     return extract_dir
 
 
+def _normalize_doi_url(doi_text):
+    doi_text = doi_text.strip()
+    if not doi_text:
+        return None
+    if doi_text.lower().startswith("doi:"):
+        doi_text = doi_text[4:].strip()
+    if not doi_text.startswith(("http://", "https://")):
+        doi_text = "https://doi.org/" + doi_text
+    return doi_text
+
+
+def download_from_doi_link(doi_text, output_dir="."):
+    doi_url = _normalize_doi_url(doi_text)
+    if not doi_url:
+        raise ValueError("No DOI link provided")
+
+    resp = requests.get(doi_url, allow_redirects=True, stream=True, timeout=30)
+    final_url = resp.url
+    parsed = urlparse(final_url)
+    if "gbif.org" not in parsed.netloc.lower():
+        raise ValueError(
+            f"DOI did not resolve to a GBIF download URL: {final_url}")
+
+    if final_url.lower().endswith(".zip") or resp.headers.get(
+            "content-type", "").lower().startswith("application/zip") or resp.headers.get(
+            "content-type", "").lower().startswith("application/octet-stream"):
+        filename = Path(parsed.path).name or "gbif_download.zip"
+        out_path = Path(output_dir) / filename
+        with open(out_path, "wb") as out_file:
+            for chunk in resp.iter_content(8192):
+                if chunk:
+                    out_file.write(chunk)
+        return out_path
+
+    match = re.search(r"/download/([^/?&]+)", final_url)
+    if match:
+        download_key = match.group(1)
+        return Path(wait_and_download(download_key, output_dir))
+
+    raise ValueError(
+        "GBIF DOI did not resolve to a downloadable ZIP or a known GBIF download key.")
+
+
 def _build_gbif_queries(taxon_key, preset_name=None):
     # Use a raw GBIF download predicate dict and align it with the
     # checklist-based filters in the API documentation.
@@ -1910,7 +1953,8 @@ class GBIFPipelineGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("GBIF Herbaria Data Pipeline")
-        self.root.geometry("740x930")
+        self.root.geometry("760x900")
+        self.root.minsize(720, 640)
         self.is_running = False
 
         self.model_manager = ModelManager()
@@ -1946,14 +1990,38 @@ class GBIFPipelineGUI:
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        main = ttk.Frame(self.root, padding="10")
-        main.grid(row=0, column=0, sticky="nsew")
+        container = ttk.Frame(self.root)
+        container.grid(row=0, column=0, sticky="nsew")
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
+        canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical",
+                                  command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollable = ttk.Frame(canvas)
+        scrollable_id = canvas.create_window((0, 0), window=scrollable, anchor="nw")
+
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfigure(scrollable_id, width=event.width)
+
+        scrollable.bind("<Configure>", _on_frame_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+
+        main = scrollable
+
         ttk.Label(main, text="GBIF Herbaria Data Pipeline",
                   font=("Arial", 14, "bold")).grid(
-            row=0, column=0, columnspan=3, pady=(0, 15))
+            row=0, column=0, columnspan=3, pady=(0, 15), sticky="w")
 
         # --- Workflow ---
         wf = ttk.LabelFrame(main, text="Workflow", padding="10")
@@ -1972,6 +2040,10 @@ class GBIFPipelineGUI:
         self.species_entry = ttk.Entry(self.species_frame, width=50)
         self.species_entry.insert(0, "Megathyrsus maximus")
         self.species_entry.pack(fill="x", pady=5)
+
+        ttk.Label(self.species_frame, text="DOI link (optional):").pack(anchor="w", pady=(10, 0))
+        self.doi_entry = ttk.Entry(self.species_frame, width=50)
+        self.doi_entry.pack(fill="x", pady=5)
 
         # --- Data path (prepare mode) ---
         self.data_frame = ttk.LabelFrame(main, text="Data Selection", padding="10")
@@ -2252,9 +2324,16 @@ class GBIFPipelineGUI:
     def _run_download(self):
         try:
             species = self.species_entry.get().strip()
-            if not species:
-                self._log("ERROR: Please enter a species name"); return
-            self._log(f"\n{'='*60}\nDOWNLOADING: {species}\n{'='*60}\n")
+            doi_text = self.doi_entry.get().strip()
+            if not species and not doi_text:
+                self._log("ERROR: Please enter a species name or DOI link"); return
+            self._log(f"\n{'='*60}\nDOWNLOADING: {species or doi_text}\n{'='*60}\n")
+            if doi_text:
+                zf = download_from_doi_link(doi_text)
+                folder = extract_archive(zf, f"./data_doi")
+                self._log(f"\nExtracted to: {folder}")
+                messagebox.showinfo("Complete", f"DOI download complete!\n{folder}")
+                return
             tk_ = resolve_species(species)
             dk = trigger_download(_build_gbif_queries(tk_, preset_name=self.preset_var.get()), "DWCA",
                                   GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
@@ -2315,15 +2394,20 @@ class GBIFPipelineGUI:
     def _run_full(self):
         try:
             species = self.species_entry.get().strip()
-            if not species:
-                self._log("ERROR: Please enter a species name"); return
-            self._log(f"\n{'='*60}\nSTEP 1: DOWNLOADING {species}\n{'='*60}\n")
-            tk_ = resolve_species(species)
-            dk = trigger_download(_build_gbif_queries(tk_, preset_name=self.preset_var.get()), "DWCA",
-                                  GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
-            self._log(f"Download key: {dk}\nWaiting for GBIF (5-30 min)...\n")
-            zf = wait_and_download(dk)
-            folder = extract_archive(zf, f"./data_{dk}")
+            doi_text = self.doi_entry.get().strip()
+            if not species and not doi_text:
+                self._log("ERROR: Please enter a species name or DOI link"); return
+            self._log(f"\n{'='*60}\nSTEP 1: DOWNLOADING {species or doi_text}\n{'='*60}\n")
+            if doi_text:
+                zf = download_from_doi_link(doi_text)
+                folder = extract_archive(zf, f"./data_doi")
+            else:
+                tk_ = resolve_species(species)
+                dk = trigger_download(_build_gbif_queries(tk_, preset_name=self.preset_var.get()), "DWCA",
+                                      GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
+                self._log(f"Download key: {dk}\nWaiting for GBIF (5-30 min)...\n")
+                zf = wait_and_download(dk)
+                folder = extract_archive(zf, f"./data_{dk}")
             self._log(f"\n{'='*60}\nSTEP 2: PHASE 1 CLEANING\n{'='*60}\n")
             occ = os.path.join(folder, "occurrence.txt")
             mul = os.path.join(folder, "multimedia.txt")
@@ -2630,26 +2714,27 @@ def _measure_cli():
 def main():
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
-        if cmd == "cleaner":
-            _cleaner_cli(); return
-        if cmd == "measure":
-            _measure_cli(); return
+        if cmd in ("cleaner", "measure"):
+            if cmd == "cleaner":
+                _cleaner_cli(); return
+            if cmd == "measure":
+                _measure_cli(); return
+        if cmd == "--cli":
+            cli_main(); return
+        if cmd == "--gui":
+            root = tk.Tk()
+            GBIFPipelineGUI(root)
+            root.mainloop()
+            return
 
-    print("\n" + "=" * 60)
-    print("GBIF HERBARIA DATA PIPELINE")
-    print("=" * 60)
-    print("\nSelect interface:")
-    print("  1 -- GUI (graphical, recommended)")
-    print("  2 -- CLI (command line)")
-    choice = input("\nChoice (1 or 2): ").strip()
-    if choice == "1":
+    # Default interface is GUI if available; otherwise fallback to CLI.
+    try:
         root = tk.Tk()
         GBIFPipelineGUI(root)
         root.mainloop()
-    elif choice == "2":
+    except Exception:
+        print("GUI unavailable; launching CLI instead.")
         cli_main()
-    else:
-        print("ERROR: Invalid choice\n")
 
 
 if __name__ == "__main__":
