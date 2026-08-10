@@ -290,7 +290,7 @@ PRESETS = {
             ],
         },
     },
-    "G024": { 
+    "G024": {
         "species": "Megathyrsus maximus",
         "precision": PRECISION_NONE,
         "exclude_taxa": [],
@@ -325,17 +325,11 @@ PRESETS = {
 CONFIG_DIR = Path.home() / ".gbif_pipeline"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
-# Models are downloaded here, next to the script, instead of the
-# default HuggingFace cache (~/.cache/huggingface/).  Change this
-# to any absolute or relative path you prefer.
 MODELS_DIR = Path(__file__).resolve().parent / "models"
-
-# Voucher images are downloaded here, named by catalog number.
 MEDIA_DIR = Path(__file__).resolve().parent / "media"
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-VL-30B-A3B-Instruct"
 
-# Columns checked (in priority order) for an image URL when measuring.
 IMAGE_URL_COLUMNS = [
     "identifier",
     "references_multimedia",
@@ -476,8 +470,6 @@ def download_from_doi_link(doi_text, output_dir="."):
 
 
 def _build_gbif_queries(taxon_key, preset_name=None):
-    # Use a raw GBIF download predicate dict and align it with the
-    # checklist-based filters in the API documentation.
     if preset_name and preset_name in PRESETS:
         preset = PRESETS[preset_name]
         download_predicate = preset.get("download_predicate")
@@ -506,9 +498,6 @@ def _build_gbif_queries(taxon_key, preset_name=None):
 # Coordinate Cleaning (equivalent to R CoordinateCleaner)
 # ==============================================================================
 
-# Country centroids — records sitting exactly on a country centroid
-# are almost always default/placeholder coordinates, not real locations.
-# Source: approximate centroids for countries with GBIF occurrence data.
 _COUNTRY_CENTROIDS = {
     "AD": (42.55, 1.58), "AE": (24.00, 54.00), "AF": (33.00, 65.00),
     "AG": (17.05, -61.80), "AL": (41.00, 20.00), "AM": (40.00, 45.00),
@@ -574,8 +563,6 @@ _COUNTRY_CENTROIDS = {
     "ZM": (-15.00, 30.00), "ZW": (-20.00, 30.00),
 }
 
-# Major biodiversity institutions — specimens collected within ~500m
-# of these are likely cultivated (botanical gardens, zoo grounds, etc.).
 _INSTITUTIONS = [
     (-22.9711, -43.2265),  # Rio de Janeiro Botanical Garden
     (51.4775, -0.2953),    # Kew Gardens
@@ -614,14 +601,6 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 
 def _is_sea(lat, lon):
-    """Quick heuristic: is this point likely in the ocean?
-
-    Uses a simplified land-mask approach: known land bounding boxes
-    for major continents.  Points that fall outside ALL of them are
-    flagged.  This is intentionally conservative — it won't catch
-    coastal misplacements but will catch obvious ocean points (0,0 etc.).
-    """
-    # Rough continental bounding boxes [lat_min, lat_max, lon_min, lon_max]
     _LAND = [
         (-56, 13, -82, -34),    # South America
         (7, 84, -170, -52),     # North America
@@ -646,20 +625,6 @@ def clean_coordinates(df, lat_col="decimalLatitude", lon_col="decimalLongitude",
                       tests=("centroids", "seas", "institutions"),
                       centroid_radius_km=1.0, institution_radius_km=0.5,
                       log=print):
-    """Remove records with suspicious coordinates.
-
-    Equivalent to R's CoordinateCleaner::clean_coordinates() with
-    the three tests used in the protocol:
-
-      centroids    — within centroid_radius_km of a country centroid
-      seas         — in the ocean (heuristic land mask)
-      institutions — within institution_radius_km of a known
-                     biodiversity institution (botanical garden, museum)
-
-    Returns (cleaned_df, removed_reasons) where removed_reasons is a
-    Series indexed like df with the reason string for flagged rows
-    (NaN for rows that passed).
-    """
     log("   Running coordinate cleaning tests...")
     reasons = pd.Series("", index=df.index, dtype=str)
 
@@ -733,11 +698,9 @@ def phase_1_clean_and_merge(
     if inspection_issues is None:
         inspection_issues = INSPECTION_ISSUES
 
-    # Collects (dataframe_slice, reason_string) tuples for every step
     removed_parts = []
 
     def _remove(df, mask, reason):
-        """Split df by mask, stash the removed rows, return the kept rows."""
         cut = df[mask].copy()
         if len(cut):
             cut.insert(cut.columns.get_loc("gbifID") + 1, "removal_reason", reason)
@@ -764,16 +727,16 @@ def phase_1_clean_and_merge(
     print("\n2. Merging multimedia and occurrence data...")
     gbif_db = gbif_db.dropna(axis=1, how="all")
     media_db = media_db.dropna(axis=1, how="all")
+    
     master_df = pd.merge(
-        media_db,
         gbif_db,
+        media_db,
         on="gbifID",
-        how="inner",
-        suffixes=("_multimedia", "_occurrence"),
+        how="left", 
+        suffixes=("_occurrence", "_multimedia"),
     )
     print(f"   Merged dataset: {len(master_df)} rows")
 
-    # -- Step 3: media filter --
     print("\n3. Keeping only rows with associated media...")
     before = len(master_df)
     media_evidence_cols = [
@@ -794,7 +757,6 @@ def phase_1_clean_and_merge(
         master_df = _remove(master_df, ~has_any_media, "No media evidence")
     print(f"   Rows remaining: {len(master_df)} (removed {before - len(master_df)})")
 
-    # -- Step 4: coordinate precision --
     print("\n4. Filtering by coordinate precision...")
     before = len(master_df)
     if coordinate_precision == PRECISION_NONE:
@@ -811,7 +773,6 @@ def phase_1_clean_and_merge(
                             f"Coordinate precision below threshold ({label})")
     print(f"   Rows remaining: {len(master_df)} (removed {before - len(master_df)})")
 
-    # -- Step 5: excluded taxa --
     print("\n5. Removing excluded taxa...")
     before = len(master_df)
     if exclude_taxa:
@@ -829,19 +790,16 @@ def phase_1_clean_and_merge(
                     master_df = master_df[~is_excluded]
     print(f"   Rows remaining: {len(master_df)} (removed {before - len(master_df)})")
 
-    # -- Step 6: clean coordinates --
     print("\n6. Cleaning coordinates (centroids, seas, institutions)...")
     before = len(master_df)
-    pre_clean = master_df  # snapshot before cleaning
+    pre_clean = master_df
     master_df, coord_reasons = clean_coordinates(master_df, log=print)
     if len(coord_reasons):
         cut = pre_clean.loc[coord_reasons.index].copy()
-        cut.insert(cut.columns.get_loc("gbifID") + 1, "removal_reason",
-                   coord_reasons)
+        cut.insert(cut.columns.get_loc("gbifID") + 1, "removal_reason", coord_reasons)
         removed_parts.append(cut)
     print(f"   Rows remaining: {len(master_df)} (removed {before - len(master_df)})")
 
-    # -- Step 7: bad geospatial issues --
     print(f"\n7. Removing bad geospatial issues ({len(bad_geospatial_issues)} active)...")
     before = len(master_df)
     if bad_geospatial_issues:
@@ -850,22 +808,18 @@ def phase_1_clean_and_merge(
             master_df["issue"].notna()
             & master_df["issue"].astype(str).str.contains(bad_pat, na=False, regex=True)
         )
-        # Build a per-row reason listing the specific bad issues found
         def _match_issues(issue_str):
             if pd.isna(issue_str):
                 return ""
             found = [i for i in bad_geospatial_issues if i in str(issue_str)]
             return "Bad geospatial issue: " + ", ".join(found)
-        # Only compute for flagged rows to save time
         reasons_series = master_df.loc[has_bad, "issue"].apply(_match_issues)
         cut = master_df[has_bad].copy()
-        cut.insert(cut.columns.get_loc("gbifID") + 1, "removal_reason",
-                   reasons_series)
+        cut.insert(cut.columns.get_loc("gbifID") + 1, "removal_reason", reasons_series)
         removed_parts.append(cut)
         master_df = master_df[~has_bad]
     print(f"   Rows remaining: {len(master_df)} (removed {before - len(master_df)})")
 
-    # -- Step 8: reference link validation --
     print("\n8. Validating reference links...")
     before = len(master_df)
     existing = [c for c in LINK_COLUMNS if c in master_df.columns]
@@ -877,7 +831,6 @@ def phase_1_clean_and_merge(
                             "No valid reference links in any link column")
     print(f"   Rows remaining: {len(master_df)} (removed {before - len(master_df)})")
 
-    # -- Step 9: inspection flags --
     print(f"\n9. Flagging records for manual inspection ({len(inspection_issues)} active)...")
     if inspection_issues:
         inspect_pat = "|".join(inspection_issues)
@@ -889,16 +842,13 @@ def phase_1_clean_and_merge(
         master_df["inspect_flag"] = False
     print(f"   Flagged: {master_df['inspect_flag'].sum()}")
 
-    # -- Step 10: export --
     print("\n10. Exporting...")
     master_df = master_df.dropna(axis=1, how="all")
     master_df.to_csv(output_csv, index=False, quoting=csv.QUOTE_ALL)
     print(f"   Saved to: {output_csv}")
 
-    # Build and export removed-records CSV
     if removed_parts:
         all_removed = pd.concat(removed_parts, ignore_index=True)
-        # Ensure removal_reason is the second column (right after gbifID)
         if "removal_reason" in all_removed.columns:
             cols = list(all_removed.columns)
             cols.remove("removal_reason")
@@ -908,7 +858,6 @@ def phase_1_clean_and_merge(
         all_removed = all_removed.dropna(axis=1, how="all")
         all_removed.to_csv(removed_csv, index=False, quoting=csv.QUOTE_ALL)
         print(f"   Removed records: {removed_csv} ({len(all_removed)} rows)")
-        # Summary by reason
         reason_counts = all_removed["removal_reason"].apply(
             lambda r: r.split(":")[0] if isinstance(r, str) else r
         ).value_counts()
@@ -995,11 +944,6 @@ def phase_2_finalize_dataset(
 # ==============================================================================
 
 def _row_label(row, suffix=None):
-    """Return a unique file-name label for a CSV row.
-
-    Uses gbifID plus an optional suffix so that multiple multimedia
-    records for the same specimen get distinct filenames.
-    """
     gid = row.get("gbifID")
     if pd.notna(gid) and str(gid).strip():
         label = str(gid).strip()
@@ -1009,12 +953,10 @@ def _row_label(row, suffix=None):
     return None
 
 def _find_image_url(row):
-    """Return the first URL-like value found in the link columns."""
     for col in IMAGE_URL_COLUMNS:
         val = row.get(col)
         if pd.notna(val) and isinstance(val, str):
             val = val.strip()
-            # Catch standard web links
             if val.startswith(("http://", "https://")):
                 return val
     return None
@@ -1028,7 +970,6 @@ _DOWNLOAD_HEADERS = {
 
 
 def _request_with_backoff(url, headers=None, max_retries=3, log=print):
-    """GET with exponential back-off on 429 / 5xx and SSL bypass."""
     hdrs = dict(_DOWNLOAD_HEADERS)
     if headers:
         hdrs.update(headers)
@@ -1056,19 +997,8 @@ def _request_with_backoff(url, headers=None, max_retries=3, log=print):
 
 
 def _resolve_image_from_html(resp, original_url, log=print):
-    """Try to extract a direct image URL from an HTML page.
-
-    Search order:
-      1. OpenGraph / Twitter / link meta tags
-      2. IIIF Image API (look for /iiif/ or manifest JSON links)
-      3. <img> tags whose src looks like a specimen image
-      4. <a> tags pointing to a direct image file
-
-    Returns a direct image URL (str) or None.
-    """
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # -- 1. Meta tags (og:image, twitter:image, link[rel=image_src]) --
     meta_img = (
         soup.find("meta", property="og:image")
         or soup.find("meta", attrs={"name": "twitter:image"})
@@ -1079,9 +1009,6 @@ def _resolve_image_from_html(resp, original_url, log=print):
         if href and href.strip():
             return urljoin(original_url, href.strip())
 
-    # -- 2. IIIF manifests --
-    # Some pages embed a IIIF manifest link; the manifest JSON contains
-    # the actual image URL under canvases -> images -> resource -> @id.
     iiif_link = soup.find("link", rel="alternate", type="application/ld+json")
     if iiif_link and iiif_link.get("href"):
         manifest_url = urljoin(original_url, iiif_link["href"].strip())
@@ -1089,16 +1016,12 @@ def _resolve_image_from_html(resp, original_url, log=print):
         if img:
             return img
 
-    # -- 3. <img> tags whose src looks like a specimen image --
     for img_tag in soup.find_all("img", src=True):
         src = img_tag["src"].strip()
         abs_src = urljoin(original_url, src)
-        # Heuristic: large specimen images usually have a recognizable
-        # extension or path segment; skip tiny icons / logos.
         lower = abs_src.lower()
         if any(lower.endswith(ext) for ext in
                (".jpg", ".jpeg", ".png", ".tif", ".tiff")):
-            # Skip very small images (width/height attrs < 100px)
             w = img_tag.get("width", "999")
             h = img_tag.get("height", "999")
             try:
@@ -1108,7 +1031,6 @@ def _resolve_image_from_html(resp, original_url, log=print):
                 pass
             return abs_src
 
-    # -- 4. <a> tags pointing to a direct image file --
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"].strip()
         abs_href = urljoin(original_url, href)
@@ -1121,7 +1043,6 @@ def _resolve_image_from_html(resp, original_url, log=print):
 
 
 def _extract_iiif_image(manifest_url, log=print):
-    """Fetch a IIIF manifest and return the first full-size image URL."""
     try:
         resp = _request_with_backoff(manifest_url, log=log)
         ct = resp.headers.get("Content-Type", "")
@@ -1129,27 +1050,21 @@ def _extract_iiif_image(manifest_url, log=print):
             return None
         data = resp.json()
 
-        # IIIF Presentation API 2 / 3 — walk to the image resource
         canvases = []
-        # API 3
         items = data.get("items", [])
         if items:
             canvases = items
-        # API 2
         sequences = data.get("sequences", [])
         for seq in sequences:
             canvases.extend(seq.get("canvases", []))
 
         for canvas in canvases:
-            # API 3 path: items -> items -> body -> id
             for anno_page in canvas.get("items", []):
                 for anno in anno_page.get("items", []):
                     body = anno.get("body", {})
                     img_id = body.get("id") or body.get("@id")
                     if img_id and img_id.startswith("http"):
                         return img_id
-
-            # API 2 path: images -> resource -> @id
             for image in canvas.get("images", []):
                 resource = image.get("resource", {})
                 img_id = resource.get("@id") or resource.get("id")
@@ -1162,7 +1077,6 @@ def _extract_iiif_image(manifest_url, log=print):
 
 
 def _detect_extension(content_type, url=""):
-    """Determine the file extension from Content-Type and URL."""
     ct = content_type.lower()
     if "jpeg" in ct or "jpg" in ct:
         return "jpg"
@@ -1174,7 +1088,6 @@ def _detect_extension(content_type, url=""):
         return "gif"
     if "webp" in ct:
         return "webp"
-    # Fall back to URL extension
     path = urlparse(url).path.lower()
     for ext in ("jpg", "jpeg", "png", "tif", "tiff", "gif", "webp"):
         if path.endswith(f".{ext}"):
@@ -1183,21 +1096,6 @@ def _detect_extension(content_type, url=""):
 
 
 def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
-    """
-    Download voucher images for every row in a CSV.
-
-    Improvements over a naive approach:
-    - Unique filenames: appends a suffix for duplicate gbifIDs so every
-      multimedia record gets its own file.
-    - User-Agent header: avoids blocks from servers that reject bare
-      Python/requests.
-    - Exponential back-off: retries on 429 / 5xx up to 3 times.
-    - Broad HTML scraping: meta tags → IIIF manifests → <img> tags →
-      <a href> links.
-    - IIIF manifest support: parses JSON to extract full-size image URL.
-    - Robust relative URL handling via urljoin (handles /path,
-      //domain/path, and ./relative).
-    """
     media_dir = Path(media_dir) if media_dir else MEDIA_DIR
     media_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1213,14 +1111,11 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
         df = pd.read_csv(csv_path, keep_default_na=True, engine="python",
                          on_bad_lines="warn")
 
-    # Strip leading/trailing whitespace from all column names
     df.columns = df.columns.str.strip()
 
     if "media_path" not in df.columns:
         df["media_path"] = ""
 
-    # Build unique labels: append _1, _2, … for duplicate gbifIDs
-    # so every multimedia row gets a distinct filename.
     gbifid_col = df["gbifID"].astype(str).str.strip() if "gbifID" in df.columns else pd.Series("", index=df.index)
     occurrence_count = {}
     row_suffixes = []
@@ -1246,7 +1141,6 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
             skipped += 1
             continue
 
-        # Check if file already exists
         existing = list(media_dir.glob(f"{label}.*"))
         if existing:
             df.at[idx, "media_path"] = str(existing[0])
@@ -1265,7 +1159,6 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
             resp = _request_with_backoff(url, log=log)
             content_type = resp.headers.get("Content-Type", "")
 
-            # ── JSON response → likely a IIIF manifest ──
             if "json" in content_type or "ld+json" in content_type:
                 try:
                     img_url = _extract_iiif_image.__wrapped__(resp) \
@@ -1274,11 +1167,9 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
                 except Exception:
                     img_url = None
 
-                # Parse inline if _extract_iiif_image can't be reused
                 if img_url is None:
                     try:
                         data = resp.json()
-                        # Quick IIIF image extraction
                         for canvas in data.get("sequences", [{}])[0].get("canvases", []):
                             for image in canvas.get("images", []):
                                 resource = image.get("resource", {})
@@ -1287,7 +1178,6 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
                                     break
                             if img_url:
                                 break
-                        # API 3 fallback
                         if not img_url:
                             for item in data.get("items", []):
                                 for ap in item.get("items", []):
@@ -1313,7 +1203,6 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
                     failed += 1
                     continue
 
-            # ── HTML response → scrape for actual image URL ──
             elif "text/html" in content_type:
                 direct_img_url = _resolve_image_from_html(resp, url, log=log)
 
@@ -1328,7 +1217,6 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
                     failed += 1
                     continue
 
-            # ── Check that we actually got image bytes ──
             if "text/html" in content_type or "json" in content_type:
                 log("    FAILED: final response is not an image "
                     f"(Content-Type: {content_type}).")
@@ -1347,11 +1235,9 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
             df.at[idx, "media_path"] = ""
             failed += 1
 
-        # Save progress every 25 rows
         if (idx + 1) % 25 == 0:
             df.to_csv(csv_path, index=False, quoting=csv.QUOTE_ALL)
 
-    # Final save
     df.to_csv(csv_path, index=False, quoting=csv.QUOTE_ALL)
 
     log(f"\nMedia download complete: {downloaded} downloaded, "
@@ -1374,8 +1260,6 @@ class ModelManager:
         self._processor = None
         self._loaded_id = None
 
-    # -- Config persistence ----------------------------------------------------
-
     def _load_config(self):
         if CONFIG_FILE.exists():
             try:
@@ -1394,10 +1278,7 @@ class ModelManager:
     def _save_config(self):
         CONFIG_FILE.write_text(json.dumps(self._config, indent=2))
 
-    # -- Registry --------------------------------------------------------------
-
     def list_models(self):
-        """Return list of (model_id, description, is_downloaded) tuples."""
         out = []
         for mid, info in self._config.get("models", {}).items():
             out.append((mid, info.get("description", ""), self.is_downloaded(mid)))
@@ -1411,32 +1292,25 @@ class ModelManager:
         self._save_config()
 
     def register_model(self, model_id, description=""):
-        """Add a HuggingFace model ID or local path to the registry."""
         models = self._config.setdefault("models", {})
         if model_id not in models:
             models[model_id] = {"description": description}
             self._save_config()
 
     def remove_model(self, model_id):
-        """Remove a model from the registry (does not delete cached files)."""
         self._config.get("models", {}).pop(model_id, None)
         if self._config.get("default") == model_id:
             remaining = list(self._config.get("models", {}).keys())
             self._config["default"] = remaining[0] if remaining else ""
         self._save_config()
 
-    # -- Download / status -----------------------------------------------------
-
     @staticmethod
     def is_downloaded(model_id):
-        """Check whether model files are locally available."""
         if not ML_AVAILABLE:
             return False
-        # Check if model_id is itself a local directory (user-provided path)
         local = Path(model_id)
         if local.is_dir() and (local / "config.json").exists():
             return True
-        # Check our local ./models cache
         try:
             from huggingface_hub import scan_cache_dir
             cache = scan_cache_dir(MODELS_DIR)
@@ -1449,7 +1323,6 @@ class ModelManager:
 
     @staticmethod
     def download_model(model_id, log=print):
-        """Download model weights into the local ./models directory."""
         if not ML_AVAILABLE:
             raise RuntimeError(
                 "ML dependencies not installed. Run:\n"
@@ -1461,10 +1334,7 @@ class ModelManager:
         snapshot_download(model_id, cache_dir=MODELS_DIR)
         log(f"Download complete: {model_id}")
 
-    # -- Load / unload ---------------------------------------------------------
-
     def load(self, model_id=None, log=print):
-        """Load a model and its processor into memory."""
         if not ML_AVAILABLE:
             raise RuntimeError(
                 "ML dependencies not installed. Run:\n"
@@ -1493,7 +1363,6 @@ class ModelManager:
         log(f"Model ready: {model_id}")
 
     def unload(self):
-        """Free model from memory."""
         if self._model is not None:
             del self._model
             del self._processor
@@ -1526,28 +1395,20 @@ class MeasurementEngine:
     def __init__(self, manager: ModelManager):
         self.manager = manager
 
-    # -- Single image ----------------------------------------------------------
-
     @staticmethod
     def _fetch_image(url_or_path):
-        """Download an image from a URL or load from a local path."""
         path = Path(url_or_path)
         if path.is_file():
             return Image.open(path).convert("RGB")
-
         if not url_or_path.startswith(("http://", "https://")):
             return None
-
         resp = requests.get(url_or_path, timeout=30)
         resp.raise_for_status()
         return Image.open(io.BytesIO(resp.content)).convert("RGB")
 
     @staticmethod
     def _parse_response(text):
-        """Extract a JSON dict from the model's text output."""
-        # Strip markdown fences if present
         cleaned = re.sub(r"```(?:json)?", "", text).strip()
-        # Find the first {...} block
         match = re.search(r"\{[^{}]*\}", cleaned, re.DOTALL)
         if match:
             try:
@@ -1557,12 +1418,6 @@ class MeasurementEngine:
         return None
 
     def measure_image(self, image, prompt=None):
-        """
-        Run measurement on a single PIL Image.
-
-        Returns a dict with panicle_length_cm, leaf_width_cm,
-        seed_length_cm, and notes.  Returns None on failure.
-        """
         model = self.manager.model
         proc = self.manager.processor
         if model is None or proc is None:
@@ -1589,49 +1444,24 @@ class MeasurementEngine:
         with torch.inference_mode():
             ids = model.generate(**inputs, max_new_tokens=512)
 
-        # Decode only the newly generated tokens
         gen_ids = ids[:, inputs["input_ids"].shape[1]:]
         output = proc.batch_decode(gen_ids, skip_special_tokens=True)[0]
         return self._parse_response(output)
 
-    # -- Batch CSV -------------------------------------------------------------
-
     @staticmethod
     def _resolve_image_path(row, media_dir):
-        """Find the local image file for a row.
-
-        Priority:
-          1. media_path column (set by download_media)
-          2. Glob media_dir by catalogNumber / gbifID
-          3. Fall back to image URL for on-the-fly download
-        """
-        # 1. Explicit media_path column
         mp = row.get("media_path")
         if pd.notna(mp) and isinstance(mp, str) and Path(mp.strip()).is_file():
             return mp.strip()
-
-        # 2. Glob by label
         label = _row_label(row)
         if label and media_dir:
             hits = list(Path(media_dir).glob(f"{label}.*"))
             if hits:
                 return str(hits[0])
-
-        # 3. URL fallback
         return _find_image_url(row)
 
     def measure_csv(self, csv_path, media_dir=None, output_path=None,
                     log=print, cancel_flag=None):
-        """
-        Measure traits for every row in a CSV.
-
-        Looks for local images in media_dir first (matched by catalog
-        number), then falls back to downloading from the URL columns.
-        Saves the CSV after every successful measurement so progress
-        is never lost.
-
-        Returns the output path.
-        """
         media_dir = Path(media_dir) if media_dir else MEDIA_DIR
         try:
             df = pd.read_csv(csv_path, keep_default_na=True, low_memory=False)
@@ -1656,7 +1486,6 @@ class MeasurementEngine:
 
             row = df.iloc[idx]
 
-            # Skip rows that already have measurements
             has_data = any(
                 pd.notna(row.get(c)) and str(row.get(c)).strip()
                 for c in ("Panicle length (cm)", "Leaf width (cm)", "Seed length (cm)")
@@ -1698,14 +1527,12 @@ class MeasurementEngine:
                 df.at[idx, "ml_notes"] = notes
                 measured += 1
 
-                # Save after every successful measurement
                 df.to_csv(output_path, index=False, quoting=csv.QUOTE_ALL)
 
             except Exception as exc:
                 df.at[idx, "ml_notes"] = f"error: {exc}"
                 failed += 1
 
-        # Final save
         df.to_csv(output_path, index=False, quoting=csv.QUOTE_ALL)
         log(f"\nMeasurement complete: {measured} measured, "
             f"{skipped} skipped, {failed} failed")
@@ -1728,7 +1555,7 @@ class IssueFilterDialog(tk.Toplevel):
         self.bad_vars = bad_vars
         self.inspect_vars = inspect_vars
         self._cancelled = True
-        self._canvases = []          # track canvases for cleanup
+        self._canvases = []
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
@@ -1763,8 +1590,6 @@ class IssueFilterDialog(tk.Toplevel):
         canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=sb.set)
 
-        # Mousewheel — bind to the canvas and its children only (not globally).
-        # macOS sends delta in single-unit increments; Linux/Windows in multiples of 120.
         def _on_mousewheel(event):
             if sys.platform == "darwin":
                 canvas.yview_scroll(int(-1 * event.delta), "units")
@@ -1773,7 +1598,6 @@ class IssueFilterDialog(tk.Toplevel):
 
         def _bind_wheel(widget):
             widget.bind("<MouseWheel>", _on_mousewheel)
-            # Linux uses Button-4 / Button-5 instead of MouseWheel
             widget.bind("<Button-4>", lambda e: canvas.yview_scroll(-3, "units"))
             widget.bind("<Button-5>", lambda e: canvas.yview_scroll(3, "units"))
 
@@ -1801,7 +1625,6 @@ class IssueFilterDialog(tk.Toplevel):
             ttk.Label(lf, text=display, font=("TkDefaultFont", 9, "bold")).pack(anchor="w")
             if desc:
                 ttk.Label(lf, text=desc, foreground="gray", wraplength=560).pack(anchor="w")
-        # Bind all the widgets we just created
         _bind_descendants(inner)
         return outer
 
@@ -1823,137 +1646,24 @@ class IssueFilterDialog(tk.Toplevel):
 
 
 # ==============================================================================
-# GUI -- Model Manager Dialog
-# ==============================================================================
-
-class ModelManagerDialog(tk.Toplevel):
-    """Dialog for listing, downloading, adding, and removing VLM models."""
-
-    def __init__(self, parent, manager: ModelManager):
-        super().__init__(parent)
-        self.title("Manage Models")
-        self.geometry("640x420")
-        self.resizable(True, True)
-        self.transient(parent)
-        self.grab_set()
-        self.manager = manager
-        self._build()
-
-    def _build(self):
-        top = ttk.Frame(self, padding=10)
-        top.pack(fill="both", expand=True)
-
-        if not ML_AVAILABLE:
-            ttk.Label(
-                top, wraplength=580, foreground="red",
-                text=("ML dependencies are not installed.  "
-                      "Run:  pip install torch torchvision transformers accelerate pillow"),
-            ).pack(pady=20)
-
-        # Model list
-        cols = ("model_id", "status", "description")
-        self.tree = ttk.Treeview(top, columns=cols, show="headings", height=8)
-        self.tree.heading("model_id", text="Model ID")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("description", text="Description")
-        self.tree.column("model_id", width=280)
-        self.tree.column("status", width=90, anchor="center")
-        self.tree.column("description", width=220)
-        self.tree.pack(fill="both", expand=True)
-        self._refresh_list()
-
-        # Buttons
-        bf = ttk.Frame(top)
-        bf.pack(fill="x", pady=(10, 0))
-        ttk.Button(bf, text="Download Selected", command=self._download).pack(side="left", padx=4)
-        ttk.Button(bf, text="Set as Default", command=self._set_default).pack(side="left", padx=4)
-        ttk.Button(bf, text="Remove Selected", command=self._remove).pack(side="left", padx=4)
-
-        sep = ttk.Separator(top, orient="horizontal")
-        sep.pack(fill="x", pady=(10, 6))
-
-        # Add model
-        af = ttk.Frame(top)
-        af.pack(fill="x")
-        ttk.Label(af, text="Add model:").pack(side="left")
-        self.add_entry = ttk.Entry(af, width=40)
-        self.add_entry.pack(side="left", padx=(6, 4), fill="x", expand=True)
-        self.add_entry.insert(0, "owner/model-name")
-        ttk.Button(af, text="Register", command=self._add_model).pack(side="left", padx=4)
-
-        # Console
-        self.console = scrolledtext.ScrolledText(top, height=5, state="disabled", wrap="word")
-        self.console.pack(fill="both", expand=True, pady=(8, 0))
-
-        ttk.Button(top, text="Close", command=self.destroy).pack(anchor="e", pady=(6, 0))
-
-    def _refresh_list(self):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        default = self.manager.default_model()
-        for mid, desc, downloaded in self.manager.list_models():
-            status = "Ready" if downloaded else "Not downloaded"
-            label = mid
-            if mid == default:
-                label = mid + "  [default]"
-            self.tree.insert("", "end", iid=mid, values=(label, status, desc))
-
-    def _selected_id(self):
-        sel = self.tree.selection()
-        return sel[0] if sel else None
-
-    def _log(self, msg):
-        self.console.config(state="normal")
-        self.console.insert(tk.END, msg + "\n")
-        self.console.see(tk.END)
-        self.console.config(state="disabled")
-        self.update()
-
-    def _download(self):
-        mid = self._selected_id()
-        if not mid:
-            return
-        def _work():
-            try:
-                ModelManager.download_model(mid, log=self._log)
-            except Exception as exc:
-                self._log(f"Error: {exc}")
-            self.after(0, self._refresh_list)
-        threading.Thread(target=_work, daemon=True).start()
-
-    def _set_default(self):
-        mid = self._selected_id()
-        if mid:
-            self.manager.set_default(mid)
-            self._refresh_list()
-            self._log(f"Default model set to: {mid}")
-
-    def _remove(self):
-        mid = self._selected_id()
-        if mid:
-            self.manager.remove_model(mid)
-            self._refresh_list()
-            self._log(f"Removed from registry: {mid}")
-
-    def _add_model(self):
-        mid = self.add_entry.get().strip()
-        if mid and mid != "owner/model-name":
-            self.manager.register_model(mid)
-            self._refresh_list()
-            self._log(f"Registered: {mid}")
-
-
-# ==============================================================================
-# GUI -- Main Application
+# GUI -- Main Application  (Tabbed layout)
 # ==============================================================================
 
 class GBIFPipelineGUI:
-    """Tkinter GUI for the GBIF pipeline."""
+    """Tkinter GUI for the GBIF pipeline — tabbed interface."""
+
+    # Palette
+    _BG       = "#f7f7f8"
+    _ACCENT   = "#2d6a4f"
+    _ACCENT2  = "#40916c"
+    _MUTED    = "#6c757d"
+    _ERR      = "#c0392b"
+    _OK       = "#27ae60"
 
     def __init__(self, root):
         self.root = root
         self.root.title("GBIF Herbaria Data Pipeline")
-        self.root.geometry("760x900")
+        self.root.geometry("820x780")
         self.root.minsize(720, 640)
         self.is_running = False
 
@@ -1966,235 +1676,391 @@ class GBIFPipelineGUI:
             i: tk.BooleanVar(value=True) for i in INSPECTION_ISSUES
         }
 
-        self._build_menu()
+        self._apply_theme()
         self._build_ui()
+        self._load_preset()
 
     # ------------------------------------------------------------------
-    # Menu bar
+    # Theme
     # ------------------------------------------------------------------
 
-    def _build_menu(self):
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
+    def _apply_theme(self):
+        style = ttk.Style()
+        style.theme_use("clam")
 
-        models_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Models", menu=models_menu)
-        models_menu.add_command(label="Manage Models...",
-                                command=self._open_model_manager)
-
-    def _open_model_manager(self):
-        ModelManagerDialog(self.root, self.model_manager)
+        style.configure(".", font=("Segoe UI", 10))
+        style.configure("TNotebook", padding=4)
+        style.configure("TNotebook.Tab", padding=[14, 6],
+                        font=("Segoe UI", 10, "bold"))
+        style.map("TNotebook.Tab",
+                  foreground=[("selected", self._ACCENT)],
+                  background=[("selected", "#ffffff")])
+        style.configure("TLabelframe", padding=10)
+        style.configure("TLabelframe.Label", font=("Segoe UI", 10, "bold"),
+                        foreground=self._ACCENT)
+        style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"),
+                        foreground="white", background=self._ACCENT)
+        style.map("Accent.TButton",
+                  background=[("active", self._ACCENT2),
+                              ("disabled", "#adb5bd")])
+        style.configure("Status.TLabel", font=("Segoe UI", 9),
+                        foreground=self._MUTED)
+        style.configure("Title.TLabel",
+                        font=("Segoe UI", 16, "bold"),
+                        foreground=self._ACCENT)
+        style.configure("Subtitle.TLabel",
+                        font=("Segoe UI", 9), foreground=self._MUTED)
 
     # ------------------------------------------------------------------
-    # UI construction
+    # UI construction — main layout
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        container = ttk.Frame(self.root)
-        container.grid(row=0, column=0, sticky="nsew")
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=1)   # notebook row
+        self.root.rowconfigure(2, weight=1)   # console row
 
-        canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical",
-                                  command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # ── Header ──
+        hdr = ttk.Frame(self.root, padding=(16, 12, 16, 0))
+        hdr.grid(row=0, column=0, sticky="ew")
+        ttk.Label(hdr, text="GBIF Herbaria Data Pipeline",
+                  style="Title.TLabel").pack(anchor="w")
+        ttk.Label(hdr, text="By Kaustubh Duddala",
+                  style="Subtitle.TLabel").pack(anchor="w", pady=(2, 0))
 
-        scrollable = ttk.Frame(canvas)
-        scrollable_id = canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        # ── Notebook ──
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.grid(row=1, column=0, sticky="nsew", padx=12, pady=(8, 0))
 
-        def _on_frame_configure(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+        self._tab_download  = self._build_download_tab()
+        self._tab_prepare   = self._build_prepare_tab()
+        self._tab_measure   = self._build_measurement_tab()
 
-        def _on_canvas_configure(event):
-            canvas.itemconfigure(scrollable_id, width=event.width)
+        self.notebook.add(self._tab_download, text="  Download  ")
+        self.notebook.add(self._tab_prepare,  text="  Clean & Prepare  ")
+        self.notebook.add(self._tab_measure,  text="  Media & Measurement  ")
 
-        scrollable.bind("<Configure>", _on_frame_configure)
-        canvas.bind("<Configure>", _on_canvas_configure)
+        # ── Console + action buttons (always visible) ──
+        bottom = ttk.Frame(self.root, padding=(12, 6, 12, 8))
+        bottom.grid(row=2, column=0, sticky="nsew")
+        bottom.columnconfigure(0, weight=1)
+        bottom.rowconfigure(1, weight=1)
 
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        container.columnconfigure(0, weight=1)
-        container.rowconfigure(0, weight=1)
+        # Button bar
+        bar = ttk.Frame(bottom)
+        bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ttk.Label(bar, text="Console", font=("Segoe UI", 9, "bold"),
+                  foreground=self._MUTED).pack(side="left")
+        ttk.Button(bar, text="Clear Log",
+                   command=self._clear_console).pack(side="right", padx=(4, 0))
+        self.cancel_btn = ttk.Button(bar, text="Cancel",
+                                     command=self._cancel, state="disabled")
+        self.cancel_btn.pack(side="right", padx=(4, 0))
 
-        main = scrollable
+        # Console
+        self.console = scrolledtext.ScrolledText(
+            bottom, height=8, state="disabled", wrap="word",
+            font=("Consolas", 9), borderwidth=1, relief="sunken",
+        )
+        self.console.grid(row=1, column=0, sticky="nsew")
 
-        ttk.Label(main, text="GBIF Herbaria Data Pipeline",
-                  font=("Arial", 14, "bold")).grid(
-            row=0, column=0, columnspan=3, pady=(0, 15), sticky="w")
+        # Status bar
+        self.status_var = tk.StringVar(value="Ready")
+        sb = ttk.Label(self.root, textvariable=self.status_var,
+                       style="Status.TLabel", padding=(16, 4))
+        sb.grid(row=3, column=0, sticky="ew")
 
-        # --- Workflow ---
-        wf = ttk.LabelFrame(main, text="Workflow", padding="10")
-        wf.grid(row=1, column=0, columnspan=3, sticky="ew", pady=10)
-        self.workflow_var = tk.StringVar(value="full")
-        for label, val in [("Download Only", "download"),
-                           ("Prepare Only (Phase 1 & 2)", "prepare"),
-                           ("Full Workflow (Download + Prepare)", "full")]:
-            ttk.Radiobutton(wf, text=label, variable=self.workflow_var,
-                            value=val, command=self._update_ui).pack(anchor="w")
+    # ------------------------------------------------------------------
+    # Tab 1 — Download
+    # ------------------------------------------------------------------
 
-        # --- Species ---
-        self.species_frame = ttk.LabelFrame(main, text="Species Selection", padding="10")
-        self.species_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=10)
-        ttk.Label(self.species_frame, text="Species Name:").pack(anchor="w")
-        self.species_entry = ttk.Entry(self.species_frame, width=50)
-        self.species_entry.insert(0, "Megathyrsus maximus")
-        self.species_entry.pack(fill="x", pady=5)
+    def _build_download_tab(self):
+        tab = ttk.Frame(self.notebook, padding=12)
+        tab.columnconfigure(1, weight=1)
+        row = 0
 
-        ttk.Label(self.species_frame, text="DOI link (optional):").pack(anchor="w", pady=(10, 0))
-        self.doi_entry = ttk.Entry(self.species_frame, width=50)
-        self.doi_entry.pack(fill="x", pady=5)
+        # -- Source --
+        src = ttk.LabelFrame(tab, text="Data Source", padding=10)
+        src.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        src.columnconfigure(1, weight=1)
 
-        # --- Data path (prepare mode) ---
-        self.data_frame = ttk.LabelFrame(main, text="Data Selection", padding="10")
-        ttk.Label(self.data_frame, text="Data Folder or ZIP:").pack(anchor="w")
-        self.data_entry = ttk.Entry(self.data_frame, width=50)
-        self.data_entry.pack(fill="x", pady=5)
-        ttk.Button(self.data_frame, text="Browse...",
-                   command=self._browse_data).pack(anchor="e", pady=5)
-
-        # --- Phase selection (prepare mode) ---
-        self.phase_frame = ttk.LabelFrame(main, text="Phases", padding="10")
-        self.phase_var = tk.StringVar(value="both")
-        for label, val in [("Phase 1 & 2", "both"),
-                           ("Phase 1 Only", "phase1"),
-                           ("Phase 2 Only", "phase2")]:
-            ttk.Radiobutton(self.phase_frame, text=label,
-                            variable=self.phase_var, value=val).pack(anchor="w")
-
-        # --- Filters ---
-        filt = ttk.LabelFrame(main, text="Filters", padding="10")
-        filt.grid(row=3, column=0, columnspan=3, sticky="ew", pady=10)
-
-        pr = ttk.Frame(filt)
-        pr.pack(fill="x")
-        ttk.Label(pr, text="Preset:").pack(side="left")
+        ttk.Label(src, text="Preset:").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.preset_var = tk.StringVar(value="G064 (Default)")
-        combo = ttk.Combobox(pr, textvariable=self.preset_var,
-                             values=list(PRESETS.keys()), state="readonly", width=20)
-        combo.pack(side="left", padx=(8, 0))
+        combo = ttk.Combobox(src, textvariable=self.preset_var,
+                             values=list(PRESETS.keys()), state="readonly",
+                             width=22)
+        combo.grid(row=0, column=1, sticky="w")
         combo.bind("<<ComboboxSelected>>", lambda _: self._load_preset())
 
-        ttk.Label(filt, text="Coordinate Precision:").pack(anchor="w", pady=(10, 0))
+        ttk.Label(src, text="Species:").grid(row=1, column=0, sticky="w",
+                                             padx=(0, 8), pady=(8, 0))
+        self.species_entry = ttk.Entry(src, width=50)
+        self.species_entry.grid(row=1, column=1, sticky="ew", pady=(8, 0))
+
+        ttk.Label(src, text="DOI link:").grid(row=2, column=0, sticky="w",
+                                              padx=(0, 8), pady=(6, 0))
+        self.doi_entry = ttk.Entry(src, width=50)
+        self.doi_entry.grid(row=2, column=1, sticky="ew", pady=(6, 0))
+        ttk.Label(src, text="Leave blank to download fresh from GBIF; "
+                  "paste a DOI to re-download a previous dataset",
+                  foreground=self._MUTED, font=("Segoe UI", 8)
+                  ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        row += 1
+
+        # -- Action --
+        af = ttk.Frame(tab)
+        af.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 10))
+        self.dl_btn = ttk.Button(af, text="Download from GBIF",
+                                 style="Accent.TButton",
+                                 command=self._run_download)
+        self.dl_btn.pack(side="left")
+        self.dl_status = ttk.Label(af, text="", foreground=self._MUTED)
+        self.dl_status.pack(side="left", padx=(12, 0))
+        row += 1
+
+        # -- Workflow shortcut --
+        sep = ttk.Separator(tab, orient="horizontal")
+        sep.grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
+        row += 1
+
+        fw = ttk.LabelFrame(tab, text="Full Workflow", padding=10)
+        fw.grid(row=row, column=0, columnspan=2, sticky="ew")
+        ttk.Label(fw, text="Download + Phase 1 + Phase 2 in one run. "
+                  "You'll be prompted for manual review between phases.",
+                  wraplength=600, foreground=self._MUTED
+                  ).pack(anchor="w")
+        self.full_btn = ttk.Button(fw, text="Run Full Workflow",
+                                   style="Accent.TButton",
+                                   command=self._run_full)
+        self.full_btn.pack(anchor="w", pady=(8, 0))
+
+        return tab
+
+    # ------------------------------------------------------------------
+    # Tab 2 — Clean & Prepare
+    # ------------------------------------------------------------------
+
+    def _build_prepare_tab(self):
+        # Scrollable tab for longer content
+        outer = ttk.Frame(self.notebook)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        tab = ttk.Frame(canvas, padding=12)
+        tab_id = canvas.create_window((0, 0), window=tab, anchor="nw")
+
+        tab.bind("<Configure>",
+                 lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(tab_id, width=e.width))
+
+        def _mw(event):
+            if sys.platform == "darwin":
+                canvas.yview_scroll(int(-1 * event.delta), "units")
+            else:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _mw, add="+")
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-3, "units"), add="+")
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(3, "units"), add="+")
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        tab.columnconfigure(1, weight=1)
+        r = 0
+
+        # -- Data source --
+        ds = ttk.LabelFrame(tab, text="Input Data", padding=10)
+        ds.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        ds.columnconfigure(1, weight=1)
+
+        ttk.Label(ds, text="Folder / ZIP:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.data_entry = ttk.Entry(ds, width=50)
+        self.data_entry.grid(row=0, column=1, sticky="ew")
+        ttk.Button(ds, text="Browse…",
+                   command=self._browse_data).grid(row=0, column=2, padx=(6, 0))
+        r += 1
+
+        # -- Phase selector --
+        ps = ttk.LabelFrame(tab, text="Phase", padding=10)
+        ps.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        self.phase_var = tk.StringVar(value="both")
+        for label, val in [("Phase 1 then Phase 2", "both"),
+                           ("Phase 1 only (clean + merge)", "phase1"),
+                           ("Phase 2 only (deduplicate + finalize)", "phase2")]:
+            ttk.Radiobutton(ps, text=label, variable=self.phase_var,
+                            value=val).pack(anchor="w", pady=1)
+        r += 1
+
+        # -- Coordinate precision --
+        cp = ttk.LabelFrame(tab, text="Coordinate Precision", padding=10)
+        cp.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         self.precision_var = tk.StringVar(value=PRECISION_RELAXED)
-        for label, val in [("None (no coordinate filtering)", PRECISION_NONE),
-                           ("Relaxed (>=1 decimal place)", PRECISION_RELAXED),
-                           ("Strict (>=3 decimal places)", PRECISION_STRICT)]:
-            ttk.Radiobutton(filt, text=label, variable=self.precision_var,
-                            value=val).pack(anchor="w")
+        for label, val in [
+            ("None — keep all coordinates", PRECISION_NONE),
+            ("Relaxed — at least 1 decimal place", PRECISION_RELAXED),
+            ("Strict — at least 3 decimal places", PRECISION_STRICT),
+        ]:
+            ttk.Radiobutton(cp, text=label, variable=self.precision_var,
+                            value=val).pack(anchor="w", pady=1)
+        r += 1
 
-        ttk.Label(filt, text="Taxa Exclusions (one per line):").pack(anchor="w", pady=(10, 0))
-        self.taxa_text = tk.Text(filt, height=4, width=50)
-        self.taxa_text.pack(fill="both", expand=True, pady=5)
-
-        ir = ttk.Frame(filt)
-        ir.pack(fill="x", pady=(6, 0))
-        ttk.Button(ir, text="Configure Issue Filters...",
+        # -- Issue filters --
+        iss = ttk.LabelFrame(tab, text="Issue Filters", padding=10)
+        iss.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        iss_row = ttk.Frame(iss)
+        iss_row.pack(fill="x")
+        ttk.Button(iss_row, text="Configure Issue Filters…",
                    command=self._open_issue_dialog).pack(side="left")
-        self.issue_summary_label = ttk.Label(ir, text="", foreground="gray")
-        self.issue_summary_label.pack(side="left", padx=(10, 0))
+        self.issue_summary_label = ttk.Label(iss_row, text="",
+                                             foreground=self._MUTED)
+        self.issue_summary_label.pack(side="left", padx=(12, 0))
         self._refresh_issue_summary()
+        r += 1
 
-        self._load_preset()
+        # -- Taxa exclusions --
+        tx = ttk.LabelFrame(tab, text="Taxa Exclusions", padding=10)
+        tx.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        ttk.Label(tx, text="One taxon name per line (leave empty to skip)",
+                  foreground=self._MUTED, font=("Segoe UI", 8)).pack(anchor="w")
+        self.taxa_text = tk.Text(tx, height=4, width=60,
+                                 font=("Consolas", 9), wrap="word")
+        self.taxa_text.pack(fill="both", expand=True, pady=(4, 0))
+        r += 1
 
-        # --- Media & Measurement ---
-        ml_frame = ttk.LabelFrame(main, text="Media Download & Auto-Measurement",
-                                  padding="10")
-        ml_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=10)
+        # -- Run button --
+        af = ttk.Frame(tab)
+        af.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.prepare_btn = ttk.Button(af, text="Run Cleaning",
+                                      style="Accent.TButton",
+                                      command=self._run_prepare)
+        self.prepare_btn.pack(side="left")
+        self.prepare_status = ttk.Label(af, text="", foreground=self._MUTED)
+        self.prepare_status.pack(side="left", padx=(12, 0))
 
-        # CSV row
-        cr = ttk.Frame(ml_frame)
-        cr.pack(fill="x")
-        ttk.Label(cr, text="CSV:").pack(side="left")
-        self.measure_csv_entry = ttk.Entry(cr, width=44)
-        self.measure_csv_entry.pack(side="left", padx=(8, 4), fill="x", expand=True)
-        ttk.Button(cr, text="Browse...", command=self._browse_measure_csv).pack(side="left")
+        return outer
 
-        # Media folder row
-        mfr = ttk.Frame(ml_frame)
-        mfr.pack(fill="x", pady=(6, 0))
-        ttk.Label(mfr, text="Media:").pack(side="left")
-        self.media_dir_entry = ttk.Entry(mfr, width=44)
+    # ------------------------------------------------------------------
+    # Tab 3 — Media & Measurement (ML)
+    # ------------------------------------------------------------------
+
+    def _build_measurement_tab(self):
+        tab = ttk.Frame(self.notebook, padding=12)
+        tab.columnconfigure(1, weight=1)
+        r = 0
+
+        # -- Shared CSV / media folder --
+        sf = ttk.LabelFrame(tab, text="Dataset", padding=10)
+        sf.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        sf.columnconfigure(1, weight=1)
+
+        ttk.Label(sf, text="CSV file:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.measure_csv_entry = ttk.Entry(sf, width=50)
+        self.measure_csv_entry.grid(row=0, column=1, sticky="ew")
+        ttk.Button(sf, text="Browse…",
+                   command=self._browse_measure_csv).grid(row=0, column=2, padx=(6, 0))
+
+        ttk.Label(sf, text="Media folder:").grid(row=1, column=0, sticky="w",
+                                                  padx=(0, 8), pady=(6, 0))
+        self.media_dir_entry = ttk.Entry(sf, width=50)
         self.media_dir_entry.insert(0, str(MEDIA_DIR))
-        self.media_dir_entry.pack(side="left", padx=(8, 4), fill="x", expand=True)
-        ttk.Button(mfr, text="Browse...", command=self._browse_media_dir).pack(side="left")
+        self.media_dir_entry.grid(row=1, column=1, sticky="ew", pady=(6, 0))
+        ttk.Button(sf, text="Browse…",
+                   command=self._browse_media_dir).grid(row=1, column=2,
+                                                         padx=(6, 0), pady=(6, 0))
+        r += 1
 
-        # Download media button
-        dbr = ttk.Frame(ml_frame)
-        dbr.pack(fill="x", pady=(6, 0))
-        self.dl_media_btn = ttk.Button(dbr, text="Download Media",
+        # -- Media download section --
+        md = ttk.LabelFrame(tab, text="Download Voucher Images", padding=10)
+        md.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        ttk.Label(md, text="Fetch specimen images from URLs in the CSV. "
+                  "Already-downloaded images are skipped automatically.",
+                  foreground=self._MUTED, wraplength=600,
+                  font=("Segoe UI", 8)).pack(anchor="w")
+        dl_row = ttk.Frame(md)
+        dl_row.pack(fill="x", pady=(8, 0))
+        self.dl_media_btn = ttk.Button(dl_row, text="Download Media",
+                                       style="Accent.TButton",
                                        command=self._run_download_media)
         self.dl_media_btn.pack(side="left")
-        self.media_status = ttk.Label(dbr, text="", foreground="gray")
-        self.media_status.pack(side="left", padx=(10, 0))
+        self.media_status = ttk.Label(dl_row, text="", foreground=self._MUTED)
+        self.media_status.pack(side="left", padx=(12, 0))
+        r += 1
 
-        # Model row
-        sep = ttk.Separator(ml_frame, orient="horizontal")
-        sep.pack(fill="x", pady=(8, 6))
-        mr = ttk.Frame(ml_frame)
-        mr.pack(fill="x")
-        ttk.Label(mr, text="Model:").pack(side="left")
-        self.model_var = tk.StringVar()
-        self.model_combo = ttk.Combobox(mr, textvariable=self.model_var,
-                                        state="readonly", width=42)
-        self.model_combo.pack(side="left", padx=(8, 4), fill="x", expand=True)
-        ttk.Button(mr, text="Refresh", command=self._refresh_model_list).pack(side="left")
-        self._refresh_model_list()
-
-        # Measure button
-        br = ttk.Frame(ml_frame)
-        br.pack(fill="x", pady=(6, 0))
-        self.measure_btn = ttk.Button(br, text="Run Auto-Measurement",
-                                      command=self._run_measurement)
-        self.measure_btn.pack(side="left")
-        self.ml_status = ttk.Label(br, text="", foreground="gray")
-        self.ml_status.pack(side="left", padx=(10, 0))
+        # -- Model management section --
+        ml = ttk.LabelFrame(tab, text="Auto-Measurement (ML)", padding=10)
+        ml.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        ml.columnconfigure(1, weight=1)
 
         if not ML_AVAILABLE:
-            self.ml_status.config(
-                text="ML unavailable -- pip install torch torchvision transformers accelerate pillow",
-                foreground="red",
+            warn = ttk.Label(
+                ml, wraplength=580, foreground=self._ERR,
+                font=("Segoe UI", 9),
+                text=("ML dependencies are not installed.  Run:\n"
+                      "pip install torch torchvision transformers "
+                      "accelerate pillow"),
             )
+            warn.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        ttk.Label(ml, text="Model:").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        self.model_var = tk.StringVar()
+        self.model_combo = ttk.Combobox(ml, textvariable=self.model_var,
+                                        state="readonly", width=42)
+        self.model_combo.grid(row=1, column=1, sticky="ew")
+        btn_frame = ttk.Frame(ml)
+        btn_frame.grid(row=1, column=2, padx=(6, 0))
+        ttk.Button(btn_frame, text="Refresh",
+                   command=self._refresh_model_list).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text="Manage…",
+                   command=self._open_model_manager).pack(side="left")
+        self._refresh_model_list()
+
+        # Measure button row
+        mr = ttk.Frame(ml)
+        mr.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.measure_btn = ttk.Button(mr, text="Run Auto-Measurement",
+                                      style="Accent.TButton",
+                                      command=self._run_measurement)
+        self.measure_btn.pack(side="left")
+        self.ml_status = ttk.Label(mr, text="", foreground=self._MUTED)
+        self.ml_status.pack(side="left", padx=(12, 0))
+
+        if not ML_AVAILABLE:
             self.measure_btn.config(state="disabled")
+        r += 1
 
-        # --- Console ---
-        con = ttk.LabelFrame(main, text="Console Output", padding="10")
-        con.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=10)
-        main.rowconfigure(5, weight=1)
-        self.console = scrolledtext.ScrolledText(
-            con, height=10, width=80, state="disabled", wrap="word")
-        self.console.pack(fill="both", expand=True)
+        # -- Helpful info --
+        info = ttk.LabelFrame(tab, text="Workflow", padding=10)
+        info.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        steps_text = (
+            "1.  Select your cleaned CSV (from the Prepare tab) above.\n"
+            "2.  Download voucher images — this fetches specimen photos "
+            "from the URLs in your CSV.\n"
+            "3.  Choose a vision-language model and run auto-measurement. "
+            "The model will estimate panicle length, leaf width, and seed "
+            "length from each image.\n"
+            "4.  Results are written back to the CSV incrementally — "
+            "you can cancel and resume any time."
+        )
+        ttk.Label(info, text=steps_text, wraplength=620,
+                  foreground=self._MUTED, font=("Segoe UI", 9),
+                  justify="left").pack(anchor="w")
 
-        # --- Buttons ---
-        btns = ttk.Frame(main)
-        btns.grid(row=6, column=0, columnspan=3, sticky="ew", pady=10)
-        self.run_btn = ttk.Button(btns, text="Run", command=self._run)
-        self.run_btn.pack(side="left", padx=5)
-        self.cancel_btn = ttk.Button(btns, text="Cancel", command=self._cancel,
-                                     state="disabled")
-        self.cancel_btn.pack(side="left", padx=5)
-        ttk.Button(btns, text="Clear", command=self._clear_console).pack(side="left", padx=5)
+        return tab
 
-        self._update_ui()
+    # ------------------------------------------------------------------
+    # Model manager dialog
+    # ------------------------------------------------------------------
+
+    def _open_model_manager(self):
+        ModelManagerDialog(self.root, self.model_manager)
+        self._refresh_model_list()
 
     # ------------------------------------------------------------------
     # UI helpers
     # ------------------------------------------------------------------
-
-    def _update_ui(self):
-        wf = self.workflow_var.get()
-        if wf == "download":
-            self.species_frame.grid()
-            self.data_frame.grid_remove()
-            self.phase_frame.grid_remove()
-        elif wf == "prepare":
-            self.species_frame.grid_remove()
-            self.data_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=10)
-            self.phase_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=10)
-        else:
-            self.species_frame.grid()
-            self.data_frame.grid_remove()
-            self.phase_frame.grid_remove()
 
     def _load_preset(self):
         name = self.preset_var.get()
@@ -2208,9 +2074,9 @@ class GBIFPipelineGUI:
         self.taxa_text.insert("1.0", "\n".join(taxa))
         if name != "Custom":
             self.taxa_text.config(state="disabled")
-        for cfg_key, var_dict, full_list in [
-            ("bad_issues", self.bad_issue_vars, BAD_GEOSPATIAL_ISSUES),
-            ("inspect_issues", self.inspect_issue_vars, INSPECTION_ISSUES),
+        for cfg_key, var_dict in [
+            ("bad_issues", self.bad_issue_vars),
+            ("inspect_issues", self.inspect_issue_vars),
         ]:
             cfg = preset.get(cfg_key, True)
             for issue, var in var_dict.items():
@@ -2223,7 +2089,8 @@ class GBIFPipelineGUI:
         self._refresh_issue_summary()
 
     def _open_issue_dialog(self):
-        dlg = IssueFilterDialog(self.root, self.bad_issue_vars, self.inspect_issue_vars)
+        dlg = IssueFilterDialog(self.root, self.bad_issue_vars,
+                                self.inspect_issue_vars)
         self.root.wait_window(dlg)
         self._refresh_issue_summary()
 
@@ -2231,8 +2098,8 @@ class GBIFPipelineGUI:
         bn = sum(1 for v in self.bad_issue_vars.values() if v.get())
         sn = sum(1 for v in self.inspect_issue_vars.values() if v.get())
         self.issue_summary_label.config(
-            text=f"Removing {bn}/{len(BAD_GEOSPATIAL_ISSUES)} | "
-                 f"Flagging {sn}/{len(INSPECTION_ISSUES)}")
+            text=f"Removing {bn}/{len(BAD_GEOSPATIAL_ISSUES)} issue types  ·  "
+                 f"Flagging {sn}/{len(INSPECTION_ISSUES)} issue types")
 
     def _browse_data(self):
         path = filedialog.askdirectory(title="Select data folder")
@@ -2281,7 +2148,8 @@ class GBIFPipelineGUI:
         self.console.config(state="disabled")
 
     def _get_exclude_taxa(self):
-        return [l.strip() for l in self.taxa_text.get("1.0", tk.END).split("\n") if l.strip()]
+        return [l.strip() for l in
+                self.taxa_text.get("1.0", tk.END).split("\n") if l.strip()]
 
     def _get_active_bad_issues(self):
         return [k for k, v in self.bad_issue_vars.items() if v.get()]
@@ -2291,11 +2159,15 @@ class GBIFPipelineGUI:
 
     def _set_running(self, running):
         self.is_running = running
-        self.run_btn.config(state="disabled" if running else "normal")
-        self.cancel_btn.config(state="normal" if running else "disabled")
-        self.dl_media_btn.config(state="disabled" if running else "normal")
+        state_off = "disabled" if running else "normal"
+        self.dl_btn.config(state=state_off)
+        self.full_btn.config(state=state_off)
+        self.prepare_btn.config(state=state_off)
+        self.dl_media_btn.config(state=state_off)
         self.measure_btn.config(
             state="disabled" if running or not ML_AVAILABLE else "normal")
+        self.cancel_btn.config(state="normal" if running else "disabled")
+        self.status_var.set("Running…" if running else "Ready")
 
     def _phase1_kwargs(self):
         return dict(
@@ -2305,133 +2177,178 @@ class GBIFPipelineGUI:
             inspection_issues=self._get_active_inspect_issues(),
         )
 
-    # ------------------------------------------------------------------
-    # Workflow runners
-    # ------------------------------------------------------------------
-
-    def _run(self):
-        self._set_running(True)
-        target = {"download": self._run_download,
-                  "prepare": self._run_prepare,
-                  "full": self._run_full}[self.workflow_var.get()]
-        threading.Thread(target=target, daemon=True).start()
-
     def _cancel(self):
         self.is_running = False
-        self._log("\nWorkflow cancelled")
+        self._log("\nCancelled by user")
         self._set_running(False)
 
+    # ------------------------------------------------------------------
+    # Runners
+    # ------------------------------------------------------------------
+
     def _run_download(self):
-        try:
-            species = self.species_entry.get().strip()
-            doi_text = self.doi_entry.get().strip()
-            if not species and not doi_text:
-                self._log("ERROR: Please enter a species name or DOI link"); return
-            self._log(f"\n{'='*60}\nDOWNLOADING: {species or doi_text}\n{'='*60}\n")
-            if doi_text:
-                zf = download_from_doi_link(doi_text)
-                folder = extract_archive(zf, f"./data_doi")
+        species = self.species_entry.get().strip()
+        doi_text = self.doi_entry.get().strip()
+        if not species and not doi_text:
+            messagebox.showwarning("Missing input",
+                                   "Enter a species name or DOI link.")
+            return
+        self._set_running(True)
+        self.dl_status.config(text="Downloading…", foreground="blue")
+
+        def _work():
+            try:
+                self._log(f"\n{'='*60}\nDOWNLOADING: "
+                          f"{species or doi_text}\n{'='*60}\n")
+                if doi_text:
+                    zf = download_from_doi_link(doi_text)
+                    folder = extract_archive(zf, "./data_doi")
+                else:
+                    tk_ = resolve_species(species)
+                    dk = trigger_download(
+                        _build_gbif_queries(tk_,
+                                            preset_name=self.preset_var.get()),
+                        "DWCA", GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
+                    self._log(f"Download key: {dk}\n"
+                              f"Waiting for GBIF (5-30 min)…\n")
+                    zf = wait_and_download(dk)
+                    folder = extract_archive(zf, f"./data_{dk}")
                 self._log(f"\nExtracted to: {folder}")
-                messagebox.showinfo("Complete", f"DOI download complete!\n{folder}")
-                return
-            tk_ = resolve_species(species)
-            dk = trigger_download(_build_gbif_queries(tk_, preset_name=self.preset_var.get()), "DWCA",
-                                  GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
-            self._log(f"Download key: {dk}\nWaiting for GBIF (5-30 min)...\n")
-            zf = wait_and_download(dk)
-            folder = extract_archive(zf, f"./data_{dk}")
-            self._log(f"\nExtracted to: {folder}")
-            messagebox.showinfo("Complete", f"Download complete!\n{folder}")
-        except Exception as e:
-            self._log(f"ERROR: {e}"); messagebox.showerror("Error", str(e))
-        finally:
-            self._set_running(False)
+                self.dl_status.config(text="Complete", foreground=self._OK)
+                messagebox.showinfo("Complete",
+                                    f"Download complete!\n{folder}")
+            except Exception as e:
+                self._log(f"ERROR: {e}")
+                self.dl_status.config(text="Failed", foreground=self._ERR)
+                messagebox.showerror("Error", str(e))
+            finally:
+                self._set_running(False)
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _run_prepare(self):
-        try:
-            data_path = self.data_entry.get().strip()
-            if not data_path:
-                self._log("ERROR: Please select a data folder or ZIP"); return
-            if os.path.isfile(data_path) and data_path.endswith(".zip"):
-                self._log("Extracting ZIP...")
-                dest = Path(data_path).stem
-                with zipfile.ZipFile(data_path, "r") as zf:
-                    zf.extractall(dest)
-                data_path = dest
-                self._log(f"Extracted to: {data_path}\n")
-            if not os.path.isdir(data_path):
-                self._log("ERROR: Invalid data folder"); return
-            phase = self.phase_var.get()
-            occ = os.path.join(data_path, "occurrence.txt")
-            mul = os.path.join(data_path, "multimedia.txt")
-            if phase in ("both", "phase1"):
-                if not os.path.exists(occ) or not os.path.exists(mul):
-                    self._log("ERROR: occurrence.txt or multimedia.txt not found"); return
-                self._log(f"\n{'='*60}\nPHASE 1: AUTOMATED CLEANING\n{'='*60}\n")
-                phase_1_clean_and_merge(occ, mul,
-                                        output_csv="GBIFdownload_inspectFlags.csv",
-                                        **self._phase1_kwargs())
-                self._log("\nPhase 1 complete! Edit GBIFdownload_inspectFlags.csv in Excel")
-                if phase == "both" and messagebox.askyesno("Proceed", "Run Phase 2?"):
-                    self._log(f"\n{'='*60}\nPHASE 2: FINALIZATION\n{'='*60}\n")
-                    phase_2_finalize_dataset("GBIFdownload_inspectFlags.csv",
-                                             final_master="master_cleaned.csv",
-                                             final_duplicates="removed_duplicates.csv")
+        data_path = self.data_entry.get().strip()
+        if not data_path:
+            messagebox.showwarning("Missing input",
+                                   "Select a data folder or ZIP.")
+            return
+        self._set_running(True)
+        self.prepare_status.config(text="Running…", foreground="blue")
+
+        def _work():
+            try:
+                dp = data_path
+                if os.path.isfile(dp) and dp.endswith(".zip"):
+                    self._log("Extracting ZIP…")
+                    dest = Path(dp).stem
+                    with zipfile.ZipFile(dp, "r") as zf:
+                        zf.extractall(dest)
+                    dp = dest
+                    self._log(f"Extracted to: {dp}\n")
+                if not os.path.isdir(dp):
+                    self._log("ERROR: Invalid data folder")
+                    return
+
+                phase = self.phase_var.get()
+                occ = os.path.join(dp, "occurrence.txt")
+                mul = os.path.join(dp, "multimedia.txt")
+
+                if phase in ("both", "phase1"):
+                    if not os.path.exists(occ) or not os.path.exists(mul):
+                        self._log("ERROR: occurrence.txt or "
+                                  "multimedia.txt not found")
+                        return
+                    phase_1_clean_and_merge(
+                        occ, mul,
+                        output_csv="GBIFdownload_inspectFlags.csv",
+                        **self._phase1_kwargs())
+                    self._log("\nPhase 1 complete! Edit "
+                              "GBIFdownload_inspectFlags.csv in Excel")
+                    if phase == "both":
+                        if messagebox.askyesno("Proceed",
+                                               "Run Phase 2 now?"):
+                            phase_2_finalize_dataset(
+                                "GBIFdownload_inspectFlags.csv",
+                                final_master="master_cleaned.csv",
+                                final_duplicates="removed_duplicates.csv")
+                            self._log("\nPhase 2 complete!")
+                elif phase == "phase2":
+                    phase_2_finalize_dataset(
+                        "GBIFdownload_inspectFlags.csv",
+                        final_master="master_cleaned.csv",
+                        final_duplicates="removed_duplicates.csv")
                     self._log("\nPhase 2 complete!")
-                    messagebox.showinfo("Complete", "Phase 2 complete!")
-            elif phase == "phase2":
-                self._log(f"\n{'='*60}\nPHASE 2: FINALIZATION\n{'='*60}\n")
-                phase_2_finalize_dataset("GBIFdownload_inspectFlags.csv",
-                                         final_master="master_cleaned.csv",
-                                         final_duplicates="removed_duplicates.csv")
-                self._log("\nPhase 2 complete!")
-                messagebox.showinfo("Complete", "Phase 2 complete!")
-        except Exception as e:
-            self._log(f"ERROR: {e}"); messagebox.showerror("Error", str(e))
-        finally:
-            self._set_running(False)
+
+                self.prepare_status.config(text="Complete",
+                                           foreground=self._OK)
+                messagebox.showinfo("Complete", "Cleaning complete!")
+            except Exception as e:
+                self._log(f"ERROR: {e}")
+                self.prepare_status.config(text="Failed",
+                                           foreground=self._ERR)
+                messagebox.showerror("Error", str(e))
+            finally:
+                self._set_running(False)
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _run_full(self):
-        try:
-            species = self.species_entry.get().strip()
-            doi_text = self.doi_entry.get().strip()
-            if not species and not doi_text:
-                self._log("ERROR: Please enter a species name or DOI link"); return
-            self._log(f"\n{'='*60}\nSTEP 1: DOWNLOADING {species or doi_text}\n{'='*60}\n")
-            if doi_text:
-                zf = download_from_doi_link(doi_text)
-                folder = extract_archive(zf, f"./data_doi")
-            else:
-                tk_ = resolve_species(species)
-                dk = trigger_download(_build_gbif_queries(tk_, preset_name=self.preset_var.get()), "DWCA",
-                                      GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
-                self._log(f"Download key: {dk}\nWaiting for GBIF (5-30 min)...\n")
-                zf = wait_and_download(dk)
-                folder = extract_archive(zf, f"./data_{dk}")
-            self._log(f"\n{'='*60}\nSTEP 2: PHASE 1 CLEANING\n{'='*60}\n")
-            occ = os.path.join(folder, "occurrence.txt")
-            mul = os.path.join(folder, "multimedia.txt")
-            phase_1_clean_and_merge(occ, mul,
-                                    output_csv="GBIFdownload_inspectFlags.csv",
-                                    **self._phase1_kwargs())
-            self._log("\nPhase 1 complete! Edit GBIFdownload_inspectFlags.csv in Excel")
-            if not messagebox.askyesno("Manual Review",
-                                       "Edit the CSV, then click Yes for Phase 2"):
-                return
-            self._log(f"\n{'='*60}\nSTEP 3: PHASE 2 FINALIZATION\n{'='*60}\n")
-            phase_2_finalize_dataset("GBIFdownload_inspectFlags.csv",
-                                     final_master="master_cleaned.csv",
-                                     final_duplicates="removed_duplicates.csv")
-            self._log("\nWorkflow complete!")
-            messagebox.showinfo("Complete", "Workflow complete!\nMaster: master_cleaned.csv")
-        except Exception as e:
-            self._log(f"ERROR: {e}"); messagebox.showerror("Error", str(e))
-        finally:
-            self._set_running(False)
+        species = self.species_entry.get().strip()
+        doi_text = self.doi_entry.get().strip()
+        if not species and not doi_text:
+            messagebox.showwarning("Missing input",
+                                   "Enter a species name or DOI link.")
+            return
+        self._set_running(True)
 
-    # ------------------------------------------------------------------
-    # Media download runner
-    # ------------------------------------------------------------------
+        def _work():
+            try:
+                self._log(f"\n{'='*60}\nSTEP 1: DOWNLOADING "
+                          f"{species or doi_text}\n{'='*60}\n")
+                if doi_text:
+                    zf = download_from_doi_link(doi_text)
+                    folder = extract_archive(zf, "./data_doi")
+                else:
+                    tk_ = resolve_species(species)
+                    dk = trigger_download(
+                        _build_gbif_queries(tk_,
+                                            preset_name=self.preset_var.get()),
+                        "DWCA", GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
+                    self._log(f"Download key: {dk}\n"
+                              f"Waiting for GBIF (5-30 min)…\n")
+                    zf = wait_and_download(dk)
+                    folder = extract_archive(zf, f"./data_{dk}")
+                self._log(f"\n{'='*60}\nSTEP 2: PHASE 1 CLEANING"
+                          f"\n{'='*60}\n")
+                occ = os.path.join(folder, "occurrence.txt")
+                mul = os.path.join(folder, "multimedia.txt")
+                phase_1_clean_and_merge(
+                    occ, mul,
+                    output_csv="GBIFdownload_inspectFlags.csv",
+                    **self._phase1_kwargs())
+                self._log("\nPhase 1 complete! Edit "
+                          "GBIFdownload_inspectFlags.csv in Excel")
+                if not messagebox.askyesno(
+                        "Manual Review",
+                        "Edit the CSV, then click Yes for Phase 2"):
+                    return
+                self._log(f"\n{'='*60}\nSTEP 3: PHASE 2 FINALIZATION"
+                          f"\n{'='*60}\n")
+                phase_2_finalize_dataset(
+                    "GBIFdownload_inspectFlags.csv",
+                    final_master="master_cleaned.csv",
+                    final_duplicates="removed_duplicates.csv")
+                self._log("\nWorkflow complete!")
+                messagebox.showinfo("Complete",
+                                    "Workflow complete!\n"
+                                    "Master: master_cleaned.csv")
+            except Exception as e:
+                self._log(f"ERROR: {e}")
+                messagebox.showerror("Error", str(e))
+            finally:
+                self._set_running(False)
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _run_download_media(self):
         csv_path = self.measure_csv_entry.get().strip()
@@ -2439,9 +2356,8 @@ class GBIFPipelineGUI:
         if not csv_path:
             messagebox.showwarning("Missing CSV", "Select a CSV file first.")
             return
-
         self._set_running(True)
-        self.media_status.config(text="Downloading...", foreground="blue")
+        self.media_status.config(text="Downloading…", foreground="blue")
 
         def _work():
             try:
@@ -2453,22 +2369,19 @@ class GBIFPipelineGUI:
                 )
                 self.media_status.config(
                     text=f"{dl} downloaded, {sk} skipped, {fa} failed",
-                    foreground="green")
+                    foreground=self._OK)
                 messagebox.showinfo("Complete",
                                     f"Media download complete.\n"
-                                    f"{dl} downloaded, {sk} skipped, {fa} failed")
+                                    f"{dl} downloaded, {sk} skipped, "
+                                    f"{fa} failed")
             except Exception as exc:
                 self._log(f"ERROR: {exc}\n{traceback.format_exc()}")
-                self.media_status.config(text="Error", foreground="red")
+                self.media_status.config(text="Error", foreground=self._ERR)
                 messagebox.showerror("Error", str(exc))
             finally:
                 self._set_running(False)
 
         threading.Thread(target=_work, daemon=True).start()
-
-    # ------------------------------------------------------------------
-    # Auto-measurement runner
-    # ------------------------------------------------------------------
 
     def _run_measurement(self):
         csv_path = self.measure_csv_entry.get().strip()
@@ -2480,32 +2393,157 @@ class GBIFPipelineGUI:
         if not model_id:
             messagebox.showwarning("Missing Model", "Select a model first.")
             return
-
         self._set_running(True)
-        self.ml_status.config(text="Loading model...", foreground="blue")
+        self.ml_status.config(text="Loading model…", foreground="blue")
 
         def _work():
             try:
                 self.model_manager.load(model_id, log=self._log)
                 engine = MeasurementEngine(self.model_manager)
-                self.ml_status.config(text="Measuring...", foreground="blue")
+                self.ml_status.config(text="Measuring…", foreground="blue")
                 engine.measure_csv(
                     csv_path,
                     media_dir=media_dir or None,
                     log=self._log,
                     cancel_flag=lambda: self.is_running,
                 )
-                self.ml_status.config(text="Done", foreground="green")
+                self.ml_status.config(text="Done", foreground=self._OK)
                 messagebox.showinfo("Complete",
                                     f"Measurements written to:\n{csv_path}")
             except Exception as exc:
                 self._log(f"ERROR: {exc}\n{traceback.format_exc()}")
-                self.ml_status.config(text="Error", foreground="red")
+                self.ml_status.config(text="Error", foreground=self._ERR)
                 messagebox.showerror("Error", str(exc))
             finally:
                 self._set_running(False)
 
         threading.Thread(target=_work, daemon=True).start()
+
+
+# ==============================================================================
+# GUI -- Model Manager Dialog
+# ==============================================================================
+
+class ModelManagerDialog(tk.Toplevel):
+    """Dialog for listing, downloading, adding, and removing VLM models."""
+
+    def __init__(self, parent, manager: ModelManager):
+        super().__init__(parent)
+        self.title("Manage Models")
+        self.geometry("640x420")
+        self.resizable(True, True)
+        self.transient(parent)
+        self.grab_set()
+        self.manager = manager
+        self._build()
+
+    def _build(self):
+        top = ttk.Frame(self, padding=10)
+        top.pack(fill="both", expand=True)
+
+        if not ML_AVAILABLE:
+            ttk.Label(
+                top, wraplength=580, foreground="red",
+                text=("ML dependencies are not installed.  "
+                      "Run:  pip install torch torchvision transformers "
+                      "accelerate pillow"),
+            ).pack(pady=20)
+
+        cols = ("model_id", "status", "description")
+        self.tree = ttk.Treeview(top, columns=cols, show="headings", height=8)
+        self.tree.heading("model_id", text="Model ID")
+        self.tree.heading("status", text="Status")
+        self.tree.heading("description", text="Description")
+        self.tree.column("model_id", width=280)
+        self.tree.column("status", width=90, anchor="center")
+        self.tree.column("description", width=220)
+        self.tree.pack(fill="both", expand=True)
+        self._refresh_list()
+
+        bf = ttk.Frame(top)
+        bf.pack(fill="x", pady=(10, 0))
+        ttk.Button(bf, text="Download Selected",
+                   command=self._download).pack(side="left", padx=4)
+        ttk.Button(bf, text="Set as Default",
+                   command=self._set_default).pack(side="left", padx=4)
+        ttk.Button(bf, text="Remove Selected",
+                   command=self._remove).pack(side="left", padx=4)
+
+        sep = ttk.Separator(top, orient="horizontal")
+        sep.pack(fill="x", pady=(10, 6))
+
+        af = ttk.Frame(top)
+        af.pack(fill="x")
+        ttk.Label(af, text="Add model:").pack(side="left")
+        self.add_entry = ttk.Entry(af, width=40)
+        self.add_entry.pack(side="left", padx=(6, 4), fill="x", expand=True)
+        self.add_entry.insert(0, "owner/model-name")
+        ttk.Button(af, text="Register",
+                   command=self._add_model).pack(side="left", padx=4)
+
+        self.console = scrolledtext.ScrolledText(top, height=5,
+                                                  state="disabled",
+                                                  wrap="word")
+        self.console.pack(fill="both", expand=True, pady=(8, 0))
+
+        ttk.Button(top, text="Close",
+                   command=self.destroy).pack(anchor="e", pady=(6, 0))
+
+    def _refresh_list(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        default = self.manager.default_model()
+        for mid, desc, downloaded in self.manager.list_models():
+            status = "Ready" if downloaded else "Not downloaded"
+            label = mid
+            if mid == default:
+                label = mid + "  [default]"
+            self.tree.insert("", "end", iid=mid,
+                             values=(label, status, desc))
+
+    def _selected_id(self):
+        sel = self.tree.selection()
+        return sel[0] if sel else None
+
+    def _log(self, msg):
+        self.console.config(state="normal")
+        self.console.insert(tk.END, msg + "\n")
+        self.console.see(tk.END)
+        self.console.config(state="disabled")
+        self.update()
+
+    def _download(self):
+        mid = self._selected_id()
+        if not mid:
+            return
+        def _work():
+            try:
+                ModelManager.download_model(mid, log=self._log)
+            except Exception as exc:
+                self._log(f"Error: {exc}")
+            self.after(0, self._refresh_list)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _set_default(self):
+        mid = self._selected_id()
+        if mid:
+            self.manager.set_default(mid)
+            self._refresh_list()
+            self._log(f"Default model set to: {mid}")
+
+    def _remove(self):
+        mid = self._selected_id()
+        if mid:
+            self.manager.remove_model(mid)
+            self._refresh_list()
+            self._log(f"Removed from registry: {mid}")
+
+    def _add_model(self):
+        mid = self.add_entry.get().strip()
+        if mid and mid != "owner/model-name":
+            self.manager.register_model(mid)
+            self._refresh_list()
+            self._log(f"Registered: {mid}")
 
 
 # ==============================================================================
@@ -2520,16 +2558,20 @@ def _print_banner():
 
 def _cli_download():
     print("DOWNLOAD ONLY\n" + "-" * 60)
-    species = input("\nSpecies name (e.g. 'Megathyrsus maximus'): ").strip()
-    if not species:
-        print("ERROR: Species name required"); return
+    query = input("\nSpecies name or DOI link: ").strip()
+    if not query:
+        print("ERROR: Species name or DOI link required"); return
     try:
-        tk_ = resolve_species(species)
-        dk = trigger_download(_build_gbif_queries(tk_), "DWCA",
-                              GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
-        print(f"Download key: {dk}\nWaiting for GBIF (5-30 min)...")
-        zf = wait_and_download(dk)
-        folder = extract_archive(zf, f"./data_{dk}")
+        if query.lower().startswith(("http://", "https://", "doi:")):
+            zf = download_from_doi_link(query)
+            folder = extract_archive(zf, "./data_doi")
+        else:
+            tk_ = resolve_species(query)
+            dk = trigger_download(_build_gbif_queries(tk_), "DWCA",
+                                  GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
+            print(f"Download key: {dk}\nWaiting for GBIF (5-30 min)...")
+            zf = wait_and_download(dk)
+            folder = extract_archive(zf, f"./data_{dk}")
         print(f"\nDownload complete! Location: {folder}\n")
     except Exception as e:
         print(f"ERROR: {e}\n")
@@ -2617,7 +2659,6 @@ def _cli_download_media():
 
 
 def _cli_measure():
-    """CLI auto-measurement."""
     if not ML_AVAILABLE:
         print("ERROR: ML dependencies not installed.")
         print("Run:  pip install torch torchvision transformers accelerate pillow\n")
@@ -2688,7 +2729,6 @@ def _cleaner_cli():
 
 
 def _measure_cli():
-    """python gbif_pipeline.py measure <csv> [model_id]"""
     if not ML_AVAILABLE:
         print("ERROR: ML dependencies not installed.")
         print("Run:  pip install torch torchvision transformers accelerate pillow")
@@ -2714,11 +2754,10 @@ def _measure_cli():
 def main():
     if len(sys.argv) > 1:
         cmd = sys.argv[1]
-        if cmd in ("cleaner", "measure"):
-            if cmd == "cleaner":
-                _cleaner_cli(); return
-            if cmd == "measure":
-                _measure_cli(); return
+        if cmd == "cleaner":
+            _cleaner_cli(); return
+        if cmd == "measure":
+            _measure_cli(); return
         if cmd == "--cli":
             cli_main(); return
         if cmd == "--gui":
@@ -2727,7 +2766,6 @@ def main():
             root.mainloop()
             return
 
-    # Default interface is GUI if available; otherwise fallback to CLI.
     try:
         root = tk.Tk()
         GBIFPipelineGUI(root)

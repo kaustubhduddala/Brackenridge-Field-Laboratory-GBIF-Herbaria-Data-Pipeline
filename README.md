@@ -49,11 +49,11 @@ Additional packages for ML auto-measurement (optional):
 
 | Package      | Purpose                                      |
 |--------------|----------------------------------------------|
-| torch        | PyTorch backend for model inference           |
+| torch        | PyTorch backend for model inference          |
 | torchvision  | Image transforms required by VLM processors  |
-| transformers | HuggingFace model loading and tokenization    |
-| accelerate   | Device mapping and mixed-precision inference  |
-| pillow       | Image loading and preprocessing               |
+| transformers | HuggingFace model loading and tokenization   |
+| accelerate   | Device mapping and mixed-precision inference |
+| pillow       | Image loading and preprocessing              |
 
 The pipeline works without the ML packages. The auto-measurement
 features are disabled at startup if they are not installed.
@@ -64,7 +64,7 @@ features are disabled at startup if they are not installed.
 
 ### 1. Clone or download the repository
 
-Place `gbif_pipeline.py` in a project directory of your choice.
+Place `main.py` in a project directory of your choice.
 
 ### 2. Create a virtual environment (recommended)
 
@@ -123,16 +123,21 @@ pygbif
 Run the launcher and choose an interface:
 
 ```
-python gbif_pipeline.py
+python main.py
 ```
 
-You will be prompted to select GUI (option 1) or CLI (option 2).
+You can also skip the launcher and choose mode directly:
+
+```
+python main.py --gui
+python main.py --cli
+```
 
 To skip the launcher and run a cleaning phase directly:
 
 ```
-python gbif_pipeline.py cleaner 1 data/occurrence.txt data/multimedia.txt
-python gbif_pipeline.py cleaner 2 GBIFdownload_inspectFlags.csv
+python main.py cleaner 1 data/occurrence.txt data/multimedia.txt
+python main.py cleaner 2 GBIFdownload_inspectFlags.csv
 ```
 
 ---
@@ -372,8 +377,8 @@ In the Auto-Measurement (ML) section of the main window:
 From the interactive CLI, select option 4. Or invoke directly:
 
 ```
-python gbif_pipeline.py measure master_cleaned.csv
-python gbif_pipeline.py measure master_cleaned.csv Qwen/Qwen2.5-VL-7B-Instruct
+python main.py measure master_cleaned.csv
+python main.py measure master_cleaned.csv Qwen/Qwen2.5-VL-7B-Instruct
 ```
 
 ### Adding a custom model
@@ -391,17 +396,22 @@ via the GUI dialog or by editing the config file at
 ### Interactive launcher
 
 ```
-python gbif_pipeline.py
+python main.py
 ```
 
-Prompts for GUI (1) or CLI (2).
+Prompts for GUI (1) or CLI (2), or you can skip the prompt with:
+
+```
+python main.py --gui
+python main.py --cli
+```
 
 ### Direct phase invocation
 
 Run Phase 1 (clean and merge):
 
 ```
-python gbif_pipeline.py cleaner 1 <occurrence_file> <multimedia_file> [output_csv] [--strict] [--no-precision]
+python main.py cleaner 1 <occurrence_file> <multimedia_file> [output_csv] [--strict] [--no-precision]
 ```
 
 Arguments:
@@ -419,13 +429,13 @@ If neither `--strict` nor `--no-precision` is given, relaxed mode
 Run Phase 2 (finalize):
 
 ```
-python gbif_pipeline.py cleaner 2 <inspected_csv> [final_master] [final_duplicates]
+python main.py cleaner 2 <inspected_csv> [final_master] [final_duplicates]
 ```
 
 Run auto-measurement:
 
 ```
-python gbif_pipeline.py measure <csv_file> [model_id]
+python main.py measure <csv_file> [model_id]
 ```
 
 Arguments:
