@@ -1,0 +1,12 @@
+- fix media downloading errors
+- create salvagable.txt
+- don't filter for coordinates
+- don't filter for bad geospatial data (keep all bad geospartial data)
+- amazonaws.com link access issues (dzi files)
+- keep coordinates in the ocean (maybe flag)
+- keep all varieties (dont filter)
+- keep all bad_issues and flag them (not for inspection)
+- flag Multimedia date invalid
+- download with filters and without filter 
+- keep all, make a note that it looks like this data looks good "Do NOT include the following as these all indicate unreliable geospatial data:"
+- 
