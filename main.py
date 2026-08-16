@@ -61,18 +61,16 @@ GBIF_USER = "bfl_ut_austin"
 GBIF_PASSWORD = "qwertyuiop123"
 GBIF_EMAIL = "kaustubhduddala@utexas.edu"
 
-DEFAULT_EXCLUDE_TAXA = [
-    "Megathyrsus maximus var. coloratus (C.T.White) B.K.Simon & S.W.L.Jacobs",
-    "Megathyrsus maximus var. pubiglumis (K.Schum.) B.K.Simon & S.W.L.Jacobs",
-    "Panicum compressum Biv.",
-    "Panicum trichoglume K.Schum.",
-    "Panicum maximum var. effusum A.Camus",
-    "Panicum mahafalense A.Camus",
-    "Panicum maximum var. pubiglume K.Schum",
-    "Panicum maximum var. trichoglume Robyns",
-]
+DEFAULT_EXCLUDE_TAXA = []
 
-BAD_GEOSPATIAL_ISSUES = [
+BAD_GEOSPATIAL_ISSUES = []
+
+INSPECTION_ISSUES = [
+    "COUNTRY_MISMATCH",
+    "RECORDED_DATE_MISMATCH",
+    "RECORDED_DATE_INVALID",
+    "RECORDED_DATE_UNLIKELY",
+    "OCCURRENCE_STATUS_UNPARSABLE",
     "COORDINATE_ROUNDED",
     "GEODETIC_DATUM_INVALID",
     "GEODETIC_DATUM_ASSUMED_WGS84",
@@ -84,15 +82,33 @@ BAD_GEOSPATIAL_ISSUES = [
     "CONTINENT_COORDINATE_MISMATCH",
     "COUNTRY_COORDINATE_MISMATCH",
     "CONTINENT_COUNTRY_MISMATCH",
+    "MULTIMEDIA_DATE_INVALID",
 ]
 
-INSPECTION_ISSUES = [
-    "COUNTRY_MISMATCH",
-    "RECORDED_DATE_MISMATCH",
-    "RECORDED_DATE_INVALID",
-    "RECORDED_DATE_UNLIKELY",
-    "OCCURRENCE_STATUS_UNPARSABLE",
-]
+
+def _format_issue_list(issue_list):
+    values = [str(v).strip() for v in issue_list or [] if str(v).strip()]
+    if not values:
+        return ""
+    return ",\n".join(f'"{v}"' for v in values)
+
+
+def _parse_issue_list(raw_value):
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, (list, tuple, set)):
+        values = raw_value
+    else:
+        values = re.split(r"[,\n]", str(raw_value))
+
+    cleaned = []
+    seen = set()
+    for value in values:
+        item = value.strip().strip('"').strip("'")
+        if item and item not in seen:
+            seen.add(item)
+            cleaned.append(item)
+    return cleaned
 
 DOWNLOAD_ISSUE_EXCLUSIONS = [
     "COORDINATE_REPROJECTED",
@@ -250,10 +266,10 @@ PRECISION_STRICT = "strict"
 PRESETS = {
     "G064 (Default)": {
         "species": "Megathyrsus maximus",
-        "precision": PRECISION_STRICT,
+        "precision": PRECISION_NONE,
         "exclude_taxa": list(DEFAULT_EXCLUDE_TAXA),
-        "bad_issues": True,
-        "inspect_issues": True,
+        "bad_issues": [],
+        "inspect_issues": list(INSPECTION_ISSUES),
         "download_predicate": {
             "type": "and",
             "predicates": [
@@ -269,24 +285,6 @@ PRESETS = {
                     "value": "PRESERVED_SPECIMEN",
                     "matchCase": False,
                 },
-                {
-                    "type": "equals",
-                    "key": "HAS_COORDINATE",
-                    "value": "True",
-                    "matchCase": False,
-                },
-                {
-                    "type": "equals",
-                    "key": "HAS_GEOSPATIAL_ISSUE",
-                    "value": "false",
-                    "matchCase": False,
-                },
-                {
-                    "type": "equals",
-                    "key": "OCCURRENCE_STATUS",
-                    "value": "PRESENT",
-                    "matchCase": False,
-                },
             ],
         },
     },
@@ -299,22 +297,18 @@ PRESETS = {
         "download_predicate": {
             "type": "and",
             "predicates": [
-                {"type": "equals", "key": "TAXON_KEY", "value": "__TAXON_KEY__"},
-                {"type": "equals", "key": "BASIS_OF_RECORD", "value": "PRESERVED_SPECIMEN"},
-                {"type": "equals", "key": "HAS_COORDINATE", "value": True},
-                {"type": "equals", "key": "HAS_GEOSPATIAL_ISSUE", "value": False},
-                {"type": "in", "key": "ISSUE", "values": DOWNLOAD_ISSUE_EXCLUSIONS},
-                {"type": "in", "key": "LICENSE", "values": ALLOWED_LICENSES},
-                {"type": "equals", "key": "OCCURRENCE_STATUS", "value": "PRESENT"},
+                {"type": "equals", "key": "TAXON_KEY", "value": "__TAXON_KEY__", "matchCase": "false"},
+                {"type": "equals", "key": "BASIS_OF_RECORD", "value": "PRESERVED_SPECIMEN", "matchCase": "false"},
+                {"type": "equals", "key": "OCCURRENCE_STATUS", "value": "PRESENT", "matchCase": "false"},
             ],
         },
     },
     "Custom": {
         "species": "",
-        "precision": PRECISION_RELAXED,
+        "precision": PRECISION_NONE,
         "exclude_taxa": [],
-        "bad_issues": True,
-        "inspect_issues": True,
+        "bad_issues": [],
+        "inspect_issues": list(INSPECTION_ISSUES),
     },
 }
 
@@ -485,11 +479,6 @@ def _build_gbif_queries(taxon_key, preset_name=None):
         "predicates": [
             {"type": "equals", "key": "TAXON_KEY", "value": str(taxon_key)},
             {"type": "equals", "key": "BASIS_OF_RECORD", "value": "PRESERVED_SPECIMEN"},
-            {"type": "equals", "key": "HAS_COORDINATE", "value": True},
-            {"type": "equals", "key": "HAS_GEOSPATIAL_ISSUE", "value": False},
-            {"type": "in", "key": "ISSUE", "values": DOWNLOAD_ISSUE_EXCLUSIONS},
-            {"type": "in", "key": "LICENSE", "values": ALLOWED_LICENSES},
-            {"type": "equals", "key": "OCCURRENCE_STATUS", "value": "PRESENT"},
         ],
     }
 
@@ -746,6 +735,7 @@ def phase_1_clean_and_merge(
         )
         if c in master_df.columns
     ]
+    missing_media_rows = pd.DataFrame(columns=master_df.columns)
     if media_evidence_cols:
         has_any_media = pd.Series(False, index=master_df.index)
         for col_name in media_evidence_cols:
@@ -754,8 +744,22 @@ def phase_1_clean_and_merge(
                 & master_df[col_name].astype(str).str.strip().ne("")
             )
             has_any_media = has_any_media | non_empty
-        master_df = _remove(master_df, ~has_any_media, "No media evidence")
+        missing_mask = ~has_any_media
+        missing_media_rows = master_df[missing_mask].copy()
+        if not missing_media_rows.empty:
+            missing_media_rows.insert(
+                missing_media_rows.columns.get_loc("gbifID") + 1,
+                "removal_reason",
+                "No media evidence",
+            )
+        master_df = _remove(master_df, missing_mask, "No media evidence")
     print(f"   Rows remaining: {len(master_df)} (removed {before - len(master_df)})")
+
+    missing_media_csv = Path(output_csv).with_name("Missing_Media.csv")
+    if not missing_media_rows.empty:
+        missing_media_rows = missing_media_rows.dropna(axis=1, how="all")
+        missing_media_rows.to_csv(missing_media_csv, index=False, quoting=csv.QUOTE_ALL)
+        print(f"   Missing media records: {missing_media_csv} ({len(missing_media_rows)} rows)")
 
     print("\n4. Filtering by coordinate precision...")
     before = len(master_df)
@@ -1545,92 +1549,72 @@ class MeasurementEngine:
 # ==============================================================================
 
 class IssueFilterDialog(tk.Toplevel):
-    def __init__(self, parent, bad_vars, inspect_vars):
+    def __init__(self, parent, bad_text_var, inspect_text_var):
         super().__init__(parent)
         self.title("GBIF Issue Filters")
-        self.geometry("720x620")
+        self.geometry("760x520")
         self.resizable(True, True)
         self.transient(parent)
         self.grab_set()
-        self.bad_vars = bad_vars
-        self.inspect_vars = inspect_vars
+        self.bad_text_var = bad_text_var
+        self.inspect_text_var = inspect_text_var
         self._cancelled = True
-        self._canvases = []
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
     def _build(self):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=10, pady=(10, 0))
-        nb.add(self._build_tab(nb, self.bad_vars, BAD_GEOSPATIAL_ISSUES),
-               text=f"  Remove Records ({self._count(self.bad_vars)} active)  ")
-        nb.add(self._build_tab(nb, self.inspect_vars, INSPECTION_ISSUES),
-               text=f"  Flag for Inspection ({self._count(self.inspect_vars)} active)  ")
+        nb.add(self._build_tab(nb, "Remove Records", self.bad_text_var,
+                               BAD_GEOSPATIAL_ISSUES),
+               text=f"  Remove Records ({self._count(self.bad_text_var)} active)  ")
+        nb.add(self._build_tab(nb, "Flag for Inspection", self.inspect_text_var,
+                               INSPECTION_ISSUES),
+               text=f"  Flag for Inspection ({self._count(self.inspect_text_var)} active)  ")
         bf = ttk.Frame(self)
         bf.pack(fill="x", padx=10, pady=10)
         ttk.Button(bf, text="OK", command=self._on_ok).pack(side="right", padx=5)
         ttk.Button(bf, text="Cancel", command=self._on_cancel).pack(side="right", padx=5)
 
     @staticmethod
-    def _count(vd):
-        return sum(1 for v in vd.values() if v.get())
+    def _count(text_var):
+        return len(_parse_issue_list(text_var.get()))
 
-    def _build_tab(self, parent, var_dict, issue_list):
+    def _build_tab(self, parent, title, text_var, issue_list):
         outer = ttk.Frame(parent)
-        bar = ttk.Frame(outer)
-        bar.pack(fill="x", pady=(8, 4), padx=6)
-        ttk.Button(bar, text="Select All",
-                   command=lambda: self._set_all(var_dict, True)).pack(side="left", padx=4)
-        ttk.Button(bar, text="Deselect All",
-                   command=lambda: self._set_all(var_dict, False)).pack(side="left", padx=4)
-        canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0)
-        sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=sb.set)
+        outer.pack(fill="both", expand=True)
 
-        def _on_mousewheel(event):
-            if sys.platform == "darwin":
-                canvas.yview_scroll(int(-1 * event.delta), "units")
-            else:
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        hint = ttk.Label(
+            outer,
+            text=("Comma-delimited issue codes. Example:\n"
+                  '"COUNTRY_MISMATCH",\n"RECORDED_DATE_INVALID"'),
+            foreground="#54606b",
+            wraplength=640,
+            justify="left",
+            font=("Segoe UI", 9),
+        )
+        hint.pack(anchor="w", padx=10, pady=(8, 6))
 
-        def _bind_wheel(widget):
-            widget.bind("<MouseWheel>", _on_mousewheel)
-            widget.bind("<Button-4>", lambda e: canvas.yview_scroll(-3, "units"))
-            widget.bind("<Button-5>", lambda e: canvas.yview_scroll(3, "units"))
+        text = tk.Text(outer, height=18, width=90, wrap="word",
+                       font=("Consolas", 10), borderwidth=1, relief="sunken")
+        text.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        text.insert("1.0", text_var.get())
 
-        _bind_wheel(canvas)
-        inner.bind("<Map>", lambda e: _bind_descendants(inner), add="+")
+        btn_frame = ttk.Frame(outer)
+        btn_frame.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Button(btn_frame, text="Use default values",
+                   command=lambda: text.delete("1.0", tk.END)
+                   or text.insert("1.0", _format_issue_list(issue_list))).pack(side="left")
+        ttk.Button(btn_frame, text="Clear",
+                   command=lambda: text.delete("1.0", tk.END)).pack(side="left", padx=(6, 0))
 
-        def _bind_descendants(w):
-            for child in w.winfo_children():
-                _bind_wheel(child)
-                _bind_descendants(child)
+        def _apply_text():
+            text_var.set(text.get("1.0", tk.END).strip())
 
-        _bind_descendants(inner)
-        self._canvases.append(canvas)
-
-        canvas.pack(side="left", fill="both", expand=True, padx=(6, 0))
-        sb.pack(side="right", fill="y", padx=(0, 6))
-        for issue in issue_list:
-            desc = ISSUE_DESCRIPTIONS.get(issue, "")
-            display = issue.replace("_", " ").title()
-            fr = ttk.Frame(inner)
-            fr.pack(fill="x", pady=2, padx=4)
-            ttk.Checkbutton(fr, variable=var_dict[issue]).pack(side="left")
-            lf = ttk.Frame(fr)
-            lf.pack(side="left", fill="x", expand=True, padx=(4, 0))
-            ttk.Label(lf, text=display, font=("TkDefaultFont", 9, "bold")).pack(anchor="w")
-            if desc:
-                ttk.Label(lf, text=desc, foreground="gray", wraplength=560).pack(anchor="w")
-        _bind_descendants(inner)
+        text.bind("<KeyRelease>", lambda _event: _apply_text())
+        text.bind("<FocusOut>", lambda _event: _apply_text())
+        self.bind("<Button-1>", lambda _event: _apply_text())
         return outer
-
-    def _set_all(self, vd, val):
-        for v in vd.values():
-            v.set(val)
 
     def _on_ok(self):
         self._cancelled = False
@@ -1669,12 +1653,10 @@ class GBIFPipelineGUI:
 
         self.model_manager = ModelManager()
 
-        self.bad_issue_vars = {
-            i: tk.BooleanVar(value=True) for i in BAD_GEOSPATIAL_ISSUES
-        }
-        self.inspect_issue_vars = {
-            i: tk.BooleanVar(value=True) for i in INSPECTION_ISSUES
-        }
+        self.bad_issue_text = tk.StringVar(value=_format_issue_list(BAD_GEOSPATIAL_ISSUES))
+        self.inspect_issue_text = tk.StringVar(
+            value=_format_issue_list(INSPECTION_ISSUES)
+        )
 
         self._apply_theme()
         self._build_ui()
@@ -2074,31 +2056,31 @@ class GBIFPipelineGUI:
         self.taxa_text.insert("1.0", "\n".join(taxa))
         if name != "Custom":
             self.taxa_text.config(state="disabled")
-        for cfg_key, var_dict in [
-            ("bad_issues", self.bad_issue_vars),
-            ("inspect_issues", self.inspect_issue_vars),
+        for cfg_key, text_var in [
+            ("bad_issues", self.bad_issue_text),
+            ("inspect_issues", self.inspect_issue_text),
         ]:
             cfg = preset.get(cfg_key, True)
-            for issue, var in var_dict.items():
-                if cfg is True:
-                    var.set(True)
-                elif isinstance(cfg, list):
-                    var.set(issue in cfg)
-                else:
-                    var.set(False)
+            if cfg is True:
+                text_var.set(_format_issue_list(BAD_GEOSPATIAL_ISSUES if cfg_key == "bad_issues" else INSPECTION_ISSUES))
+            elif isinstance(cfg, list):
+                text_var.set(_format_issue_list(cfg))
+            elif isinstance(cfg, str):
+                text_var.set(cfg)
+            else:
+                text_var.set("")
         self._refresh_issue_summary()
 
     def _open_issue_dialog(self):
-        dlg = IssueFilterDialog(self.root, self.bad_issue_vars,
-                                self.inspect_issue_vars)
+        dlg = IssueFilterDialog(self.root, self.bad_issue_text, self.inspect_issue_text)
         self.root.wait_window(dlg)
         self._refresh_issue_summary()
 
     def _refresh_issue_summary(self):
-        bn = sum(1 for v in self.bad_issue_vars.values() if v.get())
-        sn = sum(1 for v in self.inspect_issue_vars.values() if v.get())
+        bn = len(_parse_issue_list(self.bad_issue_text.get()))
+        sn = len(_parse_issue_list(self.inspect_issue_text.get()))
         self.issue_summary_label.config(
-            text=f"Removing {bn}/{len(BAD_GEOSPATIAL_ISSUES)} issue types  ·  "
+            text=f"Removing {bn}/{len(BAD_GEOSPATIAL_ISSUES or ['custom'])} issue types  ·  "
                  f"Flagging {sn}/{len(INSPECTION_ISSUES)} issue types")
 
     def _browse_data(self):
@@ -2152,10 +2134,10 @@ class GBIFPipelineGUI:
                 self.taxa_text.get("1.0", tk.END).split("\n") if l.strip()]
 
     def _get_active_bad_issues(self):
-        return [k for k, v in self.bad_issue_vars.items() if v.get()]
+        return _parse_issue_list(self.bad_issue_text.get())
 
     def _get_active_inspect_issues(self):
-        return [k for k, v in self.inspect_issue_vars.items() if v.get()]
+        return _parse_issue_list(self.inspect_issue_text.get())
 
     def _set_running(self, running):
         self.is_running = running
