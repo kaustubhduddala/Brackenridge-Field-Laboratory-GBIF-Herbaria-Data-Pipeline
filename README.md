@@ -23,10 +23,9 @@ script.
 6. [Presets](#presets)
 7. [Filters](#filters)
 8. [Output Files](#output-files)
-9. [Auto-Measurement (ML)](#auto-measurement-ml)
-10. [CLI Reference](#cli-reference)
-11. [Configuration](#configuration)
-12. [Troubleshooting](#troubleshooting)
+9. [CLI Reference](#cli-reference)
+10. [Configuration](#configuration)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -39,24 +38,13 @@ script.
 
 Third-party packages (required):
 
-| Package  | Purpose                              |
-|----------|--------------------------------------|
-| requests | GBIF species lookup via REST API     |
-| pandas   | Tabular data loading and cleaning    |
-| pygbif   | GBIF occurrence download management  |
-
-Additional packages for ML auto-measurement (optional):
-
-| Package      | Purpose                                      |
-|--------------|----------------------------------------------|
-| torch        | PyTorch backend for model inference          |
-| torchvision  | Image transforms required by VLM processors  |
-| transformers | HuggingFace model loading and tokenization   |
-| accelerate   | Device mapping and mixed-precision inference |
-| pillow       | Image loading and preprocessing              |
-
-The pipeline works without the ML packages. The auto-measurement
-features are disabled at startup if they are not installed.
+| Package        | Purpose                                  |
+|----------------|------------------------------------------|
+| requests       | GBIF and media downloads                 |
+| pandas         | Tabular data loading and cleaning        |
+| pygbif         | GBIF occurrence download management      |
+| beautifulsoup4 | Resolve image links from provider pages  |
+| urllib3        | HTTP warning and connection support      |
 
 ---
 
@@ -313,81 +301,10 @@ issue means and why it matters.
 
 ---
 
-## Auto-Measurement (ML)
+## Measurements
 
-The pipeline can optionally use a vision-language model to
-automatically measure panicle length, leaf width, and seed length
-from herbarium voucher images. The default model is
-Qwen/Qwen3-VL-30B-A3B-Instruct, a 30B-parameter mixture-of-experts
-model with 3B active parameters per inference pass.
-
-### How it works
-
-For each row in a CSV, the engine looks for an image URL in the
-link columns (identifier, references_multimedia, etc.), downloads
-the image, sends it to the model with a structured measurement
-prompt, and parses the JSON response back into the Panicle length,
-Leaf width, and Seed length columns. A notes column (ml_notes)
-records any issues per row.
-
-Rows that already have measurements are skipped automatically so
-you can resume an interrupted run.
-
-### GPU requirements
-
-Running the default model in bfloat16 requires roughly 16-18 GB
-of GPU memory. On systems without a CUDA GPU the model falls back
-to CPU and float32, which works but is significantly slower. For
-large datasets, a GPU is strongly recommended.
-
-### Managing models (GUI)
-
-Open Models > Manage Models from the menu bar. The dialog shows
-all registered models, their download status, and which is set as
-the default.
-
-From this dialog you can:
-
-- Download a registered model to the local HuggingFace cache
-- Set a different model as the default
-- Register a new model by entering its HuggingFace ID (e.g.
-  Qwen/Qwen2.5-VL-7B-Instruct) or a local directory path
-- Remove a model from the registry
-
-### Managing models (CLI)
-
-The CLI auto-measure option (choice 4 in the interactive menu)
-prompts for a model ID and downloads it automatically if not
-already cached.
-
-### Running auto-measurement (GUI)
-
-In the Auto-Measurement (ML) section of the main window:
-
-1. Select a model from the dropdown (only registered models appear;
-   use Manage Models to add more).
-2. Browse to the CSV file you want to measure (typically
-   master_cleaned.csv from Phase 2).
-3. Click Run Auto-Measurement.
-4. Progress appears in the console. Measurements are written
-   directly into the CSV.
-
-### Running auto-measurement (CLI)
-
-From the interactive CLI, select option 4. Or invoke directly:
-
-```
-python main.py measure master_cleaned.csv
-python main.py measure master_cleaned.csv Qwen/Qwen2.5-VL-7B-Instruct
-```
-
-### Adding a custom model
-
-Any HuggingFace vision-language model that follows the standard
-transformers chat-template interface can be registered. The model
-must accept image+text input and produce text output. Register it
-via the GUI dialog or by editing the config file at
-~/.gbif_pipeline/config.json.
+Use the measurement columns in `master_cleaned.csv` for manual
+trait measurements in ImageJ.
 
 ---
 
@@ -432,18 +349,6 @@ Run Phase 2 (finalize):
 python main.py cleaner 2 <inspected_csv> [final_master] [final_duplicates]
 ```
 
-Run auto-measurement:
-
-```
-python main.py measure <csv_file> [model_id]
-```
-
-Arguments:
-
-- `csv_file` -- Path to the CSV to measure (e.g. master_cleaned.csv).
-- `model_id` -- (Optional) HuggingFace model ID or local path.
-  Defaults to the model set in ~/.gbif_pipeline/config.json.
-
 Arguments:
 
 - `inspected_csv` -- Path to the manually reviewed CSV from Phase 1.
@@ -468,13 +373,9 @@ file.
 | `DEFAULT_EXCLUDE_TAXA`| Taxa excluded by the G064 preset                 |
 | `BAD_GEOSPATIAL_ISSUES` | Issues that cause record removal               |
 | `INSPECTION_ISSUES`   | Issues that cause record flagging                |
-| `ISSUE_DESCRIPTIONS`  | Plain-English descriptions shown in the GUI      |
 | `LINK_COLUMNS`        | Columns checked for reference link validation    |
 | `PRESETS`             | Named filter configurations for the GUI          |
-| `DEFAULT_MODEL_ID`   | HuggingFace ID of the default VLM                |
-| `MEASUREMENT_PROMPT` | The structured prompt sent to the VLM             |
 | `IMAGE_URL_COLUMNS`  | Column priority order for finding image URLs      |
-| `CONFIG_DIR`         | Directory for pipeline config (~/.gbif_pipeline)  |
 
 To add a new preset, add an entry to the `PRESETS` dictionary
 following this structure:
@@ -538,32 +439,6 @@ https://www.gbif.org/user/profile.
 This is normal if you did not add an Action column during manual
 review. Phase 2 will skip the manual-removal step and proceed
 directly to deduplication.
-
-### ML features are disabled / "ML unavailable" message
-
-Install the optional ML dependencies:
-
-```
-pip install torch torchvision transformers accelerate pillow
-```
-
-If you have an NVIDIA GPU, install the CUDA version of PyTorch
-instead. See https://pytorch.org/get-started/locally/ for the
-correct install command for your system.
-
-### Model download is very large
-
-The default model (Qwen3-VL-30B-A3B) is approximately 16-18 GB.
-Models are cached in the standard HuggingFace directory
-(~/.cache/huggingface/) and only downloaded once. You can register
-a smaller model (e.g. Qwen/Qwen2.5-VL-7B-Instruct at ~5 GB) via
-the Manage Models dialog if storage or bandwidth is limited.
-
-### Out of GPU memory when loading a model
-
-Try a smaller model, or ensure no other GPU processes are running.
-If no GPU is available the pipeline falls back to CPU automatically,
-which is slower but has no memory ceiling beyond system RAM.
 
 ### Coordinates appear rounded in the output CSV
 

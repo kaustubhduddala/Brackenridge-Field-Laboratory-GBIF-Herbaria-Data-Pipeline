@@ -1,11 +1,23 @@
 """
 GBIF Herbaria Data Pipeline
+============================
+
+Downloads GBIF occurrence data, cleans it in two phases, and
+exports datasets ready for ImageJ measurements. Optionally
+automates trait measurement using vision-language models.
+
+Usage:
+    python gbif_pipeline.py                  Interactive launcher (GUI or CLI)
+    python gbif_pipeline.py cleaner 1 ...    Run Phase 1 directly
+    python gbif_pipeline.py cleaner 2 ...    Run Phase 2 directly
+    python gbif_pipeline.py measure ...      Run auto-measurement directly
 """
 
+import io
 import os
 import sys
 import csv
-import json
+import json 
 import time
 import re
 import zipfile
@@ -13,18 +25,40 @@ import threading
 import tkinter as tk
 import traceback
 import urllib3
+import time
 import copy
 from urllib.parse import urljoin, urlparse
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from bs4 import BeautifulSoup
 
+# Suppress the console warnings caused by bypassing SSL verification
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import requests
 import pandas as pd
 from pygbif import occurrences
 
+# ---------------------------------------------------------------------------
+# Optional ML dependencies — the rest of the pipeline works without them.
+# ---------------------------------------------------------------------------
+try:
+    import torch
+    import torchvision  # noqa: F401 — required by Qwen3-VL processor
+    from transformers import AutoProcessor, AutoModelForImageTextToText
+    from PIL import Image
+
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+
+
+# ==============================================================================
+# Configuration
+# ==============================================================================
+
+# Credentials are read from environment variables (or ~/.gbif_pipeline/config.json)
+# so they are not hard-coded in source. Set GBIF_USER / GBIF_PASSWORD / GBIF_EMAIL.
 def _load_credentials():
     creds_file = Path.home() / "credentials.json"
     file_creds = {}
@@ -91,6 +125,148 @@ def _parse_issue_list(raw_value):
             cleaned.append(item)
     return cleaned
 
+DOWNLOAD_ISSUE_EXCLUSIONS = [
+    "COORDINATE_REPROJECTED",
+    "COUNTRY_MISMATCH",
+    "COUNTRY_INVALID",
+    "COUNTRY_DERIVED_FROM_COORDINATES",
+    "CONTINENT_INVALID",
+    "CONTINENT_DERIVED_FROM_COORDINATES",
+    "RECORDED_DATE_MISMATCH",
+    "RECORDED_DATE_INVALID",
+    "RECORDED_DATE_UNLIKELY",
+    "TAXON_MATCH_FUZZY",
+    "TAXON_MATCH_HIGHERRANK",
+    "SCIENTIFIC_NAME_ID_NOT_FOUND",
+    "TAXON_ID_NOT_FOUND",
+    "TAXON_CONCEPT_ID_NOT_FOUND",
+    "ELEVATION_MIN_MAX_SWAPPED",
+    "ELEVATION_NON_NUMERIC",
+    "MODIFIED_DATE_INVALID",
+    "IDENTIFIED_DATE_INVALID",
+    "TYPE_STATUS_INVALID",
+    "MULTIMEDIA_DATE_INVALID",
+    "MULTIMEDIA_URI_INVALID",
+    "REFERENCES_URI_INVALID",
+    "INDIVIDUAL_COUNT_CONFLICTS_WITH_OCCURRENCE_STATUS",
+    "OCCURRENCE_STATUS_UNPARSABLE",
+    "OCCURRENCE_STATUS_INFERRED_FROM_INDIVIDUAL_COUNT",
+    "PRESUMED_NEGATED_LATITUDE",
+    "PRESUMED_NEGATED_LONGITUDE",
+    "AMBIGUOUS_INSTITUTION",
+    "AMBIGUOUS_COLLECTION",
+    "INSTITUTION_MATCH_NONE",
+    "COLLECTION_MATCH_NONE",
+    "INSTITUTION_MATCH_FUZZY",
+    "COLLECTION_MATCH_FUZZY",
+    "INSTITUTION_COLLECTION_MISMATCH",
+]
+
+ALLOWED_LICENSES = [
+    "CC0_1_0",
+    "CC_BY_4_0",
+    "CC_BY_NC_4_0",
+]
+
+ISSUE_DESCRIPTIONS = {
+    "COORDINATE_ROUNDED":
+        "Coordinates were rounded; original precision lost.",
+    "GEODETIC_DATUM_INVALID":
+        "Geodetic datum is unrecognized or invalid.",
+    "GEODETIC_DATUM_ASSUMED_WGS84":
+        "No datum provided; GBIF assumed WGS84.",
+    "COORDINATE_PRECISION_INVALID":
+        "Stated coordinate precision value is invalid.",
+    "COORDINATE_UNCERTAINTY_METERS_INVALID":
+        "Coordinate uncertainty in metres is invalid.",
+    "FOOTPRINT_INVALID":
+        "Spatial footprint geometry is invalid.",
+    "FOOTPRINT_WKT_MISMATCH":
+        "Footprint WKT doesn't match the coordinates.",
+    "FOOTPRINT_SRS_INVALID":
+        "Footprint spatial reference system is invalid.",
+    "CONTINENT_COORDINATE_MISMATCH":
+        "Coordinates fall outside the stated continent.",
+    "COUNTRY_COORDINATE_MISMATCH":
+        "Coordinates fall outside the stated country.",
+    "CONTINENT_COUNTRY_MISMATCH":
+        "Stated continent and country contradict each other.",
+    "COORDINATE_REPROJECTED":
+        "Coordinates were reprojected successfully to WGS84.",
+    "COUNTRY_MISMATCH":
+        "Interpreted country and country code contradict each other.",
+    "COUNTRY_INVALID":
+        "Country code is unrecognized or doesn't match GBIF's list.",
+    "COUNTRY_DERIVED_FROM_COORDINATES":
+        "Country was inferred from coordinates, not provided.",
+    "CONTINENT_INVALID":
+        "Continent value is unrecognized by GBIF.",
+    "CONTINENT_DERIVED_FROM_COORDINATES":
+        "Continent was inferred from coordinates, not provided.",
+    "CONTINENT_DERIVED_FROM_COUNTRY":
+        "Continent was inferred from the country, not provided directly.",
+    "RECORDED_DATE_MISMATCH":
+        "Date components (year/month/day) are internally inconsistent.",
+    "RECORDED_DATE_INVALID":
+        "Date is unparseable, in the future, or impossible.",
+    "RECORDED_DATE_UNLIKELY":
+        "Date is before Linnean taxonomy or otherwise suspect.",
+    "TAXON_MATCH_FUZZY":
+        "Scientific name matched via fuzzy/approximate lookup.",
+    "TAXON_MATCH_HIGHERRANK":
+        "Name matched only at a higher taxonomic rank.",
+    "SCIENTIFIC_NAME_ID_NOT_FOUND":
+        "Supplied scientific name ID could not be resolved.",
+    "TAXON_CONCEPT_ID_NOT_FOUND":
+        "Taxon concept ID not found in GBIF backbone.",
+    "TAXON_ID_NOT_FOUND":
+        "Taxon ID not found in GBIF backbone.",
+    "ELEVATION_MIN_MAX_SWAPPED":
+        "Minimum elevation is greater than maximum (likely swapped).",
+    "ELEVATION_NON_NUMERIC":
+        "Elevation value contains text or symbols instead of a number.",
+    "MODIFIED_DATE_INVALID":
+        "Record modification date is invalid or unparseable.",
+    "MODIFIED_DATE_UNLIKELY":
+        "Record modification date is suspiciously old or in the future.",
+    "IDENTIFIED_DATE_INVALID":
+        "Identification date is invalid or unparseable.",
+    "TYPE_STATUS_INVALID":
+        "Specimen type status has a typo or isn't in GBIF's list.",
+    "SUSPECTED_TYPE":
+        "Record is suspected of being a type specimen but status is uncertain.",
+    "MULTIMEDIA_DATE_INVALID":
+        "Multimedia date is invalid, in the future, or unparseable.",
+    "MULTIMEDIA_URI_INVALID":
+        "Multimedia URI is malformed; voucher image may be inaccessible.",
+    "REFERENCES_URI_INVALID":
+        "Reference URI is malformed or contains invalid characters.",
+    "INDIVIDUAL_COUNT_CONFLICTS_WITH_OCCURRENCE_STATUS":
+        "Count is 0 but status is 'Present', or vice versa.",
+    "OCCURRENCE_STATUS_UNPARSABLE":
+        "Status is something other than 'Present' or 'Absent'.",
+    "OCCURRENCE_STATUS_INFERRED_FROM_INDIVIDUAL_COUNT":
+        "No status provided; inferred from individual count.",
+    "PRESUMED_NEGATED_LATITUDE":
+        "Latitude sign appears to be wrong (likely negated).",
+    "PRESUMED_NEGATED_LONGITUDE":
+        "Longitude sign appears to be wrong (likely negated).",
+    "AMBIGUOUS_INSTITUTION":
+        "Institution code matches multiple entries in GRSciColl.",
+    "AMBIGUOUS_COLLECTION":
+        "Collection code matches multiple entries in GRSciColl.",
+    "INSTITUTION_MATCH_NONE":
+        "No matching institution found in GRSciColl.",
+    "COLLECTION_MATCH_NONE":
+        "No matching collection found in GRSciColl.",
+    "INSTITUTION_MATCH_FUZZY":
+        "Institution matched approximately, not exactly.",
+    "COLLECTION_MATCH_FUZZY":
+        "Collection matched approximately, not exactly.",
+    "INSTITUTION_COLLECTION_MISMATCH":
+        "Collection code doesn't belong to the stated institution.",
+}
+
 LINK_COLUMNS = [
     "identifier",
     "references_multimedia",
@@ -153,7 +329,18 @@ PRESETS = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# ML / Model configuration
+# ---------------------------------------------------------------------------
+
+CONFIG_DIR = Path.home() / ".gbif_pipeline"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+MODELS_DIR = Path(__file__).resolve().parent / "models"
+MEDIA_DIR = Path(__file__).resolve().parent / "media"
 DATA_DIR = Path(__file__).resolve().parent / "data"
+
+DEFAULT_MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
 
 IMAGE_URL_COLUMNS = [
     "identifier",
@@ -164,9 +351,42 @@ IMAGE_URL_COLUMNS = [
     "occurrenceID",
 ]
 
+MEASUREMENT_PROMPT = """\
+You are a botanical measurement assistant analyzing a herbarium specimen \
+image of Guinea grass (Megathyrsus maximus).
+
+CALIBRATION:
+- Look for a ruler or scale bar in the image.  If found, use it to \
+determine the pixel-to-centimetre ratio.
+- If no scale bar is visible but the full herbarium sheet is visible, \
+assume the standard sheet width is 29 cm.
+- If neither a scale bar nor the full sheet is visible, set every \
+measurement to null.
+
+MEASUREMENTS (centimetres):
+1. panicle_length_cm  -- from the lowest panicle node to the tip of \
 the panicle.
+2. leaf_width_cm      -- widest leaf, margin to margin at the broadest \
 point.
+3. seed_length_cm     -- from the branch point of an individual seed \
 to its tip.
+
+RULES:
+- If a structure is not visible, obscured, or unmeasurable, use null.
+- If the specimen has flowers instead of seeds, use null for seed_length_cm.
+- Round to one decimal place.
+- Respond with ONLY a JSON object -- no markdown, no commentary.
+
+Required format:
+{"panicle_length_cm": <number|null>, "leaf_width_cm": <number|null>, \
+"seed_length_cm": <number|null>, "notes": "<brief note>"}
+"""
+
+
+# ==============================================================================
+# GBIF Download Helpers
+# ==============================================================================
+
 def resolve_species(scientific_name):
     """Look up a species name and return its GBIF taxonKey."""
     print(f"Looking up GBIF taxonomic key for '{scientific_name}'...")
@@ -276,6 +496,7 @@ def _find_dwca_files(folder):
     mul = list(folder.rglob("multimedia.txt"))
     if not occ or not mul:
         return None, None
+    # Prefer files in the same directory if possible
     for o in occ:
         for m in mul:
             if o.parent == m.parent:
@@ -303,22 +524,9 @@ def _build_gbif_queries(taxon_key, preset_name=None):
     }
 
 
-# ponytail: keep GUI download paths on one implementation.
-def download_dataset(species="", doi_text="", preset_name=None, log=print):
-    """Download and extract a GBIF archive from a species or DOI."""
-    if doi_text:
-        archive = download_from_doi_link(doi_text)
-        return extract_archive(archive, DATA_DIR / "doi")
-
-    taxon_key = resolve_species(species)
-    download_key = trigger_download(
-        _build_gbif_queries(taxon_key, preset_name=preset_name),
-        "DWCA", GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL,
-    )
-    log(f"Download key: {download_key}\nWaiting for GBIF (5-30 min)…\n")
-    archive = wait_and_download(download_key)
-    return extract_archive(archive, DATA_DIR / download_key)
-
+# ==============================================================================
+# Coordinate Cleaning (equivalent to R CoordinateCleaner)
+# ==============================================================================
 
 _COUNTRY_CENTROIDS = {
     "AD": (42.55, 1.58), "AE": (24.00, 54.00), "AF": (33.00, 65.00),
@@ -499,6 +707,10 @@ def clean_coordinates(df, lat_col="decimalLatitude", lon_col="decimalLongitude",
     return df[~flagged], reasons[flagged]
 
 
+# ==============================================================================
+# Phase 1 -- Initial Cleaning & Merging
+# ==============================================================================
+
 def phase_1_clean_and_merge(
     occurrence_file,
     multimedia_file,
@@ -555,6 +767,9 @@ def phase_1_clean_and_merge(
     )
     print(f"Merged dataset: {len(master_df)} rows")
 
+    # "media" = one confirmed link (multimedia identifier ->
+    # references_multimedia -> occurrence references/occurrenceID).
+    # "media_links" = every candidate link, for the Missing_Media report.
     CONFIRMED_MEDIA_COLS = [
         "identifier",
         "references_multimedia",
@@ -610,6 +825,7 @@ def phase_1_clean_and_merge(
         master_df.insert(gbif_pos, new_col, c)
 
     print("\nKeeping only rows with associated media...")
+    before = len(master_df)
     media_evidence_cols = [
         c for c in (
             "mediaType", "type_multimedia", "type",
@@ -693,6 +909,7 @@ def phase_1_clean_and_merge(
     print(f"   Rows remaining: {len(master_df)}")
 
     print("\nRemoving bad geospatial issues...")
+    before = len(master_df)
     if bad_geospatial_issues:
         bad_pat = "|".join(bad_geospatial_issues)
         has_bad = (
@@ -768,6 +985,10 @@ def phase_1_clean_and_merge(
     return output_csv
 
 
+# ==============================================================================
+# Phase 2 -- Deduplication & Finalization
+# ==============================================================================
+
 def phase_2_finalize_dataset(
     inspected_csv,
     final_master=None,
@@ -787,6 +1008,7 @@ def phase_2_finalize_dataset(
 
     print("\nRemoving records marked for deletion...")
     if "Action" in master_df.columns:
+        before = len(master_df)
         master_df = master_df[
             master_df["Action"].isna() | (master_df["Action"] != "Remove")
         ]
@@ -797,6 +1019,7 @@ def phase_2_finalize_dataset(
         dup_mask = master_df.duplicated(subset=["gbifID"], keep="first")
         removed = master_df[dup_mask].copy()
         master_nd = master_df[~dup_mask].copy()
+        # Merge non-empty fields from duplicate rows into the kept row
         if len(removed):
             fill_cols = [c for c in master_df.columns if c != "gbifID"]
             keep_idx = {gid: i for gid, i in
@@ -839,6 +1062,10 @@ def phase_2_finalize_dataset(
     return final_master, final_duplicates
 
 
+# ==============================================================================
+# Media Download
+# ==============================================================================
+
 def _row_label(row, suffix=None):
     gid = row.get("gbifID")
     if pd.notna(gid) and str(gid).strip():
@@ -849,6 +1076,8 @@ def _row_label(row, suffix=None):
     return None
 
 def _find_image_url(row):
+    # Confirmed media column: single link, but tolerate comma-separated
+    # values from older CSVs by taking the first URL.
     val = row.get("media")
     if pd.notna(val) and isinstance(val, str):
         url = _first_url_from_cell(val)
@@ -961,6 +1190,7 @@ def _extract_image_from_json(json_text, log=print):
         log(f"    IIIF JSON parse failed: {exc}")
         return None
 
+    # IIIF v3
     for item in data.get("items", []):
         for anno_page in item.get("items", []):
             for anno in anno_page.get("items", []):
@@ -969,6 +1199,7 @@ def _extract_image_from_json(json_text, log=print):
                 if isinstance(img_id, str) and img_id.startswith("http"):
                     return img_id
 
+    # IIIF v2
     for seq in data.get("sequences", []):
         for canvas in seq.get("canvases", []):
             for image in canvas.get("images", []):
@@ -977,6 +1208,7 @@ def _extract_image_from_json(json_text, log=print):
                 if isinstance(img_id, str) and img_id.startswith("http"):
                     return img_id
 
+    # Fallbacks commonly present in provider APIs
     for key in ("imageUri", "imageUrl", "identifier"):
         val = data.get(key)
         if isinstance(val, str) and val.startswith("http"):
@@ -1132,6 +1364,7 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
 
     df.to_csv(csv_path, index=False, quoting=csv.QUOTE_ALL)
 
+    # Export failed rows to a dedicated CSV
     if failed_rows:
         failed_df = pd.DataFrame([r for r, _ in failed_rows])
         if "download_failure_reason" not in failed_df.columns:
@@ -1149,11 +1382,315 @@ def download_media(csv_path, media_dir=None, log=print, cancel_flag=None):
         failed_df.to_csv(failed_csv, index=False, quoting=csv.QUOTE_ALL)
         log(f"Failed downloads written to: {failed_csv} ({len(failed_df)} rows)")
     elif Path(failed_csv).exists():
+        # Clear stale report from a previous run when nothing fails now
         Path(failed_csv).unlink()
 
     log(f"\nMedia download complete: {downloaded} downloaded, "
         f"{skipped} skipped, {failed} failed")
     return downloaded, skipped, failed
+
+# ==============================================================================
+# ML -- Model Manager
+# ==============================================================================
+
+class ModelManager:
+    """Manage VLM downloads and loading via HuggingFace transformers."""
+
+    def __init__(self):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self._config = self._load_config()
+        self._model = None
+        self._processor = None
+        self._loaded_id = None
+
+    def _load_config(self):
+        if CONFIG_FILE.exists():
+            try:
+                return json.loads(CONFIG_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {
+            "models": {
+                DEFAULT_MODEL_ID: {
+                    "description": "Qwen3 Vision-Language 30B MoE (3B active). Default.",
+                }
+            },
+            "default": DEFAULT_MODEL_ID,
+        }
+
+    def _save_config(self):
+        CONFIG_FILE.write_text(json.dumps(self._config, indent=2))
+
+    def list_models(self):
+        out = []
+        for mid, info in self._config.get("models", {}).items():
+            out.append((mid, info.get("description", ""), self.is_downloaded(mid)))
+        return out
+
+    def default_model(self):
+        return self._config.get("default", DEFAULT_MODEL_ID)
+
+    def set_default(self, model_id):
+        self._config["default"] = model_id
+        self._save_config()
+
+    def register_model(self, model_id, description=""):
+        models = self._config.setdefault("models", {})
+        if model_id not in models:
+            models[model_id] = {"description": description}
+            self._save_config()
+
+    def remove_model(self, model_id):
+        self._config.get("models", {}).pop(model_id, None)
+        if self._config.get("default") == model_id:
+            remaining = list(self._config.get("models", {}).keys())
+            self._config["default"] = remaining[0] if remaining else ""
+        self._save_config()
+
+    @staticmethod
+    def is_downloaded(model_id):
+        if not ML_AVAILABLE:
+            return False
+        local = Path(model_id)
+        if local.is_dir() and (local / "config.json").exists():
+            return True
+        # Check standard HF hub cache layout: models/models--Owner--Name/
+        repo_dir = MODELS_DIR / ("models--" + model_id.replace("/", "--"))
+        if repo_dir.is_dir() and any(repo_dir.rglob("config.json")):
+            return True
+        try:
+            from huggingface_hub import scan_cache_dir
+            cache = scan_cache_dir(MODELS_DIR)
+            for repo in cache.repos:
+                if repo.repo_id == model_id:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def download_model(model_id, log=print):
+        if not ML_AVAILABLE:
+            raise RuntimeError(
+                "ML dependencies not installed. Run:\n"
+                "  pip install torch torchvision transformers accelerate pillow"
+            )
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        log(f"Downloading {model_id} to {MODELS_DIR} (this may take a while)...")
+        from huggingface_hub import snapshot_download
+        snapshot_download(model_id, cache_dir=MODELS_DIR)
+        log(f"Download complete: {model_id}")
+
+    def load(self, model_id=None, log=print):
+        if not ML_AVAILABLE:
+            raise RuntimeError(
+                "ML dependencies not installed. Run:\n"
+                "  pip install torch torchvision transformers accelerate pillow"
+            )
+        model_id = model_id or self.default_model()
+        if self._loaded_id == model_id and self._model is not None:
+            log(f"Model already loaded: {model_id}")
+            return
+
+        self.unload()
+        log(f"Loading model: {model_id}")
+        log(f"   Cache: {MODELS_DIR}")
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        device_map = "auto" if torch.cuda.is_available() else "cpu"
+        log(f"   Device: {device_map} | Dtype: {dtype}")
+
+        cache = str(MODELS_DIR)
+        self._processor = AutoProcessor.from_pretrained(
+            model_id, cache_dir=cache)
+        self._model = AutoModelForImageTextToText.from_pretrained(
+            model_id, torch_dtype=dtype, device_map=device_map,
+            cache_dir=cache,
+        )
+        self._loaded_id = model_id
+        log(f"Model ready: {model_id}")
+
+    def unload(self):
+        if self._model is not None:
+            del self._model
+            del self._processor
+            self._model = None
+            self._processor = None
+            self._loaded_id = None
+            if ML_AVAILABLE and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    @property
+    def loaded_id(self):
+        return self._loaded_id
+
+    @property
+    def model(self):
+        return self._model
+
+    @property
+    def processor(self):
+        return self._processor
+
+
+# ==============================================================================
+# ML -- Measurement Engine
+# ==============================================================================
+
+class MeasurementEngine:
+    """Run VLM inference on herbarium images to extract trait measurements."""
+
+    def __init__(self, manager: ModelManager):
+        self.manager = manager
+
+    @staticmethod
+    def _fetch_image(url_or_path):
+        path = Path(url_or_path)
+        if path.is_file():
+            return Image.open(path).convert("RGB")
+        if not url_or_path.startswith(("http://", "https://")):
+            return None
+        resp = requests.get(url_or_path, timeout=30,
+                            headers=_DOWNLOAD_HEADERS)
+        resp.raise_for_status()
+        return Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+    @staticmethod
+    def _parse_response(text):
+        cleaned = re.sub(r"```(?:json)?", "", text).strip()
+        match = re.search(r"\{[^{}]*\}", cleaned, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    def measure_image(self, image, prompt=None):
+        model = self.manager.model
+        proc = self.manager.processor
+        if model is None or proc is None:
+            raise RuntimeError("No model loaded. Call manager.load() first.")
+
+        prompt = prompt or MEASUREMENT_PROMPT
+
+        messages = [
+            {"role": "user", "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": prompt},
+            ]},
+        ]
+        text_input = proc.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = proc(
+            text=[text_input], images=[image],
+            return_tensors="pt", padding=True,
+        )
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.inference_mode():
+            ids = model.generate(**inputs, max_new_tokens=512)
+
+        gen_ids = ids[:, inputs["input_ids"].shape[1]:]
+        output = proc.batch_decode(gen_ids, skip_special_tokens=True)[0]
+        return self._parse_response(output)
+
+    @staticmethod
+    def _resolve_image_path(row, media_dir):
+        mp = row.get("media_path")
+        if pd.notna(mp) and isinstance(mp, str) and Path(mp.strip()).is_file():
+            return mp.strip()
+        label = _row_label(row)
+        if label and media_dir:
+            hits = list(Path(media_dir).glob(f"{label}.*"))
+            if hits:
+                return str(hits[0])
+        return _find_image_url(row)
+
+    def measure_csv(self, csv_path, media_dir=None, output_path=None,
+                    log=print, cancel_flag=None):
+        media_dir = Path(media_dir) if media_dir else DATA_DIR / "media"
+        try:
+            df = pd.read_csv(csv_path, keep_default_na=True, low_memory=False)
+        except pd.errors.ParserError:
+            log("Warning: standard parser failed, retrying with Python engine...")
+            df = pd.read_csv(csv_path, keep_default_na=True,
+                             engine="python", on_bad_lines="warn")
+        total = len(df)
+        output_path = output_path or csv_path
+
+        for col in ("Panicle length (cm)", "Leaf width (cm)",
+                     "Seed length (cm)", "ml_notes"):
+            if col not in df.columns:
+                df[col] = ""
+
+        measured, skipped, failed = 0, 0, 0
+
+        for idx in range(total):
+            if cancel_flag and not cancel_flag():
+                log(f"\nCancelled at row {idx + 1}/{total}")
+                break
+
+            row = df.iloc[idx]
+
+            has_data = any(
+                pd.notna(row.get(c)) and str(row.get(c)).strip()
+                for c in ("Panicle length (cm)", "Leaf width (cm)", "Seed length (cm)")
+            )
+            if has_data:
+                skipped += 1
+                continue
+
+            src = self._resolve_image_path(row, media_dir)
+            if not src:
+                df.at[idx, "ml_notes"] = "no image found"
+                skipped += 1
+                continue
+
+            label = _row_label(row) or str(idx)
+            log(f"  [{idx + 1}/{total}] {label} -- {str(src)[:70]}...")
+
+            try:
+                image = self._fetch_image(src)
+                if image is None:
+                    df.at[idx, "ml_notes"] = "could not load image"
+                    failed += 1
+                    continue
+
+                result = self.measure_image(image)
+                if result is None:
+                    df.at[idx, "ml_notes"] = "model returned unparseable output"
+                    failed += 1
+                    continue
+
+                pl = result.get("panicle_length_cm")
+                lw = result.get("leaf_width_cm")
+                sl = result.get("seed_length_cm")
+                notes = result.get("notes", "")
+
+                df.at[idx, "Panicle length (cm)"] = pl if pl is not None else ""
+                df.at[idx, "Leaf width (cm)"] = lw if lw is not None else ""
+                df.at[idx, "Seed length (cm)"] = sl if sl is not None else ""
+                df.at[idx, "ml_notes"] = notes
+                measured += 1
+
+                df.to_csv(output_path, index=False, quoting=csv.QUOTE_ALL)
+
+            except Exception as exc:
+                df.at[idx, "ml_notes"] = f"error: {exc}"
+                failed += 1
+
+        df.to_csv(output_path, index=False, quoting=csv.QUOTE_ALL)
+        log(f"\nMeasurement complete: {measured} measured, "
+            f"{skipped} skipped, {failed} failed")
+        log(f"Saved to: {output_path}")
+        return output_path
+
+
+# ==============================================================================
+# GUI -- Issue Filter Dialog
+# ==============================================================================
 
 class IssueFilterDialog(tk.Toplevel):
     def __init__(self, parent, bad_text_var, inspect_text_var):
@@ -1236,9 +1773,15 @@ class IssueFilterDialog(tk.Toplevel):
         return self._cancelled
 
 
+# ==============================================================================
+# GUI -- Main Application  (Tabbed layout)
+# ==============================================================================
+
 class GBIFPipelineGUI:
     """Tkinter GUI for the GBIF pipeline — tabbed interface."""
 
+    # Palette
+    _BG       = "#f7f7f8"
     _ACCENT   = "#2d6a4f"
     _ACCENT2  = "#40916c"
     _MUTED    = "#6c757d"
@@ -1250,7 +1793,10 @@ class GBIFPipelineGUI:
         self.root.title("GBIF Herbaria Data Pipeline")
         self.root.geometry("820x780")
         self.root.minsize(720, 640)
+        self.is_running = False
         self._cancelled = False
+
+        self.model_manager = ModelManager()
 
         self.bad_issue_text = tk.StringVar(value=_format_issue_list(BAD_GEOSPATIAL_ISSUES))
         self.inspect_issue_text = tk.StringVar(
@@ -1260,6 +1806,10 @@ class GBIFPipelineGUI:
         self._apply_theme()
         self._build_ui()
         self._load_preset()
+
+    # ------------------------------------------------------------------
+    # Theme
+    # ------------------------------------------------------------------
 
     def _apply_theme(self):
         style = ttk.Style()
@@ -1288,11 +1838,16 @@ class GBIFPipelineGUI:
         style.configure("Subtitle.TLabel",
                         font=("Segoe UI", 9), foreground=self._MUTED)
 
+    # ------------------------------------------------------------------
+    # UI construction — main layout
+    # ------------------------------------------------------------------
+
     def _build_ui(self):
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)   # notebook row
         self.root.rowconfigure(2, weight=1)   # console row
 
+        # ── Header ──
         hdr = ttk.Frame(self.root, padding=(16, 12, 16, 0))
         hdr.grid(row=0, column=0, sticky="ew")
         ttk.Label(hdr, text="GBIF Herbaria Data Pipeline",
@@ -1300,22 +1855,25 @@ class GBIFPipelineGUI:
         ttk.Label(hdr, text="By Kaustubh Duddala",
                   style="Subtitle.TLabel").pack(anchor="w", pady=(2, 0))
 
+        # ── Notebook ──
         self.notebook = ttk.Notebook(self.root)
         self.notebook.grid(row=1, column=0, sticky="nsew", padx=12, pady=(8, 0))
 
         self._tab_download  = self._build_download_tab()
         self._tab_prepare   = self._build_prepare_tab()
-        self._tab_media     = self._build_media_tab()
+        self._tab_measure   = self._build_measurement_tab()
 
         self.notebook.add(self._tab_download, text="  Download  ")
         self.notebook.add(self._tab_prepare,  text="  Clean & Prepare  ")
-        self.notebook.add(self._tab_media,    text="  Media  ")
+        self.notebook.add(self._tab_measure,  text="  Media & Measurement  ")
 
+        # ── Console + action buttons (always visible) ──
         bottom = ttk.Frame(self.root, padding=(12, 6, 12, 8))
         bottom.grid(row=2, column=0, sticky="nsew")
         bottom.columnconfigure(0, weight=1)
         bottom.rowconfigure(1, weight=1)
 
+        # Button bar
         bar = ttk.Frame(bottom)
         bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         ttk.Label(bar, text="Console", font=("Segoe UI", 9, "bold"),
@@ -1326,22 +1884,29 @@ class GBIFPipelineGUI:
                                      command=self._cancel, state="disabled")
         self.cancel_btn.pack(side="right", padx=(4, 0))
 
+        # Console
         self.console = scrolledtext.ScrolledText(
             bottom, height=8, state="disabled", wrap="word",
             font=("Consolas", 9), borderwidth=1, relief="sunken",
         )
         self.console.grid(row=1, column=0, sticky="nsew")
 
+        # Status bar
         self.status_var = tk.StringVar(value="Ready")
         sb = ttk.Label(self.root, textvariable=self.status_var,
                        style="Status.TLabel", padding=(16, 4))
         sb.grid(row=3, column=0, sticky="ew")
+
+    # ------------------------------------------------------------------
+    # Tab 1 — Download
+    # ------------------------------------------------------------------
 
     def _build_download_tab(self):
         tab = ttk.Frame(self.notebook, padding=12)
         tab.columnconfigure(1, weight=1)
         row = 0
 
+        # -- Source --
         src = ttk.LabelFrame(tab, text="Data Source", padding=10)
         src.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         src.columnconfigure(1, weight=1)
@@ -1369,6 +1934,7 @@ class GBIFPipelineGUI:
                   ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
         row += 1
 
+        # -- Action --
         af = ttk.Frame(tab)
         af.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 10))
         self.dl_btn = ttk.Button(af, text="Download from GBIF",
@@ -1379,6 +1945,7 @@ class GBIFPipelineGUI:
         self.dl_status.pack(side="left", padx=(12, 0))
         row += 1
 
+        # -- Workflow shortcut --
         sep = ttk.Separator(tab, orient="horizontal")
         sep.grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
         row += 1
@@ -1396,7 +1963,12 @@ class GBIFPipelineGUI:
 
         return tab
 
+    # ------------------------------------------------------------------
+    # Tab 2 — Clean & Prepare
+    # ------------------------------------------------------------------
+
     def _build_prepare_tab(self):
+        # Scrollable tab for longer content
         outer = ttk.Frame(self.notebook)
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(0, weight=1)
@@ -1426,6 +1998,7 @@ class GBIFPipelineGUI:
         tab.columnconfigure(1, weight=1)
         r = 0
 
+        # -- Data source --
         ds = ttk.LabelFrame(tab, text="Input Data", padding=10)
         ds.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         ds.columnconfigure(1, weight=1)
@@ -1437,6 +2010,7 @@ class GBIFPipelineGUI:
                    command=self._browse_data).grid(row=0, column=2, padx=(6, 0))
         r += 1
 
+        # -- Phase selector --
         ps = ttk.LabelFrame(tab, text="Phase", padding=10)
         ps.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         self.phase_var = tk.StringVar(value="both")
@@ -1447,6 +2021,7 @@ class GBIFPipelineGUI:
                             value=val).pack(anchor="w", pady=1)
         r += 1
 
+        # -- Coordinate precision --
         cp = ttk.LabelFrame(tab, text="Coordinate Precision", padding=10)
         cp.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         self.precision_var = tk.StringVar(value=PRECISION_RELAXED)
@@ -1459,6 +2034,7 @@ class GBIFPipelineGUI:
                             value=val).pack(anchor="w", pady=1)
         r += 1
 
+        # -- Issue filters --
         iss = ttk.LabelFrame(tab, text="Issue Filters", padding=10)
         iss.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         iss_row = ttk.Frame(iss)
@@ -1471,6 +2047,7 @@ class GBIFPipelineGUI:
         self._refresh_issue_summary()
         r += 1
 
+        # -- Taxa exclusions --
         tx = ttk.LabelFrame(tab, text="Taxa Exclusions", padding=10)
         tx.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         ttk.Label(tx, text="One taxon name per line (leave empty to skip)",
@@ -1480,6 +2057,7 @@ class GBIFPipelineGUI:
         self.taxa_text.pack(fill="both", expand=True, pady=(4, 0))
         r += 1
 
+        # -- Run button --
         af = ttk.Frame(tab)
         af.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.prepare_btn = ttk.Button(af, text="Run Cleaning",
@@ -1491,20 +2069,25 @@ class GBIFPipelineGUI:
 
         return outer
 
-    def _build_media_tab(self):
+    # ------------------------------------------------------------------
+    # Tab 3 — Media & Measurement (ML)
+    # ------------------------------------------------------------------
+
+    def _build_measurement_tab(self):
         tab = ttk.Frame(self.notebook, padding=12)
         tab.columnconfigure(1, weight=1)
         r = 0
 
+        # -- Shared CSV / media folder --
         sf = ttk.LabelFrame(tab, text="Dataset", padding=10)
         sf.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         sf.columnconfigure(1, weight=1)
 
         ttk.Label(sf, text="CSV file:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.media_csv_entry = ttk.Entry(sf, width=50)
-        self.media_csv_entry.grid(row=0, column=1, sticky="ew")
+        self.measure_csv_entry = ttk.Entry(sf, width=50)
+        self.measure_csv_entry.grid(row=0, column=1, sticky="ew")
         ttk.Button(sf, text="Browse…",
-               command=self._browse_media_csv).grid(row=0, column=2, padx=(6, 0))
+                   command=self._browse_measure_csv).grid(row=0, column=2, padx=(6, 0))
 
         ttk.Label(sf, text="Media folder:").grid(row=1, column=0, sticky="w",
                                                   padx=(0, 8), pady=(6, 0))
@@ -1516,6 +2099,7 @@ class GBIFPipelineGUI:
                                                          padx=(6, 0), pady=(6, 0))
         r += 1
 
+        # -- Media download section --
         md = ttk.LabelFrame(tab, text="Download Voucher Images", padding=10)
         md.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         ttk.Label(md, text="Fetch specimen images from URLs in the CSV. "
@@ -1532,7 +2116,78 @@ class GBIFPipelineGUI:
         self.media_status.pack(side="left", padx=(12, 0))
         r += 1
 
+        # -- Model management section --
+        ml = ttk.LabelFrame(tab, text="Auto-Measurement (ML)", padding=10)
+        ml.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        ml.columnconfigure(1, weight=1)
+
+        if not ML_AVAILABLE:
+            warn = ttk.Label(
+                ml, wraplength=580, foreground=self._ERR,
+                font=("Segoe UI", 9),
+                text=("ML dependencies are not installed.  Run:\n"
+                      "pip install torch torchvision transformers "
+                      "accelerate pillow"),
+            )
+            warn.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        ttk.Label(ml, text="Model:").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        self.model_var = tk.StringVar()
+        self.model_combo = ttk.Combobox(ml, textvariable=self.model_var,
+                                        state="readonly", width=42)
+        self.model_combo.grid(row=1, column=1, sticky="ew")
+        btn_frame = ttk.Frame(ml)
+        btn_frame.grid(row=1, column=2, padx=(6, 0))
+        ttk.Button(btn_frame, text="Refresh",
+                   command=self._refresh_model_list).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text="Manage…",
+                   command=self._open_model_manager).pack(side="left")
+        self._refresh_model_list()
+
+        # Measure button row
+        mr = ttk.Frame(ml)
+        mr.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.measure_btn = ttk.Button(mr, text="Run Auto-Measurement",
+                                      style="Accent.TButton",
+                                      command=self._run_measurement)
+        self.measure_btn.pack(side="left")
+        self.ml_status = ttk.Label(mr, text="", foreground=self._MUTED)
+        self.ml_status.pack(side="left", padx=(12, 0))
+
+        if not ML_AVAILABLE:
+            self.measure_btn.config(state="disabled")
+        r += 1
+
+        # -- Helpful info --
+        info = ttk.LabelFrame(tab, text="Workflow", padding=10)
+        info.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        steps_text = (
+            "1.  Select your cleaned CSV (from the Prepare tab) above.\n"
+            "2.  Download voucher images — this fetches specimen photos "
+            "from the URLs in your CSV.\n"
+            "3.  Choose a vision-language model and run auto-measurement. "
+            "The model will estimate panicle length, leaf width, and seed "
+            "length from each image.\n"
+            "4.  Results are written back to the CSV incrementally — "
+            "you can cancel and resume any time."
+        )
+        ttk.Label(info, text=steps_text, wraplength=620,
+                  foreground=self._MUTED, font=("Segoe UI", 9),
+                  justify="left").pack(anchor="w")
+
         return tab
+
+    # ------------------------------------------------------------------
+    # Model manager dialog
+    # ------------------------------------------------------------------
+
+    def _open_model_manager(self):
+        ModelManagerDialog(self.root, self.model_manager)
+        self._refresh_model_list()
+
+    # ------------------------------------------------------------------
+    # UI helpers
+    # ------------------------------------------------------------------
 
     def _load_preset(self):
         name = self.preset_var.get()
@@ -1583,19 +2238,29 @@ class GBIFPipelineGUI:
             self.data_entry.delete(0, tk.END)
             self.data_entry.insert(0, path)
 
-    def _browse_media_csv(self):
+    def _browse_measure_csv(self):
         path = filedialog.askopenfilename(
-            title="Select CSV",
+            title="Select CSV for measurement",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if path:
-            self.media_csv_entry.delete(0, tk.END)
-            self.media_csv_entry.insert(0, path)
+            self.measure_csv_entry.delete(0, tk.END)
+            self.measure_csv_entry.insert(0, path)
 
     def _browse_media_dir(self):
         path = filedialog.askdirectory(title="Select media folder")
         if path:
             self.media_dir_entry.delete(0, tk.END)
             self.media_dir_entry.insert(0, path)
+
+    def _refresh_model_list(self):
+        models = self.model_manager.list_models()
+        default = self.model_manager.default_model()
+        vals = [mid for mid, _, _ in models]
+        self.model_combo["values"] = vals
+        if default in vals:
+            self.model_var.set(default)
+        elif vals:
+            self.model_var.set(vals[0])
 
     def _log(self, msg):
         """Thread-safe console logging — schedules on the main thread."""
@@ -1639,12 +2304,15 @@ class GBIFPipelineGUI:
         return _parse_issue_list(self.inspect_issue_text.get())
 
     def _set_running(self, running):
+        self.is_running = running
         self._cancelled = False if running else getattr(self, "_cancelled", False)
         state_off = "disabled" if running else "normal"
         self.dl_btn.config(state=state_off)
         self.full_btn.config(state=state_off)
         self.prepare_btn.config(state=state_off)
         self.dl_media_btn.config(state=state_off)
+        self.measure_btn.config(
+            state="disabled" if running or not ML_AVAILABLE else "normal")
         self.cancel_btn.config(state="normal" if running else "disabled")
         self.status_var.set("Running…" if running else "Ready")
 
@@ -1662,6 +2330,10 @@ class GBIFPipelineGUI:
         self.cancel_btn.config(state="disabled")
         self.status_var.set("Cancelling…")
 
+    # ------------------------------------------------------------------
+    # Runners
+    # ------------------------------------------------------------------
+
     def _run_download(self):
         species = self.species_entry.get().strip()
         doi_text = self.doi_entry.get().strip()
@@ -1675,8 +2347,19 @@ class GBIFPipelineGUI:
         def _work():
             try:
                 self._log(f"Downloading: {species or doi_text}")
-                folder = download_dataset(
-                    species, doi_text, self.preset_var.get(), self._log)
+                if doi_text:
+                    zf = download_from_doi_link(doi_text)
+                    folder = extract_archive(zf, DATA_DIR / "doi")
+                else:
+                    tk_ = resolve_species(species)
+                    dk = trigger_download(
+                        _build_gbif_queries(tk_,
+                                            preset_name=self.preset_var.get()),
+                        "DWCA", GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
+                    self._log(f"Download key: {dk}\n"
+                              f"Waiting for GBIF (5-30 min)…\n")
+                    zf = wait_and_download(dk)
+                    folder = extract_archive(zf, DATA_DIR / dk)
                 self._log(f"\nExtracted to: {folder}")
                 self.dl_status.config(text="Complete", foreground=self._OK)
                 self._show_info("Complete", f"Download complete!\n{folder}")
@@ -1761,8 +2444,19 @@ class GBIFPipelineGUI:
         def _work():
             try:
                 self._log(f"Step 1: Downloading {species or doi_text}")
-                folder = download_dataset(
-                    species, doi_text, self.preset_var.get(), self._log)
+                if doi_text:
+                    zf = download_from_doi_link(doi_text)
+                    folder = extract_archive(zf, DATA_DIR / "doi")
+                else:
+                    tk_ = resolve_species(species)
+                    dk = trigger_download(
+                        _build_gbif_queries(tk_,
+                                            preset_name=self.preset_var.get()),
+                        "DWCA", GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL)
+                    self._log(f"Download key: {dk}\n"
+                              f"Waiting for GBIF (5-30 min)…\n")
+                    zf = wait_and_download(dk)
+                    folder = extract_archive(zf, DATA_DIR / dk)
                 self._log("Step 2: Phase 1 cleaning")
                 occ, mul = _find_dwca_files(folder)
                 if not occ or not mul:
@@ -1793,7 +2487,7 @@ class GBIFPipelineGUI:
         threading.Thread(target=_work, daemon=True).start()
 
     def _run_download_media(self):
-        csv_path = self.media_csv_entry.get().strip()
+        csv_path = self.measure_csv_entry.get().strip()
         media_dir = self.media_dir_entry.get().strip()
         if not csv_path:
             messagebox.showwarning("Missing CSV", "Select a CSV file first.")
@@ -1825,6 +2519,48 @@ class GBIFPipelineGUI:
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def _run_measurement(self):
+        csv_path = self.measure_csv_entry.get().strip()
+        media_dir = self.media_dir_entry.get().strip()
+        model_id = self.model_var.get().strip()
+        if not csv_path:
+            messagebox.showwarning("Missing CSV", "Select a CSV file first.")
+            return
+        if not model_id:
+            messagebox.showwarning("Missing Model", "Select a model first.")
+            return
+        self._set_running(True)
+        self.ml_status.config(text="Loading model…", foreground="blue")
+
+        def _work():
+            try:
+                self.model_manager.load(model_id, log=self._log)
+                engine = MeasurementEngine(self.model_manager)
+                self.ml_status.config(text="Measuring…", foreground="blue")
+                engine.measure_csv(
+                    csv_path,
+                    media_dir=media_dir or None,
+                    log=self._log,
+                    cancel_flag=lambda: not self._cancelled,
+                )
+                self.ml_status.config(text="Done", foreground=self._OK)
+                self._show_info("Complete",
+                                f"Measurements written to:\n{csv_path}")
+            except Exception as exc:
+                self._log(f"ERROR: {exc}\n{traceback.format_exc()}")
+                self.ml_status.config(text="Error", foreground=self._ERR)
+                self._show_error("Error", str(exc))
+            finally:
+                self._set_running(False)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+
+# ==============================================================================
+# GUI -- Model Manager Dialog
+# ==============================================================================
+
+class ModelManagerDialog(tk.Toplevel):
     """Dialog for listing, downloading, adding, and removing VLM models."""
 
     def __init__(self, parent, manager: ModelManager):
@@ -1945,6 +2681,10 @@ class GBIFPipelineGUI:
             self._refresh_list()
             self._log(f"Registered: {mid}")
 
+
+# ==============================================================================
+# CLI
+# ==============================================================================
 
 def _print_banner():
     print("\n" + "=" * 60)
@@ -2150,6 +2890,10 @@ def _measure_cli():
     engine.measure_csv(csv_path)
     mgr.unload()
 
+
+# ==============================================================================
+# Entry point
+# ==============================================================================
 
 def main():
     if len(sys.argv) > 1:

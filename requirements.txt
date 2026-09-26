@@ -1,11 +1,6 @@
 pandas>=1.0.0
 pygbif>=0.5.0
 requests>=2.25.0
-beatufulsoup4>=4.9.0
-
-# optional
-torch
-transformers
-accelerate
-pillow
-torchvision 
+beautifulsoup4>=4.9.0
+urllib3>=1.26.0
+openai>=1.0.0
