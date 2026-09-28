@@ -1,0 +1,6 @@
+{
+  "theme": "Dark",
+  "server": "http://localhost:1234/v1",
+  "model": "Qwen3-VL-Thinking",
+  "fill_blanks": false
+}

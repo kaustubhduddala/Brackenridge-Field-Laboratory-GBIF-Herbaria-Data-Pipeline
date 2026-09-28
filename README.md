@@ -1,67 +1,49 @@
 # GBIF Herbaria Data Pipeline
 
-A single-file Python tool for downloading, cleaning, and preparing
-GBIF herbarium occurrence data for morphological trait measurement
-in ImageJ. Supports both a graphical interface (tkinter) and a
-command-line interface.
+A Python application for downloading GBIF herbarium occurrence data,
+cleaning it, downloading the specimen images, and measuring
+morphological traits from those images with a local vision model.
+It has a graphical interface (tkinter) and a command-line interface.
 
 The pipeline was developed for the G064 Guinea Grass Biogeography
 project at UT Austin, based on the measurement protocol by
-Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, and Kaustubh Duddala. It replaces the
-original multi-file R + Python workflow with one self-contained
-script.
+Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, and Kaustubh Duddala.
 
----
+## Contents
 
-## Table of Contents
+1. Requirements
+2. Installation
+3. Starting the application
+4. Workflow
+5. Measuring images with LM Studio
+6. Presets and filters
+7. Output files
+8. Command line
+9. Configuration
+10. Project layout
+11. Troubleshooting
 
-1. [Requirements](#requirements)
-2. [Installation](#installation)
-3. [Quick Start](#quick-start)
-4. [Interfaces](#interfaces)
-5. [Workflow Overview](#workflow-overview)
-6. [Presets](#presets)
-7. [Filters](#filters)
-8. [Output Files](#output-files)
-9. [CLI Reference](#cli-reference)
-10. [Configuration](#configuration)
-11. [Troubleshooting](#troubleshooting)
+## 1. Requirements
 
----
+- Python 3.9 or later (3.11 or later recommended)
+- tkinter for the graphical interface (see Troubleshooting if it is missing)
+- A GBIF account for new downloads (not needed when downloading by DOI)
+- LM Studio, or another OpenAI-compatible server, with a vision model
+  loaded, for image measurements
 
-## Requirements
+Python packages are listed in `requirements.txt`: numpy, pandas,
+requests, urllib3, pygbif, openai, beautifulsoup4 and pillow.
 
-- Python 3.9 or later
-- tkinter (included with most Python installations; see
-  Troubleshooting if missing)
-- A GBIF account (credentials are configured inside the script)
+## 2. Installation
 
-Third-party packages (required):
-
-| Package        | Purpose                                  |
-|----------------|------------------------------------------|
-| requests       | GBIF and media downloads                 |
-| pandas         | Tabular data loading and cleaning        |
-| pygbif         | GBIF occurrence download management      |
-| beautifulsoup4 | Resolve image links from provider pages  |
-| urllib3        | HTTP warning and connection support      |
-
----
-
-## Installation
-
-### 1. Clone or download the repository
-
-Place `main.py` in a project directory of your choice.
-
-### 2. Create a virtual environment (recommended)
+Put all the `.py` files and `requirements.txt` in one folder, then:
 
 ```
 cd /path/to/project
 python -m venv venv
 ```
 
-Activate it:
+Activate the environment:
 
 ```
 # macOS / Linux
@@ -74,375 +56,394 @@ venv\Scripts\activate.bat
 venv\Scripts\Activate.ps1
 ```
 
-### 3. Install dependencies
-
-If a `requirements.txt` is provided:
+Install the packages:
 
 ```
 pip install -r requirements.txt
 ```
 
-Otherwise install the three packages directly:
+Add your GBIF credentials in one of two ways:
+
+- Environment variables `GBIF_USER`, `GBIF_PASSWORD` and `GBIF_EMAIL`
+- A file at `~/credentials.json`:
 
 ```
-pip install requests pandas pygbif
+{"user": "your_username", "password": "your_password", "email": "you@example.org"}
 ```
 
-### 4. Create a requirements.txt (optional)
+The Download tab shows whether credentials were found.
 
-To generate one from your current environment:
-
-```
-pip freeze > requirements.txt
-```
-
-Or create a minimal one manually:
-
-```
-requests
-pandas
-pygbif
-```
-
----
-
-## Quick Start
-
-Run the launcher and choose an interface:
+## 3. Starting the application
 
 ```
 python main.py
 ```
 
-You can also skip the launcher and choose mode directly:
+This opens the graphical interface. If tkinter is not available it
+falls back to the command-line menu. To open the menu directly:
 
 ```
-python main.py --gui
 python main.py --cli
 ```
 
-To skip the launcher and run a cleaning phase directly:
+The theme picker in the top right switches between System, Light and
+Dark. Your theme, file paths and model settings are saved in
+`settings.json` and restored the next time you open the app.
 
-```
-python main.py cleaner 1 data/occurrence.txt data/multimedia.txt
-python main.py cleaner 2 GBIFdownload_inspectFlags.csv
-```
+## 4. Workflow
 
----
+The tabs follow the order of the work. Each step fills in the file
+paths for the next one.
 
-## Interfaces
+### Tab 1: Download
 
-### GUI
+Choose a preset and a species, or paste the DOI of an existing GBIF
+download. The app resolves the species to a GBIF taxon key, requests a
+Darwin Core Archive, waits for GBIF to prepare it (usually 5 to 30
+minutes), then downloads and extracts it into `data/`.
 
-The graphical interface presents all options in a single window:
+"Run full workflow" does the download, phase 1 and phase 2 in one go,
+pausing for your manual review in between.
 
-- Workflow selection (Download Only, Prepare Only, Full Workflow)
-- Species name entry
-- Data folder / ZIP file browser
-- Phase selection (Phase 1 and 2, Phase 1 only, Phase 2 only)
-- Filter controls: preset selector, coordinate precision, taxa
-  exclusion list, and an issue filter dialog
-- Console output panel
-- Run, Cancel, and Clear buttons
+### Tab 2: Clean
 
-The issue filter dialog (opened via the "Configure Issue Filters"
-button) contains two tabs with checkboxes for every recognized GBIF
-issue. Each checkbox shows the issue name and a plain-English
-description of what it means. Select All and Deselect All buttons
-are provided for each tab.
+Phase 1 reads `occurrence.txt` and `multimedia.txt` from the extracted
+folder (or a ZIP) and:
 
-### CLI
+1. Merges the two files on `gbifID` and adds a `media` column with the
+   first image link found.
+2. Moves records with no media to `Missing_Media.csv`.
+3. Applies the coordinate precision filter, if one is selected.
+4. Removes excluded taxa (checked against `scientificName`,
+   `infraspecificEpithet` and `verbatimScientificName`).
+5. Removes records on country centroids, in the ocean, or near major
+   herbaria and botanic gardens.
+6. Removes records with any issue code in the "Remove records" list.
+7. Removes records with no reference link in any link column.
+8. Sets `inspect_flag` to True for records with any issue code in the
+   "Flag for inspection" list.
+9. Adds an empty `Action` column and saves
+   `GBIFdownload_inspectFlags.csv`.
 
-The command-line interface presents an interactive menu with the
-same three workflow options. It uses the default filter preset
-(G064) and prompts for input at each step.
+Open that CSV, review the flagged records, and type `Remove` in the
+`Action` column for any record that should be dropped (cultivated
+specimens, botanic garden records, suspicious localities and so on).
 
----
+Phase 2 then:
 
-## Workflow Overview
-
-The pipeline runs in three stages. You can run them individually
-or together.
-
-### Stage 1: Download
-
-1. Resolve the species name to a GBIF taxon key via the GBIF
-   species match API.
-2. Submit a Darwin Core Archive download request to GBIF with
-   these predicates: preserved specimen, has coordinates, occurrence
-   status present.
-3. Poll GBIF until the download completes (typically 5-30 minutes).
-4. Download and extract the ZIP archive.
-
-### Stage 2: Phase 1 -- Automated Cleaning
-
-Operates on the `occurrence.txt` and `multimedia.txt` files from
-the extracted archive.
-
-1. Load both files and rename multimedia columns to avoid conflicts.
-2. Merge on `gbifID` (outer join).
-3. Filter by coordinate precision (configurable: none, relaxed, or
-   strict).
-4. Remove rows matching excluded taxa across `scientificName`,
-   `infraspecificEpithet`, and `verbatimScientificName`.
-5. Remove rows containing any active bad geospatial issues.
-6. Validate that at least one reference link column has data
-   (`identifier`, `references_multimedia`, `bibliographicCitation`,
-   `references`, `associatedReferences`, or `occurrenceID`).
-7. Flag rows that contain any active inspection issues (adds an
-   `inspect_flag` column).
-8. Export to `GBIFdownload_inspectFlags.csv`.
-
-At this point, open the CSV in Excel or another spreadsheet
-application. Sort by `inspect_flag`, review flagged records, and
-write "Remove" in the `Action` column for any rows that should be
-dropped (cultivated specimens, botanic garden records, suspicious
-localities, etc.).
-
-### Stage 3: Phase 2 -- Finalization
-
-1. Load the manually reviewed CSV.
-2. Drop rows where `Action` equals "Remove".
-3. Deduplicate by coordinate (keep the first occurrence).
-4. Add empty columns for ImageJ measurements: Panicle length (cm),
+1. Drops rows marked Remove (not case-sensitive).
+2. Merges rows that share a `gbifID`, keeping the first value and
+   filling its empty cells from the duplicates.
+3. Adds empty columns for your own measurements: Panicle length (cm),
    Leaf width (cm), Seed length (cm).
-5. Export `master_cleaned.csv` (the working dataset) and
-   `removed_duplicates.csv` (backup of dropped coordinate
-   duplicates).
+4. Saves `master_cleaned.csv` and `removed_duplicates.csv`.
 
----
+### Tab 3: Images
 
-## Presets
+"Download missing images" downloads the image for every record in the
+dataset CSV that does not have one yet. Each file is saved as
+`<gbifID>.<extension>` in the image folder, and its path is written to
+the `media_path` column. The app follows IIIF manifests and web pages
+to find the actual image. Failures are recorded in a `media_error`
+column and listed in `<dataset>_failed_media.csv`.
 
-Presets configure all filter settings at once. Select one from the
-dropdown in the GUI.
+"Choose records..." opens a checklist of every record, described in
+"Choosing specific records or images" below.
 
-### G064 (Default)
+### Tab 4: Measure
 
-The standard protocol for the G064 Guinea Grass project.
+"Measure new images" sends every image in the image folder that has
+not been measured yet to the model. Images that failed before are
+retried. The file name (without extension) is used as the gbifID, and
+only images in the image folder are measured.
 
-- Species: Megathyrsus maximus
-- Coordinate precision: Relaxed (at least 1 decimal place)
-- Taxa exclusions: 8 varieties and synonyms removed (see
-  DEFAULT_EXCLUDE_TAXA in the source)
-- Bad geospatial issues: All 11 enabled (records removed)
-- Inspection issues: All enabled (records flagged)
+Results go to a separate `measurements.csv`, one row per gbifID.
+"Choose images..." opens the checklist so you can measure specific
+images or measure some again.
 
-### G024
+"Join into dataset" copies the measurement columns into the dataset
+CSV by gbifID. Running it again replaces the columns from the previous
+join, so it is safe to measure more images and join again. Before
+writing, the previous dataset is saved as
+`<name>_before_join.csv`. Your own measurement columns are never
+changed.
 
-A permissive configuration that retains the broadest possible
-dataset for biogeography analysis.
+The option "Fill empty dataset fields with details read from the
+voucher label" copies voucher details (for example `locality`,
+`recordedBy`, `eventDate`) into dataset cells that are empty. It never
+overwrites a value that is already there, and the filled column names
+are recorded in `voucher_filled_columns` so you can review them.
 
-- Species: Megathyrsus maximus
-- Coordinate precision: None (no filtering; keeps records with
-  integer coordinates or no decimal places)
-- Taxa exclusions: None (all varieties and synonyms retained)
-- Bad geospatial issues: All disabled (no records removed for
-  geospatial problems)
-- Inspection issues: All enabled (records flagged for review)
+### Choosing specific records or images
 
-### Custom
+The checklist window lists each gbifID with its status (for example
+Downloaded, Not downloaded, Failed, Measured, Not measured) and a short
+detail. You can:
 
-A blank starting point. All fields are editable, including the
-taxa exclusion text box. Bad and inspection issues default to all
-enabled.
+- Click the box next to a gbifID, or highlight rows and press Space,
+  to check or uncheck them
+- Search, filter by status, and sort by clicking a column heading
+- Use "Check shown" or "Uncheck shown" to check everything the current
+  search and filter show, for example all Failed rows
+- Paste a list of gbifIDs and choose "Check these"
+- Preview the image and, for measured images, the calibration, notes
+  and voucher text
 
----
+"Download again" or "Measure again" controls whether checked items
+that are already done are redone.
 
-## Filters
+### Skip and Cancel
 
-### Coordinate Precision
+While images are downloading or being measured, the status bar shows
+the progress, an estimate of the time left and, for measurements,
+whether the model is thinking or writing its answer.
 
-Controls how many decimal places are required in `decimalLatitude`
-and `decimalLongitude` for a record to be kept.
+- "Skip this item" stops the current image and moves on to the next.
+  A skipped image is left as it was, so it is picked up again the next
+  time you run the step.
+- "Cancel" stops the current image and ends the run. Everything
+  finished so far is already saved.
 
-| Mode    | Behavior                                      |
-|---------|-----------------------------------------------|
-| None    | No filtering. All rows kept regardless.       |
-| Relaxed | Requires at least 1 decimal place.            |
-| Strict  | Requires at least 3 decimal places.           |
+Partly downloaded images are never left in the image folder.
 
-### Taxa Exclusions
+## 5. Measuring images with LM Studio
 
-A list of scientific names (one per line). Any row whose
-`scientificName`, `infraspecificEpithet`, or
-`verbatimScientificName` matches an entry is removed. The text box
-is editable when the Custom preset is selected; it is locked for
-built-in presets.
+1. In LM Studio, load a vision model and start the local server (the
+   Developer tab, or `lms server start`).
+2. In the Measure tab, check that the server address is correct
+   (default `http://localhost:1234/v1`) and choose "Test connection".
+   The log shows which model will be used and its context length, and
+   warns if the context is too small or the model cannot read images.
+3. Choose "Measure new images".
 
-### Issue Filters
+You do not choose a model name in the app. LM Studio needs one in each
+request, because with its default just-in-time loading the name decides
+which model answers (or which one gets loaded). So before each run the
+app asks LM Studio which models are loaded and uses that model,
+preferring a vision model if several are loaded. The name is
+saved in the `ai_model` column. If nothing is loaded, the run stops
+with a message instead of loading a model on its own.
 
-Opened via the "Configure Issue Filters" button. Two categories:
+You do not need to set anything in LM Studio's Structured Output
+panel. Each request includes its own JSON schema, so the model's
+answer always has the expected fields. If a server does not support
+this, the app falls back to asking for JSON in the prompt.
 
-**Remove Records** -- Bad geospatial issues. If a record's `issue`
-field contains any checked issue in this list, the record is
-dropped. There are 11 issues in this category (e.g., Coordinate
-Rounded, Geodetic Datum Invalid, Country Coordinate Mismatch).
+### Settings that matter
 
-**Flag for Inspection** -- Inspection issues. If a record's
-`issue` field contains any checked issue in this list, the
-`inspect_flag` column is set to True. Records are not removed, only
-marked for manual review. There are 37 issues in this category
-(e.g., Taxon Match Fuzzy, Recorded Date Invalid, Multimedia URI
-Invalid, Presumed Negated Latitude).
+- Context length: set this when loading the model in LM Studio. The
+  image and instructions use roughly 3,000 to 5,000 tokens, and a
+  thinking model needs room to reason and answer. 16,384 or more is
+  recommended; 8,192 is often too small.
+- Token limit per image: the most the model may generate for one
+  image. It stops a model that gets stuck repeating its reasoning. Set
+  0 for no limit.
+- Thinking: "Low" or "Off" asks the model to reason less. Not every
+  model or LM Studio version supports this; if the server rejects it,
+  the app continues without it and says so in the log.
 
-Each checkbox includes a short description explaining what the GBIF
-issue means and why it matters.
+### What the model returns
 
----
-
-## Output Files
-
-| File                              | Contents                                           |
-|-----------------------------------|----------------------------------------------------|
-| `GBIFdownload_inspectFlags.csv`   | Phase 1 output. Cleaned and merged dataset with `inspect_flag` column. Open in Excel for manual review before Phase 2. |
-| `master_cleaned.csv`              | Phase 2 output. Final deduplicated dataset with empty ImageJ measurement columns. This is the working file for measurements. |
-| `removed_duplicates.csv`          | Phase 2 output. Records that were removed as coordinate duplicates. Kept as a backup for backfilling if primary vouchers are inaccessible. |
-
----
-
-## Measurements
-
-Use the measurement columns in `master_cleaned.csv` for manual
-trait measurements in ImageJ.
-
----
-
-## CLI Reference
-
-### Interactive launcher
-
-```
-python main.py
-```
-
-Prompts for GUI (1) or CLI (2), or you can skip the prompt with:
+Each answer is a JSON object like this, shortened:
 
 ```
-python main.py --gui
-python main.py --cli
+{
+  "calibration": "Kew ruler on the right edge, 1 cm ticks",
+  "panicle_length_1_cm": 24.5, "panicle_length_1_confidence": 0.8,
+  "panicle_length_2_cm": null, "panicle_length_2_confidence": null,
+  "leaf_width_1_cm": 1.2, "leaf_width_1_confidence": 0.7,
+  "notes": "Only one panicle visible; no seeds.",
+  "voucher_text": "Bivona, Sic. Manip. IV. 6 (1816) ...",
+  "voucher": {"catalogNumber": "K000674307", "locality": "Monte Pellegrino", "...": ""}
+}
 ```
 
-### Direct phase invocation
+### Measurement columns
 
-Run Phase 1 (clean and merge):
+| Column | Contents |
+|---|---|
+| `ai_image` | Image file that was measured |
+| `ai_<trait>_1_cm`, `ai_<trait>_2_cm` | Two independent measurements, in cm |
+| `ai_<trait>_1_confidence`, `ai_<trait>_2_confidence` | Model confidence from 0 to 1 |
+| `ai_<trait>_mean_cm` | Mean of the available measurements |
+| `ai_calibration` | How the model calibrated the scale |
+| `ai_notes` | Model notes, including why a value is missing |
+| `voucher_text` | Transcribed label text |
+| `voucher_<field>` | Label details in Darwin Core terms |
+| `ai_model`, `ai_measured_at` | Model that answered and when |
+| `ai_error` | Why the last attempt failed, empty on success |
 
-```
-python main.py cleaner 1 <occurrence_file> <multimedia_file> [output_csv] [--strict] [--no-precision]
-```
+The traits are `panicle_length`, `leaf_width` and `seed_length`.
+Measurement definitions follow the project protocol: panicle length
+from the lowest panicle node to the tip, leaf width at the broadest
+point, seed length from the branch point to the tip.
 
-Arguments:
+Automated measurements should be checked against manual ones before
+they are used in analysis.
 
-- `occurrence_file` -- Path to occurrence.txt from the GBIF archive.
-- `multimedia_file` -- Path to multimedia.txt from the GBIF archive.
-- `output_csv` -- (Optional) Output filename. Default:
-  `GBIFdownload_inspectFlags.csv`.
-- `--strict` -- Use strict coordinate precision (3+ decimal places).
-- `--no-precision` -- Skip coordinate precision filtering entirely.
+## 6. Presets and filters
 
-If neither `--strict` nor `--no-precision` is given, relaxed mode
-(1+ decimal place) is used.
+Presets fill in the species, precision, taxa and issue filters at
+once. You can change any field after choosing a preset.
 
-Run Phase 2 (finalize):
+| Preset | Download filters | Precision | Excluded taxa | Remove issues | Flag issues |
+|---|---|---|---|---|---|
+| G064 (Default) | Preserved specimen | None | None | None | All 17 |
+| G024 | Preserved specimen, occurrence status present | None | None | None | All 17 |
+| Custom | Preserved specimen | None | None | None | All 17 |
 
-```
-python main.py cleaner 2 <inspected_csv> [final_master] [final_duplicates]
-```
+Coordinate precision options: keep all coordinates, at least 1
+decimal place, or at least 3 decimal places. Records without
+coordinates are removed when a precision filter is on.
 
-Arguments:
+"Edit issue filters..." opens two lists of GBIF issue codes, one code
+per line: records with a code in "Remove records" are dropped, and
+records with a code in "Flag for inspection" get `inspect_flag` set to
+True. Codes are matched exactly against the record's `issue` field.
 
-- `inspected_csv` -- Path to the manually reviewed CSV from Phase 1.
-- `final_master` -- (Optional) Output filename. Default:
-  `master_cleaned.csv`.
-- `final_duplicates` -- (Optional) Output filename. Default:
-  `removed_duplicates.csv`.
-
----
-
-## Configuration
-
-GBIF credentials and default filter lists are defined as constants
-at the top of `gbif_pipeline.py`. Edit these directly in the source
-file.
-
-| Constant               | Purpose                                         |
-|------------------------|-------------------------------------------------|
-| `GBIF_USER`           | GBIF account username                            |
-| `GBIF_PASSWORD`       | GBIF account password                            |
-| `GBIF_EMAIL`          | Email for download notifications                 |
-| `DEFAULT_EXCLUDE_TAXA`| Taxa excluded by the G064 preset                 |
-| `BAD_GEOSPATIAL_ISSUES` | Issues that cause record removal               |
-| `INSPECTION_ISSUES`   | Issues that cause record flagging                |
-| `LINK_COLUMNS`        | Columns checked for reference link validation    |
-| `PRESETS`             | Named filter configurations for the GUI          |
-| `IMAGE_URL_COLUMNS`  | Column priority order for finding image URLs      |
-
-To add a new preset, add an entry to the `PRESETS` dictionary
-following this structure:
+To add a preset, add an entry to `PRESETS` in `config.py`:
 
 ```python
 "My Preset": {
     "species": "Genus species",
-    "precision": PRECISION_RELAXED,  # or PRECISION_NONE, PRECISION_STRICT
+    "precision": PRECISION_RELAXED,
     "exclude_taxa": ["Taxon name A", "Taxon name B"],
-    "bad_issues": True,   # True = all enabled, [] = none, or a list
-    "inspect_issues": True,
+    "bad_issues": ["COORDINATE_ROUNDED"],
+    "inspect_issues": INSPECTION_ISSUES,
+    "filters": BASE_FILTERS + (("OCCURRENCE_STATUS", "PRESENT"),),
 },
 ```
 
----
+## 7. Output files
 
-## Troubleshooting
+All files are written to `data/` unless you choose other paths.
+
+| File | Contents |
+|---|---|
+| `GBIFdownload_inspectFlags.csv` | Phase 1 result, for manual review |
+| `GBIFdownload_removed.csv` | Records removed in phase 1, with a `removal_reason` |
+| `Missing_Media.csv` | Records with no media, with every link found in the row |
+| `master_cleaned.csv` | Phase 2 result, the working dataset |
+| `removed_duplicates.csv` | Duplicate rows merged in phase 2 |
+| `master_cleaned_failed_media.csv` | Records whose image could not be downloaded |
+| `media/` | Downloaded images named by gbifID |
+| `measurements.csv` | Image measurements, one row per gbifID |
+| `master_cleaned_before_join.csv` | The dataset as it was before the last join |
+| `pipeline.log` | Everything shown in the app's log, with timestamps |
+
+## 8. Command line
+
+```
+python main.py                  open the app
+python main.py --cli            interactive menu
+python main.py --help           list the commands
+```
+
+Phase 1 and phase 2:
+
+```
+python main.py cleaner 1 <occurrence.txt> <multimedia.txt> [output_csv] [--strict | --no-precision]
+python main.py cleaner 2 <inspected_csv> [master_csv] [duplicates_csv]
+```
+
+Phase 1 uses at least 1 decimal place unless `--strict` (3 places) or
+`--no-precision` is given.
+
+Measurements:
+
+```
+python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo]
+python main.py join [dataset_csv] [measurements_csv] [--fill-blanks]
+```
+
+`--ids` measures only the listed gbifIDs, measuring them again if
+needed. `--redo` measures every image again. The defaults are
+`data/media`, `data/measurements.csv` and `data/master_cleaned.csv`.
+
+## 9. Configuration
+
+Most settings are in `config.py`:
+
+| Setting | Purpose |
+|---|---|
+| `DATA_DIR`, `MEDIA_DIR` and the CSV paths | Where files are read and written |
+| `LMSTUDIO_URL` | Default model server address |
+| `DEFAULT_TOKEN_LIMIT` | Default token limit per image |
+| `MIN_CONTEXT_LENGTH` | Context length below which Test connection warns |
+| `MAX_IMAGE_SIDE` | Images are scaled so the long side is at most this many pixels before they are sent to the model |
+| `BAD_GEOSPATIAL_ISSUES`, `INSPECTION_ISSUES` | Default issue code lists |
+| `PRESETS` | Named filter configurations |
+| `LINK_COLUMNS`, `MEDIA_COLUMNS` | Columns searched for reference and image links |
+
+Environment variables: `GBIF_USER`, `GBIF_PASSWORD`, `GBIF_EMAIL`,
+`LMSTUDIO_URL`, and `LMSTUDIO_MODEL`. Set `LMSTUDIO_MODEL` only to force
+a specific model, for example with a server other than LM Studio.
+
+The measurement prompt and the answer format are in `analysis.py`
+(`SYSTEM_PROMPT` and `RESPONSE_SCHEMA`).
+
+## 10. Project layout
+
+Modules only import from the ones above them in this list, so there
+are no circular imports.
+
+| File | Responsibility |
+|---|---|
+| `config.py` | Paths, credentials, presets, constants, saved settings |
+| `utils.py` | CSV, URL, HTTP and file helpers; skip and cancel control |
+| `geo.py` | Coordinate cleaning tests |
+| `gbif.py` | GBIF species lookup and dataset downloads |
+| `processor.py` | Phase 1 and phase 2 |
+| `media.py` | Image downloading |
+| `analysis.py` | Model requests, measurements CSV and join |
+| `theme.py` | Light and dark themes |
+| `gui.py` | The graphical interface |
+| `cli.py` | The command-line menu and commands |
+| `main.py` | Entry point |
+
+## 11. Troubleshooting
 
 ### tkinter is not installed
 
-On Debian/Ubuntu:
+On Windows and macOS it comes with the python.org installer. On Linux:
 
 ```
-sudo apt-get install python3-tk
+sudo apt-get install python3-tk      # Debian / Ubuntu
+sudo dnf install python3-tkinter     # Fedora
 ```
 
-On Fedora:
+With Homebrew Python on macOS: `brew install python-tk`.
 
-```
-sudo dnf install python3-tkinter
-```
+### "The model stopped ... without finishing its answer"
 
-On macOS with Homebrew Python, tkinter is included by default. If
-it is missing, reinstall Python via Homebrew:
+The model used up its tokens, usually while thinking. Raise the context
+length for the model in LM Studio, raise the token limit, or set
+Thinking to Low or Off. The image is retried on the next run.
 
-```
-brew reinstall python-tk
-```
+### "Could not reach LM Studio" or "no model is loaded"
 
-On Windows, tkinter is included with the standard Python installer
-from python.org.
+Start the LM Studio server, load a vision model, check the server
+address, and use "Test connection".
 
-If tkinter is not available, the CLI interface still works. Select
-option 2 at the launcher prompt.
+### A measurement is clearly wrong
+
+Open "Choose images...", select the image to see its preview and the
+model's calibration notes, then check it with "Measure again"
+selected. Keep the automated values separate from your manual ones
+until they have been checked.
 
 ### GBIF download takes a long time
 
-Large queries can take up to 3 hours. Most complete within 15
-minutes. The script polls every 30 seconds and prints status
-updates. You will also receive an email at the configured address
-when the download is ready.
+Large requests can take hours; most finish within 30 minutes. The app
+checks every 30 seconds, and GBIF also emails you when the file is
+ready. Wait in the app, or paste the DOI from that email later.
 
 ### pygbif authentication errors
 
-Verify that `GBIF_USER`, `GBIF_PASSWORD`, and `GBIF_EMAIL` in the
-script match your GBIF account. You can test your credentials at
-https://www.gbif.org/user/profile.
+Check your GBIF credentials by signing in at https://www.gbif.org.
 
-### Phase 2 reports "No Action column found"
+### Coordinates look rounded in Excel
 
-This is normal if you did not add an Action column during manual
-review. Phase 2 will skip the manual-removal step and proceed
-directly to deduplication.
-
-### Coordinates appear rounded in the output CSV
-
-Pandas may display fewer decimal places than are stored. The
-pipeline reads all values as strings during Phase 1 to preserve
-original precision. If you open the CSV in Excel, check that the
-column format is set to show enough decimal places.
+The pipeline keeps coordinates exactly as GBIF provides them. Excel may
+display fewer decimal places; widen the column or change its number
+format.

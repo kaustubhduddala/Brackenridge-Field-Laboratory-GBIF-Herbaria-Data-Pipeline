@@ -1,6 +1,8 @@
-pandas>=1.0.0
-pygbif>=0.5.0
-requests>=2.25.0
-beautifulsoup4>=4.9.0
-urllib3>=1.26.0
-openai>=1.0.0
+numpy
+pandas>=1.5
+requests
+urllib3
+pygbif
+openai>=1.0
+beautifulsoup4
+pillow
