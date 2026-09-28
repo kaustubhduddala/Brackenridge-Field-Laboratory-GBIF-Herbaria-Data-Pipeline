@@ -1,7 +1,5 @@
 import queue
 import re
-import subprocess
-import sys
 import threading
 import time
 import tkinter as tk
@@ -12,7 +10,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import program.theme as theme
-from program.analysis import check_connection, join_measurements, measure_images, measurement_status
+from program.power import KeepAwake
+from program.analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
+                      measure_images, measurement_status)
 from program.config import (BAD_GEOSPATIAL_ISSUES, DATA_DIR, DEFAULT_TOKEN_LIMIT, GBIF_USER, INSPECT_CSV, INSPECTION_ISSUES,
                     LMSTUDIO_URL, LOG_FILE, MASTER_CSV, MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE,
                     PRECISION_RELAXED, PRECISION_STRICT, PRESETS, THINKING_CHOICES, has_gbif_credentials,
@@ -158,6 +158,7 @@ class ItemPicker(tk.Toplevel):
         self.preview_text = ttk.Label(preview, style="Muted.TLabel", wraplength=270, justify="left",
                                       text="Select a row to preview it. Click the box, or press Space, to check it.")
         self.preview_text.pack(anchor="w", pady=(8, 0))
+        self.response_button = ttk.Button(preview, text="Open raw model response", command=self._open_response)
         middle.add(preview, weight=1)
 
         paste = ttk.Frame(body)
@@ -270,6 +271,10 @@ class ItemPicker(tk.Toplevel):
         if item.get("notes"):
             lines.append(str(item["notes"]))
         self.preview_text.configure(text="\n\n".join(lines))
+        if item.get("response"):
+            self.response_button.pack(anchor="w", pady=(10, 0))
+        else:
+            self.response_button.pack_forget()
         self.preview_photo = None
         self.preview_image.configure(image="")
         if item.get("image"):
@@ -284,11 +289,206 @@ class ItemPicker(tk.Toplevel):
             except Exception:
                 pass
 
+    def _open_response(self):
+        selection = self.tree.selection()
+        if selection and self.items[selection[0]].get("response"):
+            self.app._open(self.items[selection[0]]["response"])
+
     def _run(self):
         if not self.checked:
             self.bell()
             return
         self.result = (set(self.checked), self.redo_var.get())
+        self.destroy()
+
+
+class ColumnChecklist(ttk.LabelFrame):
+    def __init__(self, parent, app, title, columns, checked, key_default):
+        super().__init__(parent, text=title)
+        self.columns = list(columns)
+        self.checked = set(checked)
+        self.box_on = _check_image(self, app.palette, True)
+        self.box_off = _check_image(self, app.palette, False)
+        self.columnconfigure(1, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        ttk.Label(self, text="Match on").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.key_var = tk.StringVar(value=key_default if key_default in self.columns else self.columns[0])
+        self.key_box = ttk.Combobox(self, textvariable=self.key_var, values=self.columns, state="readonly")
+        self.key_box.grid(row=0, column=1, sticky="ew")
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *_: self._refresh())
+        search = ttk.Entry(self, textvariable=self.search_var)
+        search.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+        ttk.Label(self, text="Search", style="Muted.TLabel").grid(row=1, column=2, sticky="w", padx=(6, 0))
+
+        frame = ttk.Frame(self)
+        frame.grid(row=2, column=0, columnspan=3, sticky="nsew")
+        self.tree = ttk.Treeview(frame, show="tree", selectmode="extended")
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<Button-1>", self._on_click)
+        self.tree.bind("<space>", lambda _: self._toggle(self.tree.selection()) or "break")
+
+        buttons = ttk.Frame(self)
+        buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        ttk.Button(buttons, text="Check shown", command=lambda: self._set_shown(True)).pack(side="left")
+        ttk.Button(buttons, text="Uncheck shown", command=lambda: self._set_shown(False)).pack(side="left", padx=6)
+        self.count_label = ttk.Label(buttons, style="Muted.TLabel")
+        self.count_label.pack(side="right")
+        self._refresh()
+
+    def selected(self):
+        return [c for c in self.columns if c in self.checked]
+
+    def _refresh(self):
+        term = self.search_var.get().strip().lower()
+        self.tree.delete(*self.tree.get_children())
+        for i, column in enumerate(self.columns):
+            if not term or term in column.lower():
+                self.tree.insert("", "end", iid=str(i), text=column,
+                                 image=self.box_on if column in self.checked else self.box_off)
+        self._update_count()
+
+    def _update_count(self):
+        self.count_label.configure(text=f"{len(self.checked)} of {len(self.columns)} checked")
+
+    def _toggle(self, iids):
+        names = [self.columns[int(i)] for i in iids]
+        target = any(n not in self.checked for n in names)
+        for iid, name in zip(iids, names):
+            (self.checked.add if target else self.checked.discard)(name)
+            self.tree.item(iid, image=self.box_on if target else self.box_off)
+        self._update_count()
+
+    def _on_click(self, event):
+        if self.tree.identify_region(event.x, event.y) == "tree":
+            iid = self.tree.identify_row(event.y)
+            if iid:
+                self._toggle([iid])
+                return "break"
+
+    def _set_shown(self, checked):
+        for iid in self.tree.get_children():
+            name = self.columns[int(iid)]
+            (self.checked.add if checked else self.checked.discard)(name)
+            self.tree.item(iid, image=self.box_on if checked else self.box_off)
+        self._update_count()
+
+
+class JoinDialog(tk.Toplevel):
+    def __init__(self, app, dataset_csv, measurements_csv):
+        super().__init__(app.root)
+        self.title("Join measurements into the dataset")
+        self.geometry("1000x700")
+        self.minsize(760, 520)
+        self.transient(app.root)
+        self.configure(background=app.palette["bg"])
+        theme.set_title_bar(self, app.theme_name == "dark")
+        self.app = app
+        self.dataset_csv, self.measurements_csv = dataset_csv, measurements_csv
+        self.result = None
+        saved = app.settings.get("join", {})
+
+        dataset_columns = csv_columns(dataset_csv)
+        measurement_columns = csv_columns(measurements_csv)
+        default_added = [c for c in measurement_columns if c in RESULT_COLUMNS]
+        added = [c for c in saved.get("measurement_columns", default_added) if c in measurement_columns]
+
+        body = ttk.Frame(self, padding=14)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Check the columns to include from each file and the column each file is matched on. "
+                             "Where a column is in both files, the measurement value is used.",
+                  style="Muted.TLabel", wraplength=900, justify="left").pack(anchor="w")
+
+        lists = ttk.Frame(body)
+        lists.pack(fill="both", expand=True, pady=10)
+        lists.columnconfigure((0, 1), weight=1, uniform="lists")
+        lists.rowconfigure(0, weight=1)
+        self.dataset_list = ColumnChecklist(lists, app, f"Dataset: {Path(dataset_csv).name}", dataset_columns,
+                                            dataset_columns, saved.get("master_key", "gbifID"))
+        self.dataset_list.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.measurement_list = ColumnChecklist(lists, app, f"Measurements: {Path(measurements_csv).name}",
+                                                measurement_columns, added, saved.get("measurement_key", "gbifID"))
+        self.measurement_list.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        for checklist in (self.dataset_list, self.measurement_list):
+            checklist.key_box.bind("<<ComboboxSelected>>", lambda _: self._update_matches())
+
+        self.match_label = ttk.Label(body, style="Heading.TLabel")
+        self.match_label.pack(anchor="w")
+
+        options = ttk.Frame(body)
+        options.pack(fill="x", pady=(8, 0))
+        options.columnconfigure(1, weight=1)
+        self.fill_var = tk.BooleanVar(value=app.fill_blanks_var.get())
+        ttk.Checkbutton(options, text="Fill empty dataset fields with details read from the voucher label "
+                                      "(needs the voucher_ columns checked)",
+                        variable=self.fill_var).grid(row=0, column=0, columnspan=3, sticky="w")
+        self.matched_only_var = tk.BooleanVar(value=saved.get("matched_only", False))
+        ttk.Checkbutton(options, text="Keep only records that have a measurement",
+                        variable=self.matched_only_var).grid(row=1, column=0, columnspan=3, sticky="w")
+        self.output_mode = tk.StringVar(value="update")
+        ttk.Radiobutton(options, text="Update the dataset CSV (the previous version is kept as a backup)",
+                        variable=self.output_mode, value="update").grid(row=2, column=0, columnspan=3, sticky="w",
+                                                                        pady=(8, 0))
+        ttk.Radiobutton(options, text="Save as a new file", variable=self.output_mode,
+                        value="new").grid(row=3, column=0, sticky="w")
+        default_output = Path(dataset_csv).with_name(Path(dataset_csv).stem + "_joined.csv")
+        self.output_entry = ttk.Entry(options)
+        self.output_entry.insert(0, str(default_output))
+        self.output_entry.grid(row=3, column=1, sticky="ew", padx=(8, 0))
+        ttk.Button(options, text="Browse…", command=self._browse_output).grid(row=3, column=2, padx=(6, 0))
+
+        footer = ttk.Frame(body)
+        footer.pack(fill="x", pady=(12, 0))
+        ttk.Button(footer, text="Join", style="Accent.TButton", command=self._join).pack(side="right")
+        ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=6)
+        self.bind("<Escape>", lambda _: self.destroy())
+        self._update_matches()
+        try:
+            self.wait_visibility()
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _update_matches(self):
+        try:
+            matched, total, measured = count_matches(self.dataset_csv, self.dataset_list.key_var.get(),
+                                                     self.measurements_csv, self.measurement_list.key_var.get())
+            self.match_label.configure(text=f"{matched} of {total} dataset rows match one of {measured} measured rows")
+        except Exception as exc:
+            self.match_label.configure(text=f"Could not compare the match columns: {exc}")
+
+    def _browse_output(self):
+        path = filedialog.asksaveasfilename(parent=self, title="Save joined CSV as", defaultextension=".csv",
+                                            filetypes=CSV_TYPES)
+        if path:
+            _set_entry(self.output_entry, path)
+            self.output_mode.set("new")
+
+    def _join(self):
+        master_columns = self.dataset_list.selected()
+        measurement_columns = self.measurement_list.selected()
+        if not measurement_columns:
+            messagebox.showwarning("Nothing to add", "Check at least one measurement column.", parent=self)
+            return
+        output = None
+        if self.output_mode.get() == "new":
+            output = self.output_entry.get().strip()
+            if not output:
+                messagebox.showwarning("No file name", "Enter a file name for the new CSV.", parent=self)
+                return
+        self.result = {
+            "master_key": self.dataset_list.key_var.get(),
+            "measurement_key": self.measurement_list.key_var.get(),
+            "master_columns": master_columns,
+            "measurement_columns": measurement_columns,
+            "fill_blanks": self.fill_var.get(),
+            "matched_only": self.matched_only_var.get(),
+            "output_csv": output,
+        }
         self.destroy()
 
 
@@ -315,6 +515,7 @@ class PipelineApp:
         self.thinking_var = tk.StringVar(value=get("thinking", "Model default"))
         self.fill_blanks_var = tk.BooleanVar(value=get("fill_blanks", False))
         self.keep_awake_var = tk.BooleanVar(value=get("keep_awake", False))
+        self.awake = KeepAwake()
 
         root.title("GBIF Herbaria Data Pipeline")
         root.geometry("960x880")
@@ -325,6 +526,8 @@ class PipelineApp:
         self._build_ui()
         self._restyle_widgets()
         self._load_preset()
+        if self.keep_awake_var.get():
+            self._toggle_keep_awake()
 
     def _create_fonts(self):
         base = tkfont.nametofont("TkDefaultFont")
@@ -369,6 +572,12 @@ class PipelineApp:
                   style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
         picker = ttk.Frame(header)
         picker.pack(side="right", anchor="n")
+        awake = ttk.Checkbutton(picker, text="Keep computer awake", variable=self.keep_awake_var,
+                                command=self._toggle_keep_awake)
+        awake.pack(side="left", padx=(0, 18))
+        if not KeepAwake.supported():
+            awake.configure(state="disabled")
+            self.keep_awake_var.set(False)
         ttk.Label(picker, text="Theme", style="Muted.TLabel").pack(side="left", padx=(0, 6))
         combo = ttk.Combobox(picker, textvariable=self.theme_var, values=theme.THEME_CHOICES,
                              state="readonly", width=8)
@@ -381,10 +590,6 @@ class PipelineApp:
         self.detail_var = tk.StringVar()
         ttk.Label(status, textvariable=self.status_var, style="Muted.TLabel").pack(side="left")
         ttk.Label(status, textvariable=self.detail_var, style="Muted.TLabel").pack(side="left", padx=12)
-        self.keep_awake_check = ttk.Checkbutton(
-            status, text="Keep machine awake during tasks", variable=self.keep_awake_var,
-            command=self._save_settings, state="normal" if sys.platform == "darwin" else "disabled")
-        self.keep_awake_check.pack(side="left", padx=8)
         self.cancel_btn = ttk.Button(status, text="Cancel", command=self._cancel, state="disabled")
         self.cancel_btn.pack(side="right")
         self.skip_btn = ttk.Button(status, text="Skip this item", command=self._skip, state="disabled")
@@ -575,13 +780,11 @@ class PipelineApp:
         join = self._section(tab, "Add results to the dataset", 2)
         self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True,
                     browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
-        ttk.Checkbutton(join, text="Fill empty dataset fields with details read from the voucher label",
-                        variable=self.fill_blanks_var).grid(row=1, column=1, columnspan=3, sticky="w", pady=(4, 0))
-        self._hint(join, 2, "Copies the ai_ and voucher_ columns from the measurements CSV into the dataset by "
-                            "gbifID, replacing any from an earlier join. The previous dataset is kept as "
-                            "<name>_before_join.csv. Your own measurement columns are never changed.",
+        self._hint(join, 1, "Opens a window where you choose the columns to include from each file, the column "
+                            "each file is matched on (gbifID by default), and whether to update the dataset or save "
+                            "a new file. Updating keeps the previous version as <name>_before_join.csv.",
                    column=1, columnspan=3)
-        self.join_status = self._action(join, 3, [("Join into dataset", self._run_join)])
+        self.join_status = self._action(join, 2, [("Join into dataset…", self._run_join)])
         return tab
 
     def _browse(self, entry, ask):
@@ -694,8 +897,6 @@ class PipelineApp:
         self.running = running
         for button in self.action_buttons:
             button.configure(state="disabled" if running else "normal")
-        self.keep_awake_check.configure(
-            state="disabled" if running or sys.platform != "darwin" else "normal")
         state = "normal" if running and cancellable else "disabled"
         self.cancel_btn.configure(state=state)
         self.skip_btn.configure(state=state)
@@ -711,35 +912,14 @@ class PipelineApp:
             self.progress.configure(mode="determinate", value=0)
             self.status_var.set("Ready")
 
-    @staticmethod
-    def _stop_awake_process(process):
-        if process is None:
-            return
-        try:
-            process.terminate()
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                return
-            process.wait()
-
     def _start(self, status_label, busy_text, work, cancellable=False):
         if self.running:
             return
-        keep_awake = self.keep_awake_var.get() and sys.platform == "darwin"
         self._set_running(True, cancellable)
         self._set_status(status_label, busy_text, "busy")
 
         def runner():
-            awake_process = None
             try:
-                if keep_awake:
-                    awake_process = subprocess.Popen(["/usr/bin/caffeinate", "-i"])
                 result = work()
             except Exception as exc:
                 traceback.print_exc()
@@ -751,7 +931,6 @@ class PipelineApp:
                 text = result or "Done"
                 self._ui(self._set_status, status_label, text, "muted" if text == "Cancelled" else "ok")
             finally:
-                self._stop_awake_process(awake_process)
                 self._ui(self._set_running, False)
                 self._ui(self.root.bell)
 
@@ -782,10 +961,22 @@ class PipelineApp:
         self.settings.update(
             theme=self.theme_var.get(), server=self.server_var.get().strip(), token_limit=self._token_limit(),
             thinking=self.thinking_var.get(), fill_blanks=self.fill_blanks_var.get(),
-            keep_awake=self.keep_awake_var.get(),
             dataset_csv=self.dataset_var.get().strip(), media_dir=self.media_dir_var.get().strip(),
-            measurements_csv=self.measurements_var.get().strip())
+            measurements_csv=self.measurements_var.get().strip(), keep_awake=self.keep_awake_var.get())
         save_settings(self.settings)
+
+    def _toggle_keep_awake(self):
+        if self.keep_awake_var.get():
+            try:
+                self.awake.enable()
+                self._log("Keeping the computer awake while the app is open. The screen may still turn off.")
+            except Exception as exc:
+                self.keep_awake_var.set(False)
+                messagebox.showerror("Keep awake", f"Could not keep the computer awake: {exc}", parent=self.root)
+        else:
+            self.awake.disable()
+            self._log("The computer can sleep normally again.")
+        self._save_settings()
 
     def _on_close(self):
         if self.running and not messagebox.askyesno("Quit", "A task is still running. Quit anyway?",
@@ -793,6 +984,7 @@ class PipelineApp:
             return
         self.control.cancel_event.set()
         self._save_settings()
+        self.awake.disable()
         self.root.destroy()
 
     def _token_limit(self):
@@ -945,15 +1137,32 @@ class PipelineApp:
 
     def _run_join(self):
         csv_path = self._dataset_csv()
-        if not csv_path:
+        if not csv_path or self.running:
             return
         measurements_csv = self.measurements_var.get().strip() or str(MEASUREMENTS_CSV)
-        fill_blanks = self.fill_blanks_var.get()
+        if not Path(measurements_csv).is_file():
+            messagebox.showwarning("No measurements yet", f"{measurements_csv} does not exist yet. "
+                                   "Measure some images first.", parent=self.root)
+            return
+        try:
+            dialog = JoinDialog(self, csv_path, measurements_csv)
+        except Exception as exc:
+            messagebox.showerror("Could not read the CSV files", str(exc), parent=self.root)
+            return
+        self.root.wait_window(dialog)
+        options = dialog.result
+        if not options:
+            return
+        self.fill_blanks_var.set(options["fill_blanks"])
+        self.settings["join"] = {k: options[k] for k in ("master_key", "measurement_key", "measurement_columns",
+                                                         "matched_only")}
         self._save_settings()
 
         def work():
-            r = join_measurements(csv_path, measurements_csv, self._log, fill_blanks)
-            return f"{r['matched']} of {r['total']} records have measurements"
+            r = join_measurements(csv_path, measurements_csv, self._log, **options)
+            if not options["output_csv"]:
+                self._ui(self.dataset_var.set, csv_path)
+            return f"{r['matched']} of {r['total']} records matched, saved to {Path(r['output']).name}"
 
         self._start(self.join_status, "Joining…", work)
 

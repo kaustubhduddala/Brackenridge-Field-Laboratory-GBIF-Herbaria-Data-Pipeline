@@ -153,7 +153,15 @@ def measure_command(args):
 
 
 def join_command(args):
-    positional = _positional(args)
+    value_options = ("--key", "--measurement-key", "--columns", "--output")
+    positional = _positional(args, value_options)
+    columns = _option(args, "--columns")
+    key = _option(args, "--key") or "gbifID"
     join_measurements(positional[0] if positional else MASTER_CSV,
                       positional[1] if len(positional) > 1 else MEASUREMENTS_CSV,
-                      fill_blanks="--fill-blanks" in args)
+                      fill_blanks="--fill-blanks" in args,
+                      master_key=key,
+                      measurement_key=_option(args, "--measurement-key") or key,
+                      measurement_columns=[c.strip() for c in columns.split(",") if c.strip()] if columns else None,
+                      output_csv=_option(args, "--output"),
+                      matched_only="--matched-only" in args)

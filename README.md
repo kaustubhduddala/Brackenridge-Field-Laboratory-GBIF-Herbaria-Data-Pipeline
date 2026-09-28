@@ -161,18 +161,31 @@ Results go to a separate `measurements.csv`, one row per gbifID.
 "Choose images..." opens the checklist so you can measure specific
 images or measure some again.
 
-"Join into dataset" copies the measurement columns into the dataset
-CSV by gbifID. Running it again replaces the columns from the previous
-join, so it is safe to measure more images and join again. Before
-writing, the previous dataset is saved as
-`<name>_before_join.csv`. Your own measurement columns are never
-changed.
+"Join into dataset..." opens a window for adding the measurements to
+the dataset CSV:
+
+- Two column lists, one for the dataset and one for the measurements
+  file. Check the columns to include from each. All dataset columns
+  and the ai_ and voucher_ measurement columns are checked at first,
+  and the app remembers your measurement choice for next time.
+- "Match on" for each file sets the column the rows are matched by,
+  gbifID by default. The window shows how many dataset rows match.
+- Where a column is in both files, the measurement value is used, so
+  joining again after measuring more images replaces the earlier
+  results instead of duplicating them.
+- "Keep only records that have a measurement" drops the rest.
+- Output is either the dataset CSV itself, with the previous version
+  kept as `<name>_before_join.csv`, or a new file of your choice.
+
+Your own measurement columns are never changed unless you uncheck
+them.
 
 The option "Fill empty dataset fields with details read from the
 voucher label" copies voucher details (for example `locality`,
-`recordedBy`, `eventDate`) into dataset cells that are empty. It never
-overwrites a value that is already there, and the filled column names
-are recorded in `voucher_filled_columns` so you can review them.
+`recordedBy`, `eventDate`) into dataset cells that are empty. It needs
+the matching voucher_ columns checked. It never overwrites a value
+that is already there, and the filled column names are recorded in
+`voucher_filled_columns` so you can review them.
 
 ### Choosing specific records or images
 
@@ -205,6 +218,16 @@ whether the model is thinking or writing its answer.
   finished so far is already saved.
 
 Partly downloaded images are never left in the image folder.
+
+### Keep computer awake
+
+The "Keep computer awake" box in the top right stops the computer from
+going to sleep while the app is open, which matters for long GBIF
+downloads and measurement runs. The screen may still turn off. The
+setting is remembered, and the computer can sleep normally again as
+soon as you uncheck it or close the app. It uses
+`SetThreadExecutionState` on Windows, `caffeinate` on macOS and
+`systemd-inhibit` on Linux; if none is available the box is disabled.
 
 ## 5. Measuring images with LM Studio
 
@@ -257,6 +280,31 @@ Each answer is a JSON object like this, shortened:
   "voucher": {"catalogNumber": "K000674307", "locality": "Monte Pellegrino", "...": ""}
 }
 ```
+
+### Raw responses
+
+Every answer is also saved unchanged as `data/responses/<gbifID>.json`,
+including answers that could not be read. Each file holds the model
+name, why the model stopped, the raw answer text, the model's
+reasoning if it produced any, and the parsed values. Use these to check
+a result or to see why one failed. In "Choose images...", select an
+image and choose "Open raw model response".
+
+Before values are written to `measurements.csv` they are tidied:
+
+- Text is put on one line. The label transcription keeps its line
+  breaks as " | ", so each record is one line in the CSV.
+- Dates are written as YYYY-MM-DD, YYYY-MM or YYYY. A model answer such
+  as 1929-03-00 becomes 1929-03.
+- A confidence without a measurement is dropped, and confidences are
+  kept between 0 and 1.
+
+The CSV files are saved as UTF-8 with a byte-order mark, so Excel shows
+accented characters in names and localities correctly.
+
+Tidying cannot fix a wrong reading. Small models in particular may put
+a value in the wrong field or misread a date, so check the voucher
+fields before relying on them.
 
 ### Measurement columns
 
@@ -328,7 +376,8 @@ All files are written to `data/` unless you choose other paths.
 | `master_cleaned_failed_media.csv` | Records whose image could not be downloaded |
 | `media/` | Downloaded images named by gbifID |
 | `measurements.csv` | Image measurements, one row per gbifID |
-| `master_cleaned_before_join.csv` | The dataset as it was before the last join |
+| `responses/` | The raw model answer for each image, as `<gbifID>.json` |
+| `master_cleaned_before_join.csv` | The dataset as it was before the last join into it |
 | `pipeline.log` | Everything shown in the app's log, with timestamps |
 
 ## 8. Command line
@@ -353,11 +402,18 @@ Measurements:
 
 ```
 python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo]
-python main.py join [dataset_csv] [measurements_csv] [--fill-blanks]
+python main.py join [dataset_csv] [measurements_csv] [--fill-blanks] [--matched-only]
+                     [--key gbifID] [--measurement-key gbifID] [--columns a,b,c] [--output file.csv]
 ```
 
 `--ids` measures only the listed gbifIDs, measuring them again if
-needed. `--redo` measures every image again. The defaults are
+needed. `--redo` measures every image again.
+
+For `join`, `--key` sets the dataset match column and
+`--measurement-key` the measurements match column (both gbifID by
+default). `--columns` limits which measurement columns are added,
+`--output` writes a new file instead of updating the dataset, and
+`--matched-only` keeps only records with a measurement. The defaults are
 `data/media`, `data/measurements.csv` and `data/master_cleaned.csv`.
 
 ## 9. Configuration
@@ -396,6 +452,7 @@ are no circular imports.
 | `processor.py` | Phase 1 and phase 2 |
 | `media.py` | Image downloading |
 | `analysis.py` | Model requests, measurements CSV and join |
+| `power.py` | Keeping the computer awake |
 | `theme.py` | Light and dark themes |
 | `gui.py` | The graphical interface |
 | `cli.py` | The command-line menu and commands |

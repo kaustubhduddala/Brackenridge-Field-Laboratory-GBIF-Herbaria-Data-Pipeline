@@ -9,6 +9,7 @@ INSPECT_CSV = DATA_DIR / "GBIFdownload_inspectFlags.csv"
 MASTER_CSV = DATA_DIR / "master_cleaned.csv"
 DUPLICATES_CSV = DATA_DIR / "removed_duplicates.csv"
 MEASUREMENTS_CSV = DATA_DIR / "measurements.csv"
+RESPONSES_DIR = DATA_DIR / "responses"
 LOG_FILE = DATA_DIR / "pipeline.log"
 SETTINGS_FILE = BASE_DIR / "settings.json"
 

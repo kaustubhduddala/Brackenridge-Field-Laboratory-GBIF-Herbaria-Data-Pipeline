@@ -86,10 +86,10 @@ def insert_after_gbif(df, name, values):
 
 def read_csv(path, log=print):
     try:
-        return pd.read_csv(path, dtype=str, low_memory=False)
+        return pd.read_csv(path, dtype=str, low_memory=False, encoding="utf-8-sig")
     except pd.errors.ParserError:
         log("Standard CSV parser failed; retrying with the Python engine.")
-        return pd.read_csv(path, dtype=str, engine="python", on_bad_lines="warn")
+        return pd.read_csv(path, dtype=str, engine="python", on_bad_lines="warn", encoding="utf-8-sig")
 
 
 def read_dwca(path):
@@ -97,7 +97,7 @@ def read_dwca(path):
 
 
 def save_csv(df, path):
-    df.to_csv(path, index=False, quoting=csv.QUOTE_ALL)
+    df.to_csv(path, index=False, quoting=csv.QUOTE_ALL, encoding="utf-8-sig")
 
 
 def first_url_series(df, columns):
