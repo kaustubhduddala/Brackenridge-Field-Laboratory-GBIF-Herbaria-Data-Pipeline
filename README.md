@@ -40,20 +40,20 @@ Put all the `.py` files and `requirements.txt` in one folder, then:
 
 ```
 cd /path/to/project
-python -m venv venv
+python -m venv .venv
 ```
 
 Activate the environment:
 
 ```
 # macOS / Linux
-source venv/bin/activate
+source .venv/bin/activate
 
 # Windows (Command Prompt)
-venv\Scripts\activate.bat
+.venv\Scripts\activate.bat
 
 # Windows (PowerShell)
-venv\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1
 ```
 
 Install the packages:
@@ -65,7 +65,7 @@ pip install -r requirements.txt
 Add your GBIF credentials in one of two ways:
 
 - Environment variables `GBIF_USER`, `GBIF_PASSWORD` and `GBIF_EMAIL`
-- A file at `~/credentials.json`:
+- A file at `~/program/credentials.json`:
 
 ```
 {"user": "your_username", "password": "your_password", "email": "you@example.org"}
