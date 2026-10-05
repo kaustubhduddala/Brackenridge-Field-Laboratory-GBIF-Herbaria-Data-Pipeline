@@ -21,7 +21,8 @@ Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, and Kaustubh Duddala.
 8. Command line
 9. Configuration
 10. Project layout
-11. Troubleshooting
+11. Packaged releases
+12. Troubleshooting
 
 ## 1. Requirements
 
@@ -32,28 +33,43 @@ Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, and Kaustubh Duddala.
   loaded, for image measurements
 
 Python packages are listed in `requirements.txt`: numpy, pandas,
-requests, urllib3, pygbif, openai, beautifulsoup4 and pillow.
+requests, urllib3, pygbif, openai, beautifulsoup4, pillow and keyring.
 
 ## 2. Installation
 
-Put all the `.py` files and `requirements.txt` in one folder, then:
+Keep the files in this layout, with `main.py`, `config.py` and
+`build.py` at the top level and the rest in `program/`:
+
+```
+main.py
+config.py
+build.py
+requirements.txt
+program/
+    __init__.py
+    analysis.py  cli.py  gbif.py  geo.py  gui.py
+    media.py  power.py  processor.py  theme.py  utils.py
+.github/workflows/release.yml
+```
+
+Then:
 
 ```
 cd /path/to/project
-python -m venv .venv
+python -m venv venv
 ```
 
 Activate the environment:
 
 ```
 # macOS / Linux
-source .venv/bin/activate
+source venv/bin/activate
 
 # Windows (Command Prompt)
-.venv\Scripts\activate.bat
+venv\Scripts\activate.bat
 
 # Windows (PowerShell)
-.venv\Scripts\Activate.ps1
+venv\Scripts\Activate.ps1
 ```
 
 Install the packages:
@@ -62,16 +78,28 @@ Install the packages:
 pip install -r requirements.txt
 ```
 
-Add your GBIF credentials in one of two ways:
+### GBIF account
+
+New GBIF downloads need a free GBIF account; downloading by DOI does
+not. In the app, open File, then GBIF account (on macOS also the app
+menu's Settings). Enter your username, email and password, use "Test
+sign-in" to check them with GBIF, then Save. The Download tab shows
+which account is in use.
+
+The password is kept in the macOS Keychain or Windows Credential
+Manager, not in a plain file. If no system keychain is available it is
+kept in `gbif_account.json` in the app's folder, readable only by your
+user. "Remove saved account" deletes both.
+
+The app also accepts, in this order of priority:
 
 - Environment variables `GBIF_USER`, `GBIF_PASSWORD` and `GBIF_EMAIL`
-- A file at `~/program/credentials.json`:
+- The account saved in the app
+- A file at `~/credentials.json`:
 
 ```
 {"user": "your_username", "password": "your_password", "email": "you@example.org"}
 ```
-
-The Download tab shows whether credentials were found.
 
 ## 3. Starting the application
 
@@ -86,8 +114,10 @@ falls back to the command-line menu. To open the menu directly:
 python main.py --cli
 ```
 
-The theme picker in the top right switches between System, Light and
-Dark. Your theme, file paths and model settings are saved in
+The menu bar has File (GBIF account, open the data folder or log,
+quit), View (theme and keep awake) and Help (About, which also shows
+where your data is kept). The theme picker in the top right switches
+between System, Light and Dark. Your theme, file paths and model settings are saved in
 `settings.json` and restored the next time you open the app.
 
 ## 4. Workflow
@@ -386,6 +416,8 @@ All files are written to `data/` unless you choose other paths.
 python main.py                  open the app
 python main.py --cli            interactive menu
 python main.py --help           list the commands
+python main.py --version        print the version
+python main.py --self-test      check that everything the app needs can be loaded
 ```
 
 Phase 1 and phase 2:
@@ -431,7 +463,8 @@ Most settings are in `config.py`:
 | `PRESETS` | Named filter configurations |
 | `LINK_COLUMNS`, `MEDIA_COLUMNS` | Columns searched for reference and image links |
 
-Environment variables: `GBIF_USER`, `GBIF_PASSWORD`, `GBIF_EMAIL`,
+Environment variables: `GBIF_USER`, `GBIF_PASSWORD`, `GBIF_EMAIL`
+(these override the account saved in the app), `GBIF_PIPELINE_HOME`,
 `LMSTUDIO_URL`, and `LMSTUDIO_MODEL`. Set `LMSTUDIO_MODEL` only to force
 a specific model, for example with a server other than LM Studio.
 
@@ -440,25 +473,120 @@ The measurement prompt and the answer format are in `analysis.py`
 
 ## 10. Project layout
 
-Modules only import from the ones above them in this list, so there
-are no circular imports.
+`main.py`, `config.py` and `build.py` are at the top level; everything
+else is the `program` package. Modules only import from the ones above
+them in this list, so there are no circular imports.
 
 | File | Responsibility |
 |---|---|
-| `config.py` | Paths, credentials, presets, constants, saved settings |
-| `utils.py` | CSV, URL, HTTP and file helpers; skip and cancel control |
-| `geo.py` | Coordinate cleaning tests |
-| `gbif.py` | GBIF species lookup and dataset downloads |
-| `processor.py` | Phase 1 and phase 2 |
-| `media.py` | Image downloading |
-| `analysis.py` | Model requests, measurements CSV and join |
-| `power.py` | Keeping the computer awake |
-| `theme.py` | Light and dark themes |
-| `gui.py` | The graphical interface |
-| `cli.py` | The command-line menu and commands |
+| `config.py` | Paths, GBIF account storage, presets, constants, saved settings |
+| `program/utils.py` | CSV, URL, HTTP and file helpers; skip and cancel control |
+| `program/geo.py` | Coordinate cleaning tests |
+| `program/gbif.py` | GBIF species lookup and dataset downloads |
+| `program/processor.py` | Phase 1 and phase 2 |
+| `program/media.py` | Image downloading |
+| `program/analysis.py` | Model requests, measurements CSV and join |
+| `program/power.py` | Keeping the computer awake |
+| `program/theme.py` | Light and dark themes |
+| `program/gui.py` | The graphical interface |
+| `program/cli.py` | The command-line menu and commands |
 | `main.py` | Entry point |
+| `build.py` | Builds the packaged app with PyInstaller |
+| `.github/workflows/release.yml` | Builds and publishes releases on GitHub |
 
-## 11. Troubleshooting
+## 11. Packaged releases
+
+GitHub Actions builds a Windows app and two macOS apps (Apple Silicon
+and Intel) and attaches them to a GitHub release each time you push a
+version tag. The workflow is `.github/workflows/release.yml` and the
+build itself is `build.py`, which uses PyInstaller.
+
+### One-time setup
+
+1. Create a repository on GitHub and push this folder to it, with
+   `main.py` at the top level and the `.github` folder included.
+2. In the repository, open Settings, then Actions, then General, and
+   under "Workflow permissions" choose "Read and write permissions".
+   The workflow needs this to create releases.
+
+### Publishing a release
+
+Commit your changes, then tag the commit with a version number and
+push the tag:
+
+```
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+The workflow then:
+
+1. Installs the requirements on Windows, macOS Apple Silicon and
+   macOS Intel runners.
+2. Runs `python main.py --self-test`, which checks that every module
+   and package loads.
+3. Builds the app and runs the same self-test on the packaged app, so
+   a release cannot be published if the app would fail to start.
+4. Creates a release named after the tag, with automatically generated
+   notes and these files:
+   - `GBIF-Herbaria-Pipeline-v1.2.0-windows-x64.zip`
+   - `GBIF-Herbaria-Pipeline-v1.2.0-macos-arm64.zip`
+   - `GBIF-Herbaria-Pipeline-v1.2.0-macos-intel.zip`
+
+A tag with a hyphen, such as `v1.3.0-beta1`, is published as a
+pre-release. Progress and errors are shown in the repository's Actions
+tab. To test a build without releasing it, open the Actions tab,
+choose "Build and release", then "Run workflow"; the zips are attached
+to that run as downloadable artifacts.
+
+The version appears in the window title and in
+`python main.py --version`.
+
+### Building locally
+
+```
+pip install pyinstaller
+python build.py v1.2.0
+```
+
+The zip is written to `dist/`. Each platform can only build its own
+app, which is why the workflow uses three runners. To give the app an
+icon, add `assets/icon.ico` (Windows) and `assets/icon.icns` (macOS).
+
+### Where the packaged app keeps its files
+
+The packaged app stores `data/` and `settings.json` in
+`Documents/GBIF Herbaria Pipeline` in your home folder, because the
+app folder itself may be read-only. When run from source they stay
+next to `main.py`. Set the environment variable `GBIF_PIPELINE_HOME`
+to use a different folder in either case.
+
+The packaged app has no console, so the command-line menu and
+commands are only available when running from source.
+
+### Opening an unsigned app
+
+The builds are not code-signed, so the first launch shows a warning.
+
+- Windows: SmartScreen says it protected your PC. Choose "More info",
+  then "Run anyway".
+- macOS: unzip the app and move it to Applications. Then right-click
+  it and choose Open, and confirm. If macOS says the app is damaged,
+  run this once in Terminal:
+
+```
+xattr -dr com.apple.quarantine "/Applications/GBIF Herbaria Pipeline.app"
+```
+
+Removing these warnings requires a paid Apple Developer ID for macOS
+signing and notarization, and a code-signing certificate for Windows.
+Both can be added to the workflow later as repository secrets.
+
+GitHub's Intel macOS runner (`macos-15-intel`) is the last one GitHub
+plans to offer and is available until August 2027. After that, remove
+the Intel entry from the workflow's build matrix.
+
+## 12. Troubleshooting
 
 ### tkinter is not installed
 
@@ -497,7 +625,10 @@ ready. Wait in the app, or paste the DOI from that email later.
 
 ### pygbif authentication errors
 
-Check your GBIF credentials by signing in at https://www.gbif.org.
+Open File, then GBIF account, and use "Test sign-in". If it fails,
+check the username and password by signing in at https://www.gbif.org.
+If GBIF_ environment variables are set, they are used instead of the
+account saved in the app.
 
 ### Coordinates look rounded in Excel
 

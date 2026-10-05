@@ -44,22 +44,127 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".gif"}
 HEADERS = {"User-Agent": "GBIF-HerbariaPipeline/1.0 (research use; Python requests)"}
 
 
-def _load_credentials():
-    creds_file = Path.home() / "credentials.json"
-    file_creds = {}
-    if creds_file.exists():
+LEGACY_CREDENTIALS_FILE = Path.home() / "credentials.json"
+ACCOUNT_FILE = BASE_DIR / "gbif_account.json"
+KEYRING_SERVICE = APP_NAME + " (GBIF)"
+GBIF_SIGNUP_URL = "https://www.gbif.org/user/profile"
+
+
+def _read_json(path):
+    try:
+        data = json.loads(Path(path).read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _keyring():
+    try:
+        import keyring
+        from keyring.backends import fail
+        if isinstance(keyring.get_keyring(), fail.Keyring):
+            return None
+        return keyring
+    except Exception:
+        return None
+
+
+def password_store_name():
+    if _keyring() is None:
+        return None
+    if sys.platform == "darwin":
+        return "the macOS Keychain"
+    if sys.platform.startswith("win"):
+        return "Windows Credential Manager"
+    return "the system keyring"
+
+
+def _saved_password(user, account):
+    store = _keyring()
+    if store and user:
         try:
-            file_creds = json.loads(creds_file.read_text())
-        except (json.JSONDecodeError, OSError):
+            password = store.get_password(KEYRING_SERVICE, user)
+            if password:
+                return password
+        except Exception:
             pass
-    return tuple(os.environ.get(f"GBIF_{key.upper()}", file_creds.get(key, "")) for key in ("user", "password", "email"))
+    return account.get("password", "")
 
 
-GBIF_USER, GBIF_PASSWORD, GBIF_EMAIL = _load_credentials()
+def gbif_credentials():
+    env = {key: os.environ.get(f"GBIF_{key.upper()}", "") for key in ("user", "password", "email")}
+    if all(env.values()):
+        return env["user"], env["password"], env["email"], "environment variables"
+    account = _read_json(ACCOUNT_FILE)
+    if account.get("user"):
+        user = env["user"] or account["user"]
+        password = env["password"] or _saved_password(account["user"], account)
+        email = env["email"] or account.get("email", "")
+        return user, password, email, "this app"
+    legacy = _read_json(LEGACY_CREDENTIALS_FILE)
+    if legacy.get("user"):
+        return (env["user"] or legacy.get("user", ""), env["password"] or legacy.get("password", ""),
+                env["email"] or legacy.get("email", ""), f"{LEGACY_CREDENTIALS_FILE}")
+    return env["user"], env["password"], env["email"], "environment variables" if any(env.values()) else ""
 
 
 def has_gbif_credentials():
-    return bool(GBIF_USER and GBIF_PASSWORD and GBIF_EMAIL)
+    user, password, email, _ = gbif_credentials()
+    return bool(user and password and email)
+
+
+def saved_gbif_account():
+    account = _read_json(ACCOUNT_FILE)
+    user = account.get("user", "")
+    return {"user": user, "email": account.get("email", ""), "has_password": bool(_saved_password(user, account))}
+
+
+def saved_gbif_password(user):
+    account = _read_json(ACCOUNT_FILE)
+    return _saved_password(user, account) if user and account.get("user") == user else ""
+
+
+def save_gbif_account(user, email, password=None):
+    user, email = user.strip(), email.strip()
+    previous = _read_json(ACCOUNT_FILE)
+    if password is None:
+        password = _saved_password(previous.get("user", ""), previous)
+    store = _keyring()
+    account = {"user": user, "email": email}
+    where = None
+    if password:
+        if store:
+            try:
+                if previous.get("user") and previous["user"] != user:
+                    _forget_password(previous["user"])
+                store.set_password(KEYRING_SERVICE, user, password)
+                where = password_store_name()
+            except Exception:
+                store = None
+        if not store:
+            account["password"] = password
+            where = ACCOUNT_FILE.name
+    ACCOUNT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ACCOUNT_FILE.write_text(json.dumps(account, indent=2))
+    try:
+        os.chmod(ACCOUNT_FILE, 0o600)
+    except OSError:
+        pass
+    return where
+
+
+def _forget_password(user):
+    store = _keyring()
+    if store and user:
+        try:
+            store.delete_password(KEYRING_SERVICE, user)
+        except Exception:
+            pass
+
+
+def remove_gbif_account():
+    _forget_password(_read_json(ACCOUNT_FILE).get("user", ""))
+    ACCOUNT_FILE.unlink(missing_ok=True)
 
 
 def load_settings():
@@ -71,6 +176,7 @@ def load_settings():
 
 def save_settings(settings):
     try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
         SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
     except OSError:
         pass

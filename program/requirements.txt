@@ -1,0 +1,9 @@
+numpy
+pandas>=1.5
+requests
+urllib3
+pygbif
+openai>=1.0
+beautifulsoup4
+pillow
+keyring

@@ -5,8 +5,8 @@ import pandas as pd
 from config import (BAD_GEOSPATIAL_ISSUES, DUPLICATES_CSV, INSPECT_CSV, INSPECTION_ISSUES, LINK_COLUMNS,
                     MASTER_CSV, MEASUREMENT_COLUMNS, MEDIA_COLUMNS, MEDIA_EVIDENCE_COLUMNS, MULTIMEDIA_RENAMES,
                     PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT)
-from program.geo import clean_coordinates
-from program.utils import (all_links, find_dwca_files, first_url_series, insert_after_gbif, issue_sets, read_csv,
+from .geo import clean_coordinates
+from .utils import (all_links, find_dwca_files, first_url_series, insert_after_gbif, issue_sets, read_csv,
                    read_dwca, save_csv)
 
 

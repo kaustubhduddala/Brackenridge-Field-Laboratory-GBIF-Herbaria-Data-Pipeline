@@ -11,7 +11,7 @@ from openai import APIConnectionError, BadRequestError, NotFoundError, OpenAI
 
 from config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MASTER_CSV, MAX_IMAGE_SIDE,
                     MEASUREMENTS_CSV, MEDIA_DIR, MIN_CONTEXT_LENGTH, REQUEST_TIMEOUT_S, RESPONSES_DIR)
-from program.utils import ItemSkipped, check, gbif_ids, index_images, is_blank, read_csv, save_csv
+from .utils import ItemSkipped, check, gbif_ids, index_images, is_blank, read_csv, save_csv
 
 TRAITS = ("panicle_length", "leaf_width", "seed_length")
 FIELDS = [f"{trait}_{n}_{kind}" for trait in TRAITS for n in (1, 2) for kind in ("cm", "confidence")]

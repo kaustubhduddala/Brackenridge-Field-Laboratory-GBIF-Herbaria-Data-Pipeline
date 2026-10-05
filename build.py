@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent
 NAME = "GBIF Herbaria Pipeline"
 SLUG = "GBIF-Herbaria-Pipeline"
 BUNDLE_ID = "edu.utexas.gbif-herbaria-pipeline"
-HIDDEN_IMPORTS = ["gui", "cli", "bs4", "PIL._tkinter_finder"]
+HIDDEN_IMPORTS = ["program.gui", "program.cli", "bs4", "PIL._tkinter_finder"]
 
 
 def platform_tag():
@@ -39,6 +39,7 @@ def main():
         "--add-data", f"{ROOT / 'VERSION'}{os.pathsep}.",
         "--collect-submodules", "pygbif",
         "--collect-data", "pygbif",
+        "--collect-submodules", "keyring",
     ]
     for module in HIDDEN_IMPORTS:
         args += ["--hidden-import", module]

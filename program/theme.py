@@ -134,6 +134,7 @@ def apply_theme(root, name, fonts):
 
     style.configure("Title.TLabel", font=fonts["title"], foreground=p["text"])
     style.configure("Muted.TLabel", foreground=p["muted"], font=fonts["small"])
+    style.configure("Link.TLabel", foreground=p["accent"], font=fonts["small"])
     style.configure("Heading.TLabel", foreground=p["text"], font=fonts["bold"])
     set_title_bar(root, name == "dark")
     return p

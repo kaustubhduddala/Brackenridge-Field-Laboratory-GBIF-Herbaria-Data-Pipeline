@@ -2,12 +2,12 @@ import re
 import sys
 from pathlib import Path
 
-from program.analysis import join_measurements, measure_images
+from .analysis import join_measurements, measure_images
 from config import MASTER_CSV, MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT
-from program.gbif import download_dataset
-from program.media import download_media
-from program.processor import phase_1_clean_and_merge, phase_2_finalize_dataset, run_cleaning
-from program.utils import prepare_folder
+from .gbif import download_dataset
+from .media import download_media
+from .processor import phase_1_clean_and_merge, phase_2_finalize_dataset, run_cleaning
+from .utils import prepare_folder
 
 
 def _ask(prompt, default=""):

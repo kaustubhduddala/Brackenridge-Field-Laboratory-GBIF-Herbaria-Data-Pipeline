@@ -5,22 +5,25 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 import traceback
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-import program.theme as theme
-from program.power import KeepAwake
-from program.analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
-                      measure_images, measurement_status)
-from config import (BAD_GEOSPATIAL_ISSUES, DATA_DIR, DEFAULT_TOKEN_LIMIT, GBIF_USER, INSPECT_CSV, INSPECTION_ISSUES,
-                    LMSTUDIO_URL, LOG_FILE, MASTER_CSV, MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE,
-                    PRECISION_RELAXED, PRECISION_STRICT, PRESETS, THINKING_CHOICES, has_gbif_credentials,
-                    load_settings, save_settings)
-from program.gbif import download_dataset
-from program.media import download_media, media_status
-from program.processor import run_cleaning
-from program.utils import TaskControl, open_path, parse_issue_list, prepare_folder
+from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA_DIR, DEFAULT_TOKEN_LIMIT,
+                    GBIF_SIGNUP_URL, INSPECT_CSV, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, MASTER_CSV,
+                    MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, PRESETS,
+                    THINKING_CHOICES, gbif_credentials, load_settings, password_store_name, remove_gbif_account,
+                    save_gbif_account, save_settings, saved_gbif_account, saved_gbif_password)
+
+from . import theme
+from .analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
+                       measure_images, measurement_status)
+from .gbif import check_gbif_login, download_dataset
+from .media import download_media, media_status
+from .processor import run_cleaning
+from .power import KeepAwake
+from .utils import TaskControl, open_path, parse_issue_list, prepare_folder
 
 CSV_TYPES = [("CSV files", "*.csv"), ("All files", "*.*")]
 CHECK_MARK = [(4, 8), (5, 9), (6, 10), (7, 11), (8, 10), (9, 9), (10, 8), (11, 7), (12, 6)]
@@ -492,6 +495,135 @@ class JoinDialog(tk.Toplevel):
         self.destroy()
 
 
+class AccountDialog(tk.Toplevel):
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.title("GBIF account")
+        self.resizable(False, False)
+        self.transient(app.root)
+        self.configure(background=app.palette["bg"])
+        theme.set_title_bar(self, app.theme_name == "dark")
+        self.app = app
+        self.saved = False
+        account = saved_gbif_account()
+        self.had_password = account["has_password"]
+
+        body = ttk.Frame(self, padding=18)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="New GBIF downloads are requested with your GBIF account. Downloading by DOI "
+                             "does not need one.", style="Muted.TLabel", wraplength=440,
+                  justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+
+        self.user_var = tk.StringVar(value=account["user"])
+        self.email_var = tk.StringVar(value=account["email"])
+        self.password_var = tk.StringVar()
+        rows = (("Username", self.user_var, None), ("Email", self.email_var, None), ("Password", self.password_var, "•"))
+        for row, (label, variable, show) in enumerate(rows, start=1):
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=3)
+            entry = ttk.Entry(body, textvariable=variable, width=40, show=show or "")
+            entry.grid(row=row, column=1, columnspan=2, sticky="ew", pady=3)
+            if label == "Password":
+                self.password_entry = entry
+            if row == 1:
+                entry.focus_set()
+        self.show_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, text="Show password", variable=self.show_var,
+                        command=lambda: self.password_entry.configure(show="" if self.show_var.get() else "•")
+                        ).grid(row=4, column=1, sticky="w")
+
+        store = password_store_name()
+        notes = []
+        if self.had_password:
+            notes.append("A password is saved. Leave the field empty to keep it.")
+        notes.append(f"The password is kept in {store}." if store else
+                     "No system keychain was found, so the password is kept in a file readable only by your user.")
+        source = gbif_credentials()[3]
+        if source == "environment variables":
+            notes.append("GBIF_ environment variables are set and are used instead of the account saved here.")
+        ttk.Label(body, text=" ".join(notes), style="Muted.TLabel", wraplength=440, justify="left").grid(
+            row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        link = ttk.Label(body, text="Create a free GBIF account", style="Link.TLabel", cursor="hand2")
+        link.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        link.bind("<Button-1>", lambda _: webbrowser.open(GBIF_SIGNUP_URL))
+
+        self.status = ttk.Label(body, style="Muted.TLabel", wraplength=440, justify="left")
+        self.status.grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+        footer = ttk.Frame(body)
+        footer.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+        self.test_button = ttk.Button(footer, text="Test sign-in", command=self._test)
+        self.test_button.pack(side="left")
+        ttk.Button(footer, text="Remove saved account", command=self._remove).pack(side="left", padx=6)
+        ttk.Button(footer, text="Save", style="Accent.TButton", command=self._save).pack(side="right")
+        ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=6)
+        self.bind("<Return>", lambda _: self._save())
+        self.bind("<Escape>", lambda _: self.destroy())
+        try:
+            self.wait_visibility()
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _password(self):
+        return self.password_var.get() or saved_gbif_password(self.user_var.get().strip())
+
+    def _set_status(self, text, kind="muted"):
+        self.status.configure(text=text, foreground=self.app.palette[kind])
+
+    def _test(self):
+        user, password = self.user_var.get().strip(), self._password()
+        if not user or not password:
+            self._set_status("Enter a username and password first.", "error")
+            return
+        self.test_button.configure(state="disabled")
+        self._set_status("Checking with GBIF…", "busy")
+
+        def work():
+            try:
+                ok, message = check_gbif_login(user, password)
+            except Exception as exc:
+                ok, message = False, f"Could not reach GBIF: {exc}"
+            self.after(0, lambda: self._test_done(ok, message))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _test_done(self, ok, message):
+        if self.winfo_exists():
+            self.test_button.configure(state="normal")
+            self._set_status(message, "ok" if ok else "error")
+
+    def _save(self):
+        user, email = self.user_var.get().strip(), self.email_var.get().strip()
+        if not user or not email:
+            self._set_status("Enter your GBIF username and email.", "error")
+            return
+        if "@" not in email:
+            self._set_status("The email address does not look right.", "error")
+            return
+        if not self.password_var.get() and not self.had_password:
+            self._set_status("Enter your GBIF password.", "error")
+            return
+        try:
+            where = save_gbif_account(user, email, self.password_var.get() or None)
+        except OSError as exc:
+            self._set_status(f"Could not save the account: {exc}", "error")
+            return
+        self.app._log(f"GBIF account saved for {user}" + (f"; the password is kept in {where}." if where else "."))
+        self.saved = True
+        self.destroy()
+
+    def _remove(self):
+        if not saved_gbif_account()["user"]:
+            self._set_status("No account is saved in this app.")
+            return
+        if messagebox.askyesno("Remove account", "Remove the saved GBIF account and password?", parent=self):
+            remove_gbif_account()
+            self.app._log("Saved GBIF account removed.")
+            self.saved = True
+            self.destroy()
+
+
 class PipelineApp:
     def __init__(self, root):
         self.root = root
@@ -517,7 +649,7 @@ class PipelineApp:
         self.keep_awake_var = tk.BooleanVar(value=get("keep_awake", False))
         self.awake = KeepAwake()
 
-        root.title("GBIF Herbaria Data Pipeline")
+        root.title(f"GBIF Herbaria Data Pipeline {APP_VERSION}")
         root.geometry("960x880")
         root.minsize(800, 680)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -562,7 +694,65 @@ class PipelineApp:
         self.text_widgets.append(widget)
         return widget
 
+    def _build_menu(self):
+        aqua = self.root.tk.call("tk", "windowingsystem") == "aqua"
+        menubar = tk.Menu(self.root)
+        if aqua:
+            app_menu = tk.Menu(menubar, name="apple")
+            app_menu.add_command(label=f"About {APP_NAME}", command=self._show_about)
+            menubar.add_cascade(menu=app_menu)
+            self.root.createcommand("tk::mac::ShowPreferences", self._open_account)
+            self.root.createcommand("tk::mac::Quit", self._on_close)
+
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="GBIF account…", command=self._open_account)
+        file_menu.add_separator()
+        file_menu.add_command(label="Open data folder", command=lambda: self._open(DATA_DIR))
+        file_menu.add_command(label="Open log file", command=lambda: self._open(LOG_FILE))
+        if not aqua:
+            file_menu.add_separator()
+            file_menu.add_command(label="Quit", command=self._on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        view_menu = tk.Menu(menubar, tearoff=False)
+        for choice in theme.THEME_CHOICES:
+            view_menu.add_radiobutton(label=f"{choice} theme", value=choice, variable=self.theme_var,
+                                      command=self._change_theme)
+        view_menu.add_separator()
+        view_menu.add_checkbutton(label="Keep computer awake", variable=self.keep_awake_var,
+                                  command=self._toggle_keep_awake,
+                                  state="normal" if KeepAwake.supported() else "disabled")
+        menubar.add_cascade(label="View", menu=view_menu)
+
+        if not aqua:
+            help_menu = tk.Menu(menubar, tearoff=False)
+            help_menu.add_command(label="About", command=self._show_about)
+            menubar.add_cascade(label="Help", menu=help_menu)
+        self.root.configure(menu=menubar)
+
+    def _show_about(self):
+        messagebox.showinfo(f"About {APP_NAME}",
+                            f"{APP_NAME}\nVersion {APP_VERSION}\n\nBy Kaustubh Duddala\n\n"
+                            f"Your data and settings are kept in:\n{BASE_DIR}", parent=self.root)
+
+    def _open_account(self):
+        dialog = AccountDialog(self)
+        self.root.wait_window(dialog)
+        if dialog.saved:
+            self._refresh_account()
+
+    def _refresh_account(self):
+        user, password, email, source = gbif_credentials()
+        if user and password and email:
+            text = f"Using the GBIF account {user} (saved in {source})."
+        elif user or password or email:
+            text = "The GBIF account is incomplete; new downloads need a username, password and email."
+        else:
+            text = "No GBIF account set. New downloads need one; downloading by DOI does not."
+        self.account_label.configure(text=text)
+
     def _build_ui(self):
+        self._build_menu()
         header = ttk.Frame(self.root, padding=(18, 14, 18, 8))
         header.pack(fill="x")
         titles = ttk.Frame(header)
@@ -673,12 +863,12 @@ class PipelineApp:
         self.doi_entry = self._field(source, 2, "DOI (optional)")
         self._hint(source, 3, "Leave the DOI blank to request a new download for the species. "
                               "Paste a GBIF download DOI to fetch an existing dataset.", column=1, columnspan=3)
-        if has_gbif_credentials():
-            account = f"Signed in to GBIF as {GBIF_USER}."
-        else:
-            account = ("No GBIF credentials found. New downloads need GBIF_USER, GBIF_PASSWORD and GBIF_EMAIL "
-                       "or ~/credentials.json; DOI downloads work without them.")
-        self._hint(source, 4, account, column=1, columnspan=3)
+        account_row = ttk.Frame(source)
+        account_row.grid(row=4, column=1, columnspan=3, sticky="w", pady=(2, 4))
+        self.account_label = ttk.Label(account_row, style="Muted.TLabel", wraplength=520, justify="left")
+        self.account_label.pack(side="left")
+        ttk.Button(account_row, text="GBIF account…", command=self._open_account).pack(side="left", padx=(10, 0))
+        self._refresh_account()
         self.download_status = self._action(source, 5, [("Download dataset", self._run_download)])
 
         full = self._section(tab, "Full workflow", 1)

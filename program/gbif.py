@@ -6,8 +6,8 @@ from urllib.parse import urlparse
 import requests
 from pygbif import occurrences
 
-from config import BASE_FILTERS, DATA_DIR, GBIF_EMAIL, GBIF_PASSWORD, GBIF_USER, HEADERS, PRESETS, has_gbif_credentials
-from program.utils import extract_archive
+from config import BASE_FILTERS, DATA_DIR, HEADERS, PRESETS, gbif_credentials
+from .utils import extract_archive
 
 
 def resolve_species(scientific_name, log=print):
@@ -20,6 +20,15 @@ def resolve_species(scientific_name, log=print):
             f"taxon key {result['usageKey']}")
         return result["usageKey"]
     raise ValueError(f"No reliable GBIF match for '{scientific_name}'. GBIF response: {result}")
+
+
+def check_gbif_login(user, password):
+    resp = requests.get(f"https://api.gbif.org/v1/occurrence/download/user/{user}", params={"limit": 1},
+                        auth=(user, password), timeout=20, headers=HEADERS)
+    if resp.status_code in (401, 403):
+        return False, "GBIF did not accept this username and password."
+    resp.raise_for_status()
+    return True, f"Signed in to GBIF as {user}."
 
 
 def build_predicate(taxon_key, preset_name=None):
@@ -77,13 +86,14 @@ def download_dataset(species="", doi_text="", preset_name=None, log=print):
     if doi_text:
         archive = download_from_doi_link(doi_text, log=log)
     else:
-        if not has_gbif_credentials():
-            raise RuntimeError("GBIF credentials are missing. Set GBIF_USER, GBIF_PASSWORD and GBIF_EMAIL, "
-                               "or add user, password and email to ~/credentials.json.")
+        user, password, email, _ = gbif_credentials()
+        if not (user and password and email):
+            raise RuntimeError("GBIF credentials are missing. Add your account in the app under File, GBIF account, "
+                               "or set GBIF_USER, GBIF_PASSWORD and GBIF_EMAIL.")
         taxon_key = resolve_species(species, log)
         log("Submitting download request to GBIF")
         result = occurrences.download(build_predicate(taxon_key, preset_name), format="DWCA",
-                                      user=GBIF_USER, pwd=GBIF_PASSWORD, email=GBIF_EMAIL)
+                                      user=user, pwd=password, email=email)
         download_key = result[0] if isinstance(result, (tuple, list)) else result
         log(f"Download key {download_key}. GBIF usually takes 5 to 30 minutes.")
         archive = wait_and_download(download_key, log=log)
