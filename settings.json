@@ -1,11 +1,18 @@
 {
   "theme": "System",
   "server": "http://localhost:1234/v1",
-  "token_limit": 8000,
-  "thinking": "Model default",
+  "token_limit": 0,
+  "thinking": "Off",
   "fill_blanks": false,
-  "dataset_csv": "",
+  "dataset_csv": "/Users/kaustubhduddala/Library/CloudStorage/GoogleDrive-kaustubhduddala@gmail.com/My Drive/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/master_cleaned.csv",
   "media_dir": "/Users/kaustubhduddala/Library/CloudStorage/GoogleDrive-kaustubhduddala@gmail.com/My Drive/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/media",
   "measurements_csv": "/Users/kaustubhduddala/Library/CloudStorage/GoogleDrive-kaustubhduddala@gmail.com/My Drive/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/measurements.csv",
-  "keep_awake": false
+  "keep_awake": false,
+  "master_columns": [
+    "gbifID",
+    "media",
+    "Panicle length (cm)"
+  ],
+  "issue_presets": {},
+  "column_presets": {}
 }

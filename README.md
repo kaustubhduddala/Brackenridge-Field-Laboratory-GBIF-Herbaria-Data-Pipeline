@@ -168,7 +168,22 @@ Phase 2 then:
    filling its empty cells from the duplicates.
 3. Adds empty columns for your own measurements: Panicle length (cm),
    Leaf width (cm), Seed length (cm).
-4. Saves `master_cleaned.csv` and `removed_duplicates.csv`.
+4. Saves `removed_duplicates.csv`, `master_cleaned.csv` and a copy with
+   every column, `master_cleaned_all_columns.csv`.
+
+Phase 3 then opens a checkbox list of every column found in the
+pipeline's files (finalized dataset, current master, previously removed
+columns and the phase 1 output). Tick the columns to keep. It rewrites
+`master_cleaned.csv` with those columns and saves the others to
+`removed_columns.csv`; both files keep `gbifID`, and `media` and the
+measurement columns are always kept. Re-running phase 3 recomputes both
+files from everything available, so you can bring a column back later.
+The dialog has the same search and preset bar as the issue filters
+(default: all columns). "Download + clean" keeps every column on its
+first pass unless you chose columns beforehand with "Choose columns...".
+
+The Steps box has a checkbox for each of the three phases. Tick any
+combination; the review pause only happens when phases 1 and 2 both run.
 
 ### Tab 3: Images
 
@@ -376,10 +391,18 @@ Coordinate precision options: keep all coordinates, at least 1
 decimal place, or at least 3 decimal places. Records without
 coordinates are removed when a precision filter is on.
 
-"Edit issue filters..." opens two lists of GBIF issue codes, one code
-per line: records with a code in "Remove records" are dropped, and
-records with a code in "Flag for inspection" get `inspect_flag` set to
-True. Codes are matched exactly against the record's `issue` field.
+"Edit issue filters..." reads the `issue` column of the occurrence file
+in the selected data folder and lists only the issue codes present, with
+a record count for each. Every row has its own Remove / Inspect / Nothing
+buttons (Remove drops the records in phase 1, Inspect sets
+`inspect_flag`). Use the search box to narrow the list and "Set all
+shown to" to change every visible row at once. Assignments for codes that
+are not in the data are kept.
+
+The Preset bar at the top of the dialog saves the current assignments
+under a name ("Save as..."), loads or deletes saved presets, and
+"Reset to default" restores the app's defaults. Presets are stored in
+`settings.json`.
 
 To add a preset, add an entry to `PRESETS` in `config.py`:
 
@@ -403,7 +426,9 @@ All files are written to `data/` unless you choose other paths.
 | `GBIFdownload_inspectFlags.csv` | Phase 1 result, for manual review |
 | `GBIFdownload_removed.csv` | Records removed in phase 1, with a `removal_reason` |
 | `Missing_Media.csv` | Records with no media, with every link found in the row |
-| `master_cleaned.csv` | Phase 2 result, the working dataset |
+| `master_cleaned.csv` | Phase 2/3 result, the working dataset |
+| `master_cleaned_all_columns.csv` | Phase 2 result with every column, read by phase 3 |
+| `removed_columns.csv` | Columns dropped in phase 3, with `gbifID` |
 | `removed_duplicates.csv` | Duplicate rows merged in phase 2 |
 | `master_cleaned_failed_media.csv` | Records whose image could not be downloaded |
 | `media/` | Downloaded images named by gbifID |

@@ -1,8 +1,9 @@
+import csv
 from pathlib import Path
 
 import pandas as pd
 
-from config import (BAD_GEOSPATIAL_ISSUES, DUPLICATES_CSV, INSPECT_CSV, INSPECTION_ISSUES, LINK_COLUMNS,
+from config import (BAD_GEOSPATIAL_ISSUES, DUPLICATES_CSV, FULL_MASTER_CSV, INSPECT_CSV, REMOVED_COLUMNS_CSV, INSPECTION_ISSUES, LINK_COLUMNS,
                     MASTER_CSV, MEASUREMENT_COLUMNS, MEDIA_COLUMNS, MEDIA_EVIDENCE_COLUMNS, MULTIMEDIA_RENAMES,
                     PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT)
 from .geo import clean_coordinates
@@ -130,19 +131,102 @@ def phase_2_finalize_dataset(inspected_csv=INSPECT_CSV, final_master=None, final
         if column not in master.columns:
             master[column] = ""
 
-    save_csv(master.dropna(axis=1, how="all"), final_master)
+    master = master.dropna(axis=1, how="all")
+    save_csv(master, final_master)
+    if Path(final_master) == MASTER_CSV:
+        save_csv(master, FULL_MASTER_CSV)
+        REMOVED_COLUMNS_CSV.unlink(missing_ok=True)
     save_csv(duplicates.dropna(axis=1, how="all"), final_duplicates)
     log(f"  Duplicates saved to {final_duplicates}")
     log(f"Phase 2 complete: {len(master)} unique records saved to {final_master}")
     return str(final_master), str(final_duplicates)
 
 
-def run_cleaning(folder=None, steps="both", confirm=None, log=print, **options):
-    if steps in ("both", "phase1"):
+REQUIRED_COLUMNS = ("gbifID", "media")
+# REQUIRED_COLUMNS = ("gbifID", "media", *MEASUREMENT_COLUMNS)
+
+def _header(path):
+    return list(pd.read_csv(path, nrows=0, dtype=str, encoding="utf-8-sig").columns)
+
+
+def available_columns(folder=None):
+    """Every column found in the pipeline's files, and a note on where they came from."""
+    columns = []
+    for path in (FULL_MASTER_CSV, MASTER_CSV, REMOVED_COLUMNS_CSV, INSPECT_CSV):
+        if Path(path).is_file():
+            columns += _header(path)
+    if columns:
+        return list(dict.fromkeys(columns)), "all available data"
+    if folder:
+        occurrence, multimedia = find_dwca_files(folder)
+        occ = list(pd.read_csv(occurrence, sep="\t", nrows=0, quoting=csv.QUOTE_NONE).columns)
+        media = [MULTIMEDIA_RENAMES.get(c, c) for c in pd.read_csv(multimedia, sep="\t", nrows=0,
+                                                                     quoting=csv.QUOTE_NONE).columns]
+        shared = (set(occ) & set(media)) - {"gbifID"}
+        columns = ["gbifID", "media"] + [c + "_occurrence" if c in shared else c for c in occ if c != "gbifID"] \
+            + [c + "_multimedia" if c in shared else c for c in media if c != "gbifID"]
+        return list(dict.fromkeys(columns)), "the downloaded data (columns empty in every record are dropped later)"
+    return [], ""
+
+
+def phase_3_select_columns(columns=None, full_csv=None, final_master=None, removed_columns_csv=None, log=print):
+    full_csv = Path(full_csv or FULL_MASTER_CSV)
+    final_master = Path(final_master or MASTER_CSV)
+    removed_columns_csv = Path(removed_columns_csv or REMOVED_COLUMNS_CSV)
+    if not full_csv.is_file():
+        raise FileNotFoundError(f"{full_csv.name} not found; run phase 2 first")
+    log("Phase 3: selecting master columns")
+    df = read_csv(full_csv, log)
+    if "gbifID" in df.columns:
+        for extra in (final_master, removed_columns_csv):
+            if extra.is_file():
+                other = read_csv(extra, log)
+                new = [c for c in other.columns if c not in df.columns]
+                if new and "gbifID" in other.columns:
+                    df = df.merge(other.drop_duplicates("gbifID")[["gbifID", *new]], on="gbifID", how="left")
+                    log(f"  Recovered {len(new)} columns from {extra.name}")
+    if columns:
+        missing = [c for c in columns if c not in df.columns]
+        if missing:
+            log(f"  Ignoring {len(missing)} selected columns not in the data: {', '.join(missing[:5])}"
+                + (", ..." if len(missing) > 5 else ""))
+        chosen = set(columns) | set(REQUIRED_COLUMNS)
+        kept = [c for c in df.columns if c in chosen]
+    else:
+        kept = list(df.columns)
+    dropped = [c for c in df.columns if c not in kept]
+    save_csv(df[kept], final_master)
+    if dropped:
+        id_column = ["gbifID"] if "gbifID" in df.columns else []
+        save_csv(df[id_column + dropped], removed_columns_csv)
+        log(f"  Removed {len(dropped)} columns, saved to {removed_columns_csv}")
+    else:
+        removed_columns_csv.unlink(missing_ok=True)
+        log("  No columns removed")
+    log(f"Phase 3 complete: {len(kept)} columns and {len(df)} records saved to {final_master}")
+    return str(final_master)
+
+
+def run_cleaning(folder=None, phases=(1, 2, 3), confirm=None, log=print, master_columns=None,
+                 column_chooser=None, **options):
+    phases = set(phases)
+    if 1 in phases:
         occurrence, multimedia = find_dwca_files(folder)
         phase_1_clean_and_merge(occurrence, multimedia, log=log, **options)
-        log(f"Review {INSPECT_CSV} now. Type Remove in the Action column to drop a record.")
-        if steps == "phase1" or (confirm and not confirm()):
-            return None
-    master, _ = phase_2_finalize_dataset(INSPECT_CSV, log=log)
+        if 2 in phases:
+            log(f"Review {INSPECT_CSV} now. Type Remove in the Action column to drop a record.")
+            if confirm and not confirm():
+                return None
+    master = None
+    if 2 in phases:
+        master, _ = phase_2_finalize_dataset(INSPECT_CSV, log=log)
+    if 3 in phases:
+        if not FULL_MASTER_CSV.is_file():
+            raise FileNotFoundError(f"{FULL_MASTER_CSV.name} not found; run phase 2 first")
+        if column_chooser:
+            master_columns = column_chooser(available_columns()[0])
+            if master_columns is False:
+                log("Phase 3 skipped: no columns chosen")
+                return master
+        master = phase_3_select_columns(master_columns, log=log)
     return master

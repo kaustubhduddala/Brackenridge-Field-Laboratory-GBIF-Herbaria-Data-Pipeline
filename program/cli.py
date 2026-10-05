@@ -6,7 +6,7 @@ from .analysis import join_measurements, measure_images
 from config import MASTER_CSV, MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT
 from .gbif import download_dataset
 from .media import download_media
-from .processor import phase_1_clean_and_merge, phase_2_finalize_dataset, run_cleaning
+from .processor import phase_1_clean_and_merge, phase_2_finalize_dataset, phase_3_select_columns, run_cleaning
 from .utils import prepare_folder
 
 
@@ -31,13 +31,12 @@ def _download():
 
 
 def _clean():
-    steps = {"1": "both", "2": "phase1", "3": "phase2"}.get(
-        _ask("Steps (1 = phase 1 and 2, 2 = phase 1 only, 3 = phase 2 only)", "1"))
-    if not steps:
+    phases = {int(c) for c in _ask("Phases to run (any of 1, 2, 3)", "1,2,3") if c in "123"}
+    if not phases:
         print("Invalid selection.")
         return
-    folder = prepare_folder(_ask("Data folder or ZIP path")) if steps != "phase2" else None
-    master = run_cleaning(folder, steps, _confirm)
+    folder = prepare_folder(_ask("Data folder or ZIP path")) if 1 in phases else None
+    master = run_cleaning(folder, phases, _confirm)
     if master:
         print(f"Final dataset: {master}")
 
@@ -45,7 +44,7 @@ def _clean():
 def _full():
     folder = _download()
     if folder:
-        master = run_cleaning(folder, "both", _confirm)
+        master = run_cleaning(folder, (1, 2, 3), _confirm)
         if master:
             print(f"Final dataset: {master}")
 
@@ -116,10 +115,14 @@ def cleaner_command(args):
                                 coordinate_precision=precision)
     elif positional[:1] == ["2"] and len(positional) >= 2:
         phase_2_finalize_dataset(*positional[1:4])
+    elif positional[:1] == ["3"]:
+        columns = _option(args, "--columns")
+        phase_3_select_columns([c.strip() for c in columns.split(",") if c.strip()] if columns else None)
     else:
         print("Usage:")
         print(f"  python {prog} cleaner 1 <occurrence> <multimedia> [output] [--strict | --no-precision]")
         print(f"  python {prog} cleaner 2 <inspected_csv> [master] [duplicates]")
+        print(f"  python {prog} cleaner 3 [--columns a,b,c]   (all columns when --columns is omitted)")
         sys.exit(1)
 
 
