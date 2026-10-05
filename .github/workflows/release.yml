@@ -60,6 +60,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.tag }}
+      # Sign only builds that are released, and only once the signing secrets have been added.
+      SIGN_MACOS: ${{ github.event_name == 'push' && secrets.MACOS_CERTIFICATE != '' }}
+      SIGN_WINDOWS: ${{ github.event_name == 'push' && secrets.AZURE_CLIENT_ID != '' }}
     defaults:
       run:
         shell: bash
@@ -80,8 +83,62 @@ jobs:
       - name: Check the source runs
         run: python main.py --self-test
 
-      - name: Build
-        run: python build.py "$VERSION"
+      - name: Import the Apple signing certificate
+        if: runner.os == 'macOS' && env.SIGN_MACOS == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -base64 24)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | grep "Developer ID Application" | head -n 1 | sed -E 's/.*"(.*)"/\1/')"
+          if [ -z "$identity" ]; then
+            echo "No Developer ID Application certificate found in MACOS_CERTIFICATE" >&2
+            exit 1
+          fi
+          echo "MACOS_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "Signing as: $identity"
+
+      - name: Build (and on macOS sign and notarize)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: python build.py "$VERSION" --no-archive
+
+      - name: Sign the Windows app
+        if: runner.os == 'Windows' && env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\GBIF Herbaria Pipeline
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Check the Windows signature
+        if: runner.os == 'Windows' && env.SIGN_WINDOWS == 'true'
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature "dist\GBIF Herbaria Pipeline\GBIF Herbaria Pipeline.exe"
+          Write-Output "Signed by: $($signature.SignerCertificate.Subject)"
+          if ($signature.Status -ne "Valid") { throw "Signature status is $($signature.Status)" }
 
       - name: Check the packaged app runs (macOS)
         if: runner.os == 'macOS'
@@ -96,6 +153,9 @@ jobs:
           $exe = "dist\GBIF Herbaria Pipeline\GBIF Herbaria Pipeline.exe"
           $p = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+
+      - name: Package
+        run: python build.py "$VERSION" --archive-only
 
       - uses: actions/upload-artifact@v4
         with:
