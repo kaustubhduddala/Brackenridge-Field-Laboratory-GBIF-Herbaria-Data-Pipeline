@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 import urllib3
 
-from program.config import DATA_DIR, HEADERS, IMAGE_EXTENSIONS, LINK_COLUMNS
+from config import DATA_DIR, HEADERS, IMAGE_EXTENSIONS, LINK_COLUMNS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 

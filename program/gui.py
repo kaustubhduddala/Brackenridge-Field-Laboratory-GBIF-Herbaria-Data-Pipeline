@@ -13,7 +13,7 @@ import program.theme as theme
 from program.power import KeepAwake
 from program.analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
                       measure_images, measurement_status)
-from program.config import (BAD_GEOSPATIAL_ISSUES, DATA_DIR, DEFAULT_TOKEN_LIMIT, GBIF_USER, INSPECT_CSV, INSPECTION_ISSUES,
+from config import (BAD_GEOSPATIAL_ISSUES, DATA_DIR, DEFAULT_TOKEN_LIMIT, GBIF_USER, INSPECT_CSV, INSPECTION_ISSUES,
                     LMSTUDIO_URL, LOG_FILE, MASTER_CSV, MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE,
                     PRECISION_RELAXED, PRECISION_STRICT, PRESETS, THINKING_CHOICES, has_gbif_credentials,
                     load_settings, save_settings)

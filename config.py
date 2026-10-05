@@ -1,8 +1,28 @@
 import json
 import os
+import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+APP_NAME = "GBIF Herbaria Pipeline"
+FROZEN = getattr(sys, "frozen", False)
+CODE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+
+
+def _read_version():
+    try:
+        return (CODE_DIR / "VERSION").read_text().strip() or "dev"
+    except OSError:
+        return "dev"
+
+
+APP_VERSION = _read_version()
+
+if os.environ.get("GBIF_PIPELINE_HOME"):
+    BASE_DIR = Path(os.environ["GBIF_PIPELINE_HOME"]).expanduser()
+elif FROZEN:
+    BASE_DIR = Path.home() / "Documents" / APP_NAME
+else:
+    BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 MEDIA_DIR = DATA_DIR / "media"
 INSPECT_CSV = DATA_DIR / "GBIFdownload_inspectFlags.csv"

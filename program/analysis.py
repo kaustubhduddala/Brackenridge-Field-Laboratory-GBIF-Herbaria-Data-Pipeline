@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 from openai import APIConnectionError, BadRequestError, NotFoundError, OpenAI
 
-from program.config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MASTER_CSV, MAX_IMAGE_SIDE,
+from config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MASTER_CSV, MAX_IMAGE_SIDE,
                     MEASUREMENTS_CSV, MEDIA_DIR, MIN_CONTEXT_LENGTH, REQUEST_TIMEOUT_S, RESPONSES_DIR)
 from program.utils import ItemSkipped, check, gbif_ids, index_images, is_blank, read_csv, save_csv
 

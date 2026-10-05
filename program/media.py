@@ -4,7 +4,7 @@ from urllib.parse import urljoin, urlparse
 
 import pandas as pd
 
-from program.config import IMAGE_EXTENSIONS, MEDIA_DIR
+from config import IMAGE_EXTENSIONS, MEDIA_DIR
 from program.utils import (ItemSkipped, check, find_media_url, gbif_ids, index_images, is_blank, read_csv,
                    request_with_backoff, save_csv)
 

@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from program.analysis import join_measurements, measure_images
-from program.config import MASTER_CSV, MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT
+from config import MASTER_CSV, MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT
 from program.gbif import download_dataset
 from program.media import download_media
 from program.processor import phase_1_clean_and_merge, phase_2_finalize_dataset, run_cleaning

@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import requests
 from pygbif import occurrences
 
-from program.config import BASE_FILTERS, DATA_DIR, GBIF_EMAIL, GBIF_PASSWORD, GBIF_USER, HEADERS, PRESETS, has_gbif_credentials
+from config import BASE_FILTERS, DATA_DIR, GBIF_EMAIL, GBIF_PASSWORD, GBIF_USER, HEADERS, PRESETS, has_gbif_credentials
 from program.utils import extract_archive
 
 
