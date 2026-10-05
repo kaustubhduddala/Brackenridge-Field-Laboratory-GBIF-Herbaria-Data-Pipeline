@@ -2,15 +2,50 @@ name: Build and release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Releases from main are numbered v<BASE_VERSION>.<run number>, for example v1.0.12.
+  # Raise this (for example to "1.1" or "2.0") for a bigger update.
+  BASE_VERSION: "1.0"
+
 jobs:
+  version:
+    name: Choose version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - id: pick
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            tag="v${BASE_VERSION}.${GITHUB_RUN_NUMBER}"
+          else
+            tag="dev-${GITHUB_SHA::7}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${tag}"
+
   build:
     name: Build (${{ matrix.label }})
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +58,8 @@ jobs:
           - os: macos-15-intel
             label: macOS Intel
     runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.tag }}
     defaults:
       run:
         shell: bash
@@ -42,14 +79,6 @@ jobs:
 
       - name: Check the source runs
         run: python main.py --self-test
-
-      - name: Work out the version
-        run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          else
-            echo "VERSION=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
-          fi
 
       - name: Build
         run: python build.py "$VERSION"
@@ -76,8 +105,8 @@ jobs:
 
   release:
     name: Publish release
-    needs: build
-    if: github.ref_type == 'tag'
+    needs: [version, build]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -87,6 +116,10 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: dist/*.zip
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(needs.version.outputs.tag, '-') }}
+          make_latest: ${{ !contains(needs.version.outputs.tag, '-') }}
