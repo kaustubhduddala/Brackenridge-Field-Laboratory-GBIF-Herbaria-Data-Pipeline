@@ -497,9 +497,10 @@ them in this list, so there are no circular imports.
 ## 11. Packaged releases
 
 GitHub Actions builds a Windows app and two macOS apps (Apple Silicon
-and Intel) and attaches them to a GitHub release each time you push a
-version tag. The workflow is `.github/workflows/release.yml` and the
-build itself is `build.py`, which uses PyInstaller.
+and Intel) and publishes them as a release on the repository's
+Releases page every time something is merged into `main`. The workflow
+is `.github/workflows/release.yml` and the build itself is `build.py`,
+which uses PyInstaller.
 
 ### One-time setup
 
@@ -508,36 +509,54 @@ build itself is `build.py`, which uses PyInstaller.
 2. In the repository, open Settings, then Actions, then General, and
    under "Workflow permissions" choose "Read and write permissions".
    The workflow needs this to create releases.
+3. Optional but recommended: under Settings, then Branches, add a rule
+   for `main` that requires a pull request and the "Build" checks to
+   pass before merging. Then a change that breaks the app can never
+   reach a release.
 
-### Publishing a release
+### What happens when
 
-Commit your changes, then tag the commit with a version number and
-push the tag:
+| Event | Builds and checks | Publishes a release |
+|---|---|---|
+| Pull request into `main` | Yes | No |
+| Merge or push to `main` | Yes | Yes, numbered automatically |
+| Pushing a tag such as `v2.0.0` | Yes | Yes, using the tag as the version |
+| "Run workflow" in the Actions tab | Yes | No; the zips are attached to the run |
+
+Pushes that only change Markdown files or `.gitignore` do not start a
+build.
+
+Each build installs the requirements, runs `python main.py --self-test`
+to check that every module and package loads, builds the app, and runs
+the same self-test on the packaged app. A release is only published if
+all three platforms pass. It contains:
+
+- `GBIF-Herbaria-Pipeline-v1.0.12-windows-x64.zip`
+- `GBIF-Herbaria-Pipeline-v1.0.12-macos-arm64.zip`
+- `GBIF-Herbaria-Pipeline-v1.0.12-macos-intel.zip`
+
+The release notes list the pull requests merged since the previous
+release, so descriptive pull request titles make useful notes. The
+newest release is marked "Latest" and appears on the repository's main
+page.
+
+### Version numbers
+
+Releases from `main` are numbered `v<BASE_VERSION>.<run number>`, for
+example `v1.0.12`. The run number goes up by one with every run of the
+workflow, so numbers may skip but never repeat. For a bigger update,
+change `BASE_VERSION` near the top of the workflow file, for example
+from `"1.0"` to `"1.1"`.
+
+To choose a version yourself instead, push a tag:
 
 ```
-git tag v1.2.0
-git push origin v1.2.0
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
-The workflow then:
-
-1. Installs the requirements on Windows, macOS Apple Silicon and
-   macOS Intel runners.
-2. Runs `python main.py --self-test`, which checks that every module
-   and package loads.
-3. Builds the app and runs the same self-test on the packaged app, so
-   a release cannot be published if the app would fail to start.
-4. Creates a release named after the tag, with automatically generated
-   notes and these files:
-   - `GBIF-Herbaria-Pipeline-v1.2.0-windows-x64.zip`
-   - `GBIF-Herbaria-Pipeline-v1.2.0-macos-arm64.zip`
-   - `GBIF-Herbaria-Pipeline-v1.2.0-macos-intel.zip`
-
-A tag with a hyphen, such as `v1.3.0-beta1`, is published as a
-pre-release. Progress and errors are shown in the repository's Actions
-tab. To test a build without releasing it, open the Actions tab,
-choose "Build and release", then "Run workflow"; the zips are attached
-to that run as downloadable artifacts.
+A tag with a hyphen, such as `v2.1.0-beta1`, is published as a
+pre-release and is not marked "Latest".
 
 The version appears in the window title and in
 `python main.py --version`.
