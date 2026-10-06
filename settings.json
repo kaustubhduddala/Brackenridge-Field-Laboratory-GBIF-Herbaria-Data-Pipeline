@@ -10,8 +10,7 @@
   "keep_awake": false,
   "master_columns": [
     "gbifID",
-    "media",
-    "Panicle length (cm)"
+    "media"
   ],
   "issue_presets": {},
   "column_presets": {}
