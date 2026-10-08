@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -75,6 +76,17 @@ def parse_issue_list(raw):
     items = raw if isinstance(raw, (list, tuple, set)) else re.split(r"[,;\n]", str(raw or ""))
     cleaned = (str(item).strip().strip("\"'").strip() for item in items)
     return list(dict.fromkeys(item for item in cleaned if item))
+
+
+def scan_issues(occurrence_file):
+    try:
+        df = pd.read_csv(occurrence_file, sep="\t", usecols=lambda c: c == "issue", quoting=csv.QUOTE_NONE, dtype=str)
+    except (ValueError, pd.errors.EmptyDataError):
+        return Counter()
+    counts = Counter()
+    for issues in issue_sets(df):
+        counts.update(issues)
+    return counts
 
 
 def insert_after_gbif(df, name, values):

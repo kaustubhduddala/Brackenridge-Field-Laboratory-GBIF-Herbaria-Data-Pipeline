@@ -6,7 +6,7 @@ USAGE = """Usage:
   python main.py                 open the app
   python main.py --cli           interactive command-line menu
   python main.py --version       print the version
-  python main.py cleaner ...     run phase 1 or 2 directly (run without arguments for details)
+  python main.py cleaner ...     run phase 1, 2 or 3 directly (run without arguments for details)
   python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo]
   python main.py join [dataset_csv] [measurements_csv] [--fill-blanks] [--matched-only]
                       [--key gbifID] [--measurement-key gbifID] [--columns a,b,c] [--output file.csv]"""

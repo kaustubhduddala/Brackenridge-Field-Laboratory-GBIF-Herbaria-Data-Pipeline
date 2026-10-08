@@ -1,5 +1,6 @@
 import queue
 import re
+import sys
 import threading
 import time
 import tkinter as tk
@@ -8,10 +9,10 @@ import traceback
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA_DIR, DEFAULT_TOKEN_LIMIT,
-                    GBIF_SIGNUP_URL, INSPECT_CSV, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, MASTER_CSV,
+                    FULL_MASTER_CSV, GBIF_SIGNUP_URL, INSPECT_CSV, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, MASTER_CSV,
                     MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, PRESETS,
                     THINKING_CHOICES, gbif_credentials, load_settings, password_store_name, remove_gbif_account,
                     save_gbif_account, save_settings, saved_gbif_account, saved_gbif_password)
@@ -21,9 +22,9 @@ from .analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_colu
                        measure_images, measurement_status)
 from .gbif import check_gbif_login, download_dataset
 from .media import download_media, media_status
-from .processor import run_cleaning
+from .processor import REQUIRED_COLUMNS, available_columns, run_cleaning
 from .power import KeepAwake
-from .utils import TaskControl, open_path, parse_issue_list, prepare_folder
+from .utils import TaskControl, find_dwca_files, open_path, prepare_folder, scan_issues
 
 CSV_TYPES = [("CSV files", "*.csv"), ("All files", "*.*")]
 CHECK_MARK = [(4, 8), (5, 9), (6, 10), (7, 11), (8, 10), (9, 9), (10, 8), (11, 7), (12, 6)]
@@ -49,57 +50,268 @@ def _check_image(master, p, checked):
     return image
 
 
+ISSUE_ACTIONS = ("Remove", "Inspect", "Nothing")
+DEFAULT_PRESET = "Default"
+
+
+class ScrollFrame(ttk.Frame):
+    def __init__(self, master, palette):
+        super().__init__(master)
+        self.canvas = tk.Canvas(self, background=palette["bg"], highlightthickness=0)
+        bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = ttk.Frame(self.canvas)
+        window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.columnconfigure(0, weight=1)
+        self.inner.bind("<Configure>", lambda _: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(window, width=e.width))
+        self.winfo_toplevel().bind("<MouseWheel>", self._wheel, add="+")
+
+    def _wheel(self, event):
+        step = -event.delta if sys.platform == "darwin" else -event.delta // 120
+        if step:
+            self.canvas.yview_scroll(step, "units")
+
+
+class PresetBar(ttk.Frame):
+    """Pick, save, delete and reset named presets. `presets` is edited in place."""
+
+    def __init__(self, master, presets, apply, current, persist):
+        super().__init__(master)
+        self.presets, self.apply, self.current, self.persist = presets, apply, current, persist
+        self.var = tk.StringVar(value=DEFAULT_PRESET)
+        ttk.Label(self, text="Preset").pack(side="left")
+        self.combo = ttk.Combobox(self, textvariable=self.var, state="readonly", width=22)
+        self.combo.pack(side="left", padx=6)
+        self.combo.bind("<<ComboboxSelected>>", lambda _: self.apply(self.var.get()))
+        ttk.Button(self, text="Save as…", command=self._save).pack(side="left")
+        ttk.Button(self, text="Delete", command=self._delete).pack(side="left", padx=6)
+        ttk.Button(self, text="Reset to default", command=self.reset).pack(side="left")
+        self._refresh()
+
+    def _refresh(self):
+        self.combo.configure(values=[DEFAULT_PRESET, *sorted(self.presets)])
+
+    def _save(self):
+        name = simpledialog.askstring("Save preset", "Preset name:", parent=self.winfo_toplevel())
+        name = (name or "").strip()
+        if not name:
+            return
+        if name == DEFAULT_PRESET:
+            messagebox.showinfo("Save preset", f"{DEFAULT_PRESET} is reserved; choose another name.",
+                                parent=self.winfo_toplevel())
+            return
+        self.presets[name] = self.current()
+        self.persist()
+        self._refresh()
+        self.var.set(name)
+
+    def _delete(self):
+        name = self.var.get()
+        if name in self.presets and messagebox.askyesno("Delete preset", f"Delete the preset {name}?",
+                                                        parent=self.winfo_toplevel()):
+            del self.presets[name]
+            self.persist()
+            self._refresh()
+            self.reset()
+
+    def reset(self):
+        self.var.set(DEFAULT_PRESET)
+        self.apply(DEFAULT_PRESET)
+
+
+def _finish_dialog(dialog):
+    dialog.bind("<Escape>", lambda _: dialog.destroy())
+    try:
+        dialog.wait_visibility()
+        dialog.grab_set()
+    except tk.TclError:
+        pass
+
+
 class IssueFilterDialog(tk.Toplevel):
-    def __init__(self, app, remove_issues, inspect_issues):
+    def __init__(self, app, counts, remove_issues, inspect_issues, default, presets, persist):
         super().__init__(app.root)
         self.title("Issue filters")
-        self.geometry("640x480")
-        self.minsize(480, 360)
+        self.geometry("720x600")
+        self.minsize(560, 400)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
         theme.set_title_bar(self, app.theme_name == "dark")
         self.result = None
-        self.texts = []
+        self.counts = counts
+        self.default = default
+        self.presets = presets
+        self.remove_issues, self.inspect_issues = set(remove_issues), set(inspect_issues)
+        self.vars = {code: tk.StringVar() for code in counts}
+        self.order = sorted(counts, key=lambda c: (-counts[c], c))
+        self.rows = {}
 
         body = ttk.Frame(self, padding=14)
         body.pack(fill="both", expand=True)
-        notebook = ttk.Notebook(body)
-        notebook.pack(fill="both", expand=True)
-        tabs = (
-            ("Remove records", remove_issues, BAD_GEOSPATIAL_ISSUES,
-             "Records with any of these GBIF issue codes are removed in phase 1."),
-            ("Flag for inspection", inspect_issues, INSPECTION_ISSUES,
-             "Records with any of these GBIF issue codes get inspect_flag set to True."),
-        )
-        for title, current, defaults, hint in tabs:
-            frame = ttk.Frame(notebook, padding=10)
-            ttk.Label(frame, text=f"{hint} One code per line.", style="Muted.TLabel",
-                      wraplength=560, justify="left").pack(anchor="w")
-            text = tk.Text(frame, height=14, wrap="word", font=app.fonts["mono"], padx=8, pady=6)
-            theme.style_text(text, app.palette)
-            text.pack(fill="both", expand=True, pady=8)
-            _set_text(text, "\n".join(current))
-            buttons = ttk.Frame(frame)
-            buttons.pack(fill="x")
-            ttk.Button(buttons, text="Restore defaults",
-                       command=lambda t=text, d=defaults: _set_text(t, "\n".join(d))).pack(side="left")
-            ttk.Button(buttons, text="Clear", command=lambda t=text: _set_text(t, "")).pack(side="left", padx=6)
-            notebook.add(frame, text=f"{title} ({len(current)})")
-            self.texts.append(text)
+        ttk.Label(body, text="Issues found in the occurrence file. Remove drops the records in phase 1, Inspect "
+                             "sets inspect_flag, Nothing leaves them alone.", style="Muted.TLabel",
+                  wraplength=660, justify="left").pack(anchor="w")
+        PresetBar(body, presets, self._apply_preset, self._current, persist).pack(anchor="w", pady=(8, 0))
+        search = ttk.Frame(body)
+        search.pack(fill="x", pady=(8, 4))
+        ttk.Label(search, text="Search").pack(side="left")
+        self.query = tk.StringVar()
+        self.query.trace_add("write", lambda *_: self._filter())
+        ttk.Entry(search, textvariable=self.query).pack(side="left", fill="x", expand=True, padx=6)
+        self.shown_label = ttk.Label(search, style="Muted.TLabel")
+        self.shown_label.pack(side="left")
+        bulk = ttk.Frame(body)
+        bulk.pack(fill="x", pady=(0, 4))
+        ttk.Label(bulk, text="Set all shown to").pack(side="left")
+        for action in ISSUE_ACTIONS:
+            ttk.Button(bulk, text=action, command=lambda a=action: self._set_shown(a)).pack(side="left", padx=(6, 0))
+
+        self.scroll = ScrollFrame(body, app.palette)
+        self.scroll.pack(fill="both", expand=True)
+        for code in self.order:
+            row = ttk.Frame(self.scroll.inner)
+            row.columnconfigure(0, weight=1)
+            ttk.Label(row, text=code).grid(row=0, column=0, sticky="w")
+            ttk.Label(row, text=f"{counts[code]:,}", style="Muted.TLabel", width=9, anchor="e").grid(row=0, column=1)
+            for i, action in enumerate(ISSUE_ACTIONS):
+                ttk.Radiobutton(row, text=action, variable=self.vars[code], value=action).grid(
+                    row=0, column=2 + i, padx=(10, 0))
+            self.rows[code] = row
+        self._apply_preset(DEFAULT_PRESET)
+        self._filter()
 
         footer = ttk.Frame(body)
         footer.pack(fill="x", pady=(12, 0))
         ttk.Button(footer, text="Save filters", style="Accent.TButton", command=self._save).pack(side="right")
         ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=6)
-        self.bind("<Escape>", lambda _: self.destroy())
-        try:
-            self.wait_visibility()
-            self.grab_set()
-        except tk.TclError:
-            pass
+        _finish_dialog(self)
+
+    def _apply_preset(self, name):
+        remove, inspect = self.default if name == DEFAULT_PRESET else (
+            self.presets[name]["remove"], self.presets[name]["inspect"])
+        self.remove_issues, self.inspect_issues = set(remove), set(inspect)
+        for code, var in self.vars.items():
+            var.set("Remove" if code in self.remove_issues else "Inspect" if code in self.inspect_issues
+                    else "Nothing")
+
+    def _filter(self):
+        needle = self.query.get().strip().lower()
+        shown = [c for c in self.order if needle in c.lower()]
+        for code, row in self.rows.items():
+            row.grid_forget()
+        for i, code in enumerate(shown):
+            self.rows[code].grid(row=i, column=0, sticky="ew", pady=1)
+        self.shown = shown
+        self.shown_label.configure(text=f"{len(shown)} of {len(self.order)}")
+
+    def _set_shown(self, action):
+        for code in self.shown:
+            self.vars[code].set(action)
+
+    def _lists(self):
+        remove = (self.remove_issues - set(self.counts)) | {c for c, v in self.vars.items() if v.get() == "Remove"}
+        inspect = (self.inspect_issues - set(self.counts)) | {c for c, v in self.vars.items() if v.get() == "Inspect"}
+        return sorted(remove), sorted(inspect)
+
+    def _current(self):
+        remove, inspect = self._lists()
+        return {"remove": remove, "inspect": inspect}
 
     def _save(self):
-        self.result = tuple(parse_issue_list(t.get("1.0", "end")) for t in self.texts)
+        self.result = self._lists()
+        self.destroy()
+
+
+class ColumnPickerDialog(tk.Toplevel):
+    def __init__(self, app, columns, selected, source, presets, persist):
+        super().__init__(app.root)
+        self.title("Master columns")
+        self.geometry("560x620")
+        self.minsize(420, 400)
+        self.transient(app.root)
+        self.configure(background=app.palette["bg"])
+        theme.set_title_bar(self, app.theme_name == "dark")
+        self.result = None
+        self.saved = False
+        self.columns = columns
+        self.presets = presets
+        self.selected = selected
+        self.vars = {c: tk.BooleanVar(value=selected is None or c in selected or c in REQUIRED_COLUMNS)
+                     for c in columns}
+        self.rows = {}
+
+        body = ttk.Frame(self, padding=14)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f"Columns found in {source}. Ticked columns stay in master_cleaned.csv; the rest move "
+                             "to removed_columns.csv. gbifID, media and the measurement columns are always kept.",
+                  style="Muted.TLabel", wraplength=500, justify="left").pack(anchor="w")
+        PresetBar(body, presets, self._apply_preset, self._current, persist).pack(anchor="w", pady=(8, 0))
+        search = ttk.Frame(body)
+        search.pack(fill="x", pady=(8, 4))
+        ttk.Label(search, text="Search").pack(side="left")
+        self.query = tk.StringVar()
+        self.query.trace_add("write", lambda *_: self._filter())
+        ttk.Entry(search, textvariable=self.query).pack(side="left", fill="x", expand=True, padx=6)
+        bulk = ttk.Frame(body)
+        bulk.pack(fill="x", pady=(0, 4))
+        ttk.Button(bulk, text="Tick all shown", command=lambda: self._set_shown(True)).pack(side="left")
+        ttk.Button(bulk, text="Untick all shown", command=lambda: self._set_shown(False)).pack(side="left", padx=6)
+        self.count_label = ttk.Label(bulk, style="Muted.TLabel")
+        self.count_label.pack(side="right")
+
+        self.scroll = ScrollFrame(body, app.palette)
+        self.scroll.pack(fill="both", expand=True)
+        for column in columns:
+            required = column in REQUIRED_COLUMNS
+            check = ttk.Checkbutton(self.scroll.inner, text=column + ("  (always kept)" if required else ""),
+                                    variable=self.vars[column], command=self._count,
+                                    state="disabled" if required else "normal")
+            self.rows[column] = check
+        self._filter()
+
+        footer = ttk.Frame(body)
+        footer.pack(fill="x", pady=(12, 0))
+        ttk.Button(footer, text="Save columns", style="Accent.TButton", command=self._save).pack(side="right")
+        ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=6)
+        _finish_dialog(self)
+
+    def _apply_preset(self, name):
+        wanted = None if name == DEFAULT_PRESET else set(self.presets[name])
+        for column, var in self.vars.items():
+            var.set(wanted is None or column in wanted or column in REQUIRED_COLUMNS)
+        self._count()
+
+    def _filter(self):
+        needle = self.query.get().strip().lower()
+        for row in self.rows.values():
+            row.grid_forget()
+        self.shown = [c for c in self.columns if needle in c.lower()]
+        for i, column in enumerate(self.shown):
+            self.rows[column].grid(row=i, column=0, sticky="w", pady=1)
+        self._count()
+
+    def _count(self):
+        self.count_label.configure(text=f"{len(self._chosen())} of {len(self.columns)} ticked")
+
+    def _set_shown(self, value):
+        for column in self.shown:
+            if column not in REQUIRED_COLUMNS:
+                self.vars[column].set(value)
+        self._count()
+
+    def _chosen(self):
+        return [c for c in self.columns if self.vars[c].get()]
+
+    def _current(self):
+        return self._chosen()
+
+    def _save(self):
+        chosen = self._chosen()
+        self.result = None if len(chosen) == len(self.columns) else chosen
+        self.saved = True
         self.destroy()
 
 
@@ -635,6 +847,10 @@ class PipelineApp:
         self.status_kinds = {}
         self.bad_issues = list(BAD_GEOSPATIAL_ISSUES)
         self.inspect_issues = list(INSPECTION_ISSUES)
+        self.master_columns = self.settings.get("master_columns")
+        self.default_issues = (list(BAD_GEOSPATIAL_ISSUES), list(INSPECTION_ISSUES))
+        self.settings.setdefault("issue_presets", {})
+        self.settings.setdefault("column_presets", {})
         self.progress_started = None
 
         get = self.settings.get
@@ -744,11 +960,9 @@ class PipelineApp:
     def _refresh_account(self):
         user, password, email, source = gbif_credentials()
         if user and password and email:
-            text = f"Using the GBIF account {user} (saved in {source})."
-        elif user or password or email:
-            text = "The GBIF account is incomplete; new downloads need a username, password and email."
+            text = f"Logged into {user} (saved in {source})."
         else:
-            text = "No GBIF account set. New downloads need one; downloading by DOI does not."
+            text = "No GBIF account set. You can download via DOI but cannot request new downloads."
         self.account_label.configure(text=text)
 
     def _build_ui(self):
@@ -758,8 +972,6 @@ class PipelineApp:
         titles = ttk.Frame(header)
         titles.pack(side="left")
         ttk.Label(titles, text="GBIF Herbaria Data Pipeline", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(titles, text="Download, clean and measure herbarium specimen records. By Kaustubh Duddala",
-                  style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
         picker = ttk.Frame(header)
         picker.pack(side="right", anchor="n")
         awake = ttk.Checkbutton(picker, text="Keep computer awake", variable=self.keep_awake_var,
@@ -776,7 +988,7 @@ class PipelineApp:
 
         status = ttk.Frame(self.root, padding=(18, 6, 18, 12))
         status.pack(side="bottom", fill="x")
-        self.status_var = tk.StringVar(value="Ready")
+        self.status_var = tk.StringVar(value="")
         self.detail_var = tk.StringVar()
         ttk.Label(status, textvariable=self.status_var, style="Muted.TLabel").pack(side="left")
         ttk.Label(status, textvariable=self.detail_var, style="Muted.TLabel").pack(side="left", padx=12)
@@ -854,27 +1066,22 @@ class PipelineApp:
         tab.columnconfigure(0, weight=1)
 
         source = self._section(tab, "Data source", 0)
-        ttk.Label(source, text="Preset").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=3)
+        ttk.Label(source, text="Preset*").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=3)
         self.preset_var = tk.StringVar(value=next(iter(PRESETS)))
         combo = ttk.Combobox(source, textvariable=self.preset_var, values=list(PRESETS), state="readonly", width=24)
         combo.grid(row=0, column=1, sticky="w", pady=3)
         combo.bind("<<ComboboxSelected>>", lambda _: self._load_preset())
         self.species_entry = self._field(source, 1, "Species")
-        self.doi_entry = self._field(source, 2, "DOI (optional)")
-        self._hint(source, 3, "Leave the DOI blank to request a new download for the species. "
-                              "Paste a GBIF download DOI to fetch an existing dataset.", column=1, columnspan=3)
+        self.doi_entry = self._field(source, 2, "DOI")
         account_row = ttk.Frame(source)
         account_row.grid(row=4, column=1, columnspan=3, sticky="w", pady=(2, 4))
         self.account_label = ttk.Label(account_row, style="Muted.TLabel", wraplength=520, justify="left")
+        ttk.Button(account_row, text="Set GBIF Credentials", command=self._open_account).pack(side="left", padx=(0, 10))
         self.account_label.pack(side="left")
-        ttk.Button(account_row, text="GBIF account…", command=self._open_account).pack(side="left", padx=(10, 0))
         self._refresh_account()
-        self.download_status = self._action(source, 5, [("Download dataset", self._run_download)])
+        self.download_status = self._action(source, 5, [("Download only", self._run_download)])
+        self.full_status = self._action(source, 6, [("Download + clean", self._run_full)])
 
-        full = self._section(tab, "Full workflow", 1)
-        self._hint(full, 0, "Download the dataset, run phase 1, pause so you can review the flagged CSV, "
-                            "then finish with phase 2.")
-        self.full_status = self._action(full, 1, [("Run full workflow", self._run_full)])
         return tab
 
     def _build_clean_tab(self):
@@ -890,14 +1097,15 @@ class PipelineApp:
             self.data_entry, lambda: filedialog.askopenfilename(
                 title="Select ZIP file", filetypes=[("ZIP files", "*.zip"), ("All files", "*.*")]))).grid(
             row=0, column=3, padx=(6, 0))
-        self._hint(data, 1, f"Not needed for phase 2 only, which reads {INSPECT_CSV.name}.", column=1, columnspan=3)
+        self._hint(data, 1, f"Phase 2 automatically reads {INSPECT_CSV.name}; phase 3 reads {FULL_MASTER_CSV.name}.", column=1, columnspan=3)
 
         steps = self._section(tab, "Steps", 1, padx=(0, 6))
-        self.phase_var = tk.StringVar(value="both")
-        for i, (label, value) in enumerate((("Phase 1, review, then phase 2", "both"),
-                                            ("Phase 1 only: clean and merge", "phase1"),
-                                            ("Phase 2 only: deduplicate and finalize", "phase2"))):
-            ttk.Radiobutton(steps, text=label, variable=self.phase_var, value=value).grid(row=i, column=0, sticky="w")
+        self.phase_vars = []
+        for i, label in enumerate(("Phase 1: clean and merge", "Phase 2: review, deduplicate and finalize",
+                                   "Phase 3: choose master columns")):
+            var = tk.BooleanVar(value=True)
+            self.phase_vars.append(var)
+            ttk.Checkbutton(steps, text=label, variable=var).grid(row=i, column=0, sticky="w")
 
         precision = self._section(tab, "Coordinate precision", 1, column=1, padx=(6, 0))
         self.precision_var = tk.StringVar(value=PRECISION_RELAXED)
@@ -917,7 +1125,13 @@ class PipelineApp:
         self.taxa_text = self._text(filters, height=4)
         self.taxa_text.grid(row=2, column=0, columnspan=2, sticky="ew")
 
-        self.clean_status = self._action(tab, 3, [("Run cleaning", self._run_clean)], columnspan=2)
+        columns = self._section(tab, "Master columns (phase 3)", 3, columnspan=2)
+        ttk.Button(columns, text="Choose columns…", command=self._open_column_dialog).grid(row=0, column=0, sticky="w")
+        self.column_summary = ttk.Label(columns, style="Muted.TLabel")
+        self.column_summary.grid(row=0, column=1, sticky="w", padx=12)
+        self._refresh_column_summary()
+
+        self.clean_status = self._action(tab, 4, [("Run", self._run_clean)], columnspan=2)
         return tab
 
     def _build_images_tab(self):
@@ -930,9 +1144,6 @@ class PipelineApp:
                     browse=lambda: filedialog.askdirectory(title="Select image folder"))
 
         download = self._section(tab, "Download images", 1)
-        self._hint(download, 0, "Each image is saved as <gbifID>.<extension> in the image folder, and its path is "
-                                "recorded in the media_path column. Records that already have an image are skipped. "
-                                "Use Choose records to pick specific gbifIDs or to download an image again.")
         self.media_status = self._action(download, 1, [("Download missing images", self._run_download_media),
                                                        ("Choose records…", self._choose_downloads)])
         return tab
@@ -961,19 +1172,12 @@ class PipelineApp:
         ttk.Combobox(options, textvariable=self.thinking_var, values=list(THINKING_CHOICES), state="readonly",
                      width=14).pack(side="left", padx=6)
         ttk.Label(model, text="Options").grid(row=1, column=0, sticky="w")
-        self._hint(model, 2, "Measurements use whichever vision model is loaded in LM Studio; the name of the model "
-                             "that answered is saved with each result. Lower thinking or a token limit stops a "
-                             "model that gets stuck reasoning.", column=1, columnspan=3)
         self.measure_status = self._action(model, 3, [("Measure new images", self._run_measurements),
                                                       ("Choose images…", self._choose_measurements)])
 
         join = self._section(tab, "Add results to the dataset", 2)
         self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True,
                     browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
-        self._hint(join, 1, "Opens a window where you choose the columns to include from each file, the column "
-                            "each file is matched on (gbifID by default), and whether to update the dataset or save "
-                            "a new file. Updating keeps the previous version as <name>_before_join.csv.",
-                   column=1, columnspan=3)
         self.join_status = self._action(join, 2, [("Join into dataset…", self._run_join)])
         return tab
 
@@ -995,10 +1199,36 @@ class PipelineApp:
         _set_text(self.taxa_text, "\n".join(preset["exclude_taxa"]))
         self.bad_issues = list(preset["bad_issues"])
         self.inspect_issues = list(preset["inspect_issues"])
+        self.default_issues = (list(preset["bad_issues"]), list(preset["inspect_issues"]))
         self._refresh_issue_summary()
 
+    def _data_folder(self):
+        path = self.data_entry.get().strip()
+        if not path:
+            return None
+        try:
+            return prepare_folder(path, self._log)
+        except Exception as exc:
+            messagebox.showerror("Input data", str(exc), parent=self.root)
+            return False
+
     def _open_issue_dialog(self):
-        dialog = IssueFilterDialog(self, self.bad_issues, self.inspect_issues)
+        folder = self._data_folder()
+        if folder is False:
+            return
+        counts = {}
+        if folder:
+            try:
+                counts = scan_issues(find_dwca_files(folder)[0])
+            except Exception as exc:
+                messagebox.showerror("Issue filters", str(exc), parent=self.root)
+                return
+        if not counts:
+            messagebox.showinfo("Issue filters", "Select downloaded data in Input data first. This list shows only "
+                                                 "the issues found in its occurrence file.", parent=self.root)
+            return
+        dialog = IssueFilterDialog(self, counts, self.bad_issues, self.inspect_issues, self.default_issues,
+                                   self.settings["issue_presets"], self._persist_presets)
         self.root.wait_window(dialog)
         if dialog.result:
             self.bad_issues, self.inspect_issues = map(list, dialog.result)
@@ -1007,6 +1237,54 @@ class PipelineApp:
     def _refresh_issue_summary(self):
         self.issue_summary.configure(
             text=f"Removing {len(self.bad_issues)} issue codes, flagging {len(self.inspect_issues)}")
+
+    def _open_column_dialog(self):
+        folder = self._data_folder()
+        if folder is False:
+            return
+        try:
+            columns, source = available_columns(folder)
+        except Exception as exc:
+            messagebox.showerror("Master columns", str(exc), parent=self.root)
+            return
+        if not columns:
+            messagebox.showinfo("Master columns", "No columns to choose from yet. Download data or run phases 1 and 2 "
+                                                  "first; the first full run keeps every column, and you can run "
+                                                  "phase 3 again afterwards.", parent=self.root)
+            return
+        saved, selection = self._column_dialog(columns, source)
+        if saved:
+            self._set_master_columns(selection)
+
+    def _column_dialog(self, columns, source):
+        dialog = ColumnPickerDialog(self, columns, self.master_columns, source, self.settings["column_presets"],
+                                    self._persist_presets)
+        self.root.wait_window(dialog)
+        return dialog.saved, dialog.result
+
+    def _set_master_columns(self, selection):
+        self.master_columns = selection
+        self._refresh_column_summary()
+        self._save_settings()
+
+    def _persist_presets(self):
+        save_settings(self.settings)
+
+    def _choose_columns_blocking(self, columns):
+        answer = queue.Queue()
+
+        def show():
+            saved, selection = self._column_dialog(columns, "all available data")
+            if saved:
+                self._set_master_columns(selection)
+            answer.put(selection if saved else False)
+
+        self.root.after(0, show)
+        return answer.get()
+
+    def _refresh_column_summary(self):
+        self.column_summary.configure(
+            text="Keeping all columns" if not self.master_columns else f"Keeping {len(self.master_columns)} columns")
 
     def _clean_options(self):
         return {
@@ -1152,7 +1430,8 @@ class PipelineApp:
             theme=self.theme_var.get(), server=self.server_var.get().strip(), token_limit=self._token_limit(),
             thinking=self.thinking_var.get(), fill_blanks=self.fill_blanks_var.get(),
             dataset_csv=self.dataset_var.get().strip(), media_dir=self.media_dir_var.get().strip(),
-            measurements_csv=self.measurements_var.get().strip(), keep_awake=self.keep_awake_var.get())
+            measurements_csv=self.measurements_var.get().strip(), keep_awake=self.keep_awake_var.get(),
+            master_columns=self.master_columns)
         save_settings(self.settings)
 
     def _toggle_keep_awake(self):
@@ -1207,11 +1486,13 @@ class PipelineApp:
         if not inputs:
             return
         options = self._clean_options()
+        columns = self.master_columns
 
         def work():
             folder = download_dataset(*inputs, log=self._log)
             self._ui(_set_entry, self.data_entry, folder)
-            master = run_cleaning(folder, "both", self._confirm_phase_2, self._log, **options)
+            master = run_cleaning(folder, (1, 2, 3), self._confirm_phase_2, self._log,
+                                  master_columns=columns, **options)
             if not master:
                 return "Stopped after phase 1"
             self._ui(self.dataset_var.set, master)
@@ -1220,18 +1501,22 @@ class PipelineApp:
         self._start(self.full_status, "Running…", work)
 
     def _run_clean(self):
-        steps = self.phase_var.get()
+        phases = [n for n, var in enumerate(self.phase_vars, 1) if var.get()]
         path = self.data_entry.get().strip()
-        if steps != "phase2" and not path:
+        if not phases:
+            messagebox.showwarning("No steps", "Tick at least one phase to run.", parent=self.root)
+            return
+        if 1 in phases and not path:
             messagebox.showwarning("Missing input", "Select a data folder or ZIP file.", parent=self.root)
             return
         options = self._clean_options()
 
         def work():
-            folder = prepare_folder(path, self._log) if steps != "phase2" else None
-            master = run_cleaning(folder, steps, self._confirm_phase_2, self._log, **options)
+            folder = prepare_folder(path, self._log) if 1 in phases else None
+            master = run_cleaning(folder, phases, self._confirm_phase_2, self._log,
+                                  column_chooser=self._choose_columns_blocking, **options)
             if not master:
-                return "Phase 1 done"
+                return "Stopped after phase 1" if 1 in phases else "Done"
             self._ui(self.dataset_var.set, master)
             return "Finalized"
 

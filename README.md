@@ -1,9 +1,11 @@
 # GBIF Herbaria Data Pipeline
 
-A Python application for downloading GBIF herbarium occurrence data,
-cleaning it, downloading the specimen images, and measuring
-morphological traits from those images with a local vision model.
-It has a graphical interface (tkinter) and a command-line interface.
+This is an ongoing project I'm building for the Invaisive Species Lab at 
+UT Austin's Brackenridge Field Laboratory. It's a python application for 
+downloading GBIF herbarium occurrence data, cleaning it, downloading the
+specimen images, and measuring morphological traits from those images 
+with a local vision model. It has a graphical interface (tkinter) and 
+a command-line interface.
 
 The pipeline was developed for the G064 Guinea Grass Biogeography
 project at UT Austin, based on the measurement protocol by
@@ -166,7 +168,22 @@ Phase 2 then:
    filling its empty cells from the duplicates.
 3. Adds empty columns for your own measurements: Panicle length (cm),
    Leaf width (cm), Seed length (cm).
-4. Saves `master_cleaned.csv` and `removed_duplicates.csv`.
+4. Saves `removed_duplicates.csv`, `master_cleaned.csv` and a copy with
+   every column, `master_cleaned_all_columns.csv`.
+
+Phase 3 then opens a checkbox list of every column found in the
+pipeline's files (finalized dataset, current master, previously removed
+columns and the phase 1 output). Tick the columns to keep. It rewrites
+`master_cleaned.csv` with those columns and saves the others to
+`removed_columns.csv`; both files keep `gbifID`, and `media` and the
+measurement columns are always kept. Re-running phase 3 recomputes both
+files from everything available, so you can bring a column back later.
+The dialog has the same search and preset bar as the issue filters
+(default: all columns). "Download + clean" keeps every column on its
+first pass unless you chose columns beforehand with "Choose columns...".
+
+The Steps box has a checkbox for each of the three phases. Tick any
+combination; the review pause only happens when phases 1 and 2 both run.
 
 ### Tab 3: Images
 
@@ -374,10 +391,18 @@ Coordinate precision options: keep all coordinates, at least 1
 decimal place, or at least 3 decimal places. Records without
 coordinates are removed when a precision filter is on.
 
-"Edit issue filters..." opens two lists of GBIF issue codes, one code
-per line: records with a code in "Remove records" are dropped, and
-records with a code in "Flag for inspection" get `inspect_flag` set to
-True. Codes are matched exactly against the record's `issue` field.
+"Edit issue filters..." reads the `issue` column of the occurrence file
+in the selected data folder and lists only the issue codes present, with
+a record count for each. Every row has its own Remove / Inspect / Nothing
+buttons (Remove drops the records in phase 1, Inspect sets
+`inspect_flag`). Use the search box to narrow the list and "Set all
+shown to" to change every visible row at once. Assignments for codes that
+are not in the data are kept.
+
+The Preset bar at the top of the dialog saves the current assignments
+under a name ("Save as..."), loads or deletes saved presets, and
+"Reset to default" restores the app's defaults. Presets are stored in
+`settings.json`.
 
 To add a preset, add an entry to `PRESETS` in `config.py`:
 
@@ -401,7 +426,9 @@ All files are written to `data/` unless you choose other paths.
 | `GBIFdownload_inspectFlags.csv` | Phase 1 result, for manual review |
 | `GBIFdownload_removed.csv` | Records removed in phase 1, with a `removal_reason` |
 | `Missing_Media.csv` | Records with no media, with every link found in the row |
-| `master_cleaned.csv` | Phase 2 result, the working dataset |
+| `master_cleaned.csv` | Phase 2/3 result, the working dataset |
+| `master_cleaned_all_columns.csv` | Phase 2 result with every column, read by phase 3 |
+| `removed_columns.csv` | Columns dropped in phase 3, with `gbifID` |
 | `removed_duplicates.csv` | Duplicate rows merged in phase 2 |
 | `master_cleaned_failed_media.csv` | Records whose image could not be downloaded |
 | `media/` | Downloaded images named by gbifID |
@@ -491,7 +518,8 @@ them in this list, so there are no circular imports.
 | `program/gui.py` | The graphical interface |
 | `program/cli.py` | The command-line menu and commands |
 | `main.py` | Entry point |
-| `build.py` | Builds the packaged app with PyInstaller |
+| `build.py` | Builds, signs and packages the app |
+| `assets/entitlements.plist` | macOS signing entitlements |
 | `.github/workflows/release.yml` | Builds and publishes releases on GitHub |
 
 ## 11. Packaged releases
@@ -568,7 +596,10 @@ pip install pyinstaller
 python build.py v1.2.0
 ```
 
-The zip is written to `dist/`. Each platform can only build its own
+The zip is written to `dist/`. `python build.py --help` lists the
+options; on a Mac with your Developer ID certificate in the keychain,
+set `MACOS_SIGN_IDENTITY` (and the three `APPLE_` variables for
+notarization) to sign a local build the same way. Each platform can only build its own
 app, which is why the workflow uses three runners. To give the app an
 icon, add `assets/icon.ico` (Windows) and `assets/icon.icns` (macOS).
 
@@ -583,27 +614,112 @@ to use a different folder in either case.
 The packaged app has no console, so the command-line menu and
 commands are only available when running from source.
 
-### Opening an unsigned app
+### Code signing
 
-The builds are not code-signed, so the first launch shows a warning.
+Unsigned apps show a warning on first launch. The workflow signs the
+apps automatically once the secrets below are added under Settings,
+then Secrets and variables, then Actions, then "New repository secret".
+Until then, builds are published unsigned, and each platform is signed
+as soon as its own secrets are present. Only release builds are signed;
+pull request builds are not.
 
-- Windows: SmartScreen says it protected your PC. Choose "More info",
-  then "Run anyway".
-- macOS: unzip the app and move it to Applications. Then right-click
-  it and choose Open, and confirm. If macOS says the app is damaged,
-  run this once in Terminal:
+#### macOS: Developer ID and notarization
+
+Cost: Apple Developer Program, 99 USD per year. A signed and notarized
+app opens normally; macOS only asks once to confirm opening an app
+downloaded from the internet.
+
+1. Join the Apple Developer Program at https://developer.apple.com. An
+   individual membership shows your name as the developer. An
+   organization membership shows the organization's name and needs a
+   D-U-N-S number; your university may already have one, so ask your
+   department or IT office before paying.
+2. On a Mac, create a "Developer ID Application" certificate: in Xcode,
+   open Settings, then Accounts, select your team, choose "Manage
+   Certificates", then the plus button. Only the account holder can
+   create this certificate type.
+3. In Keychain Access, find the certificate under "My Certificates",
+   right-click it, choose Export, and save it as a `.p12` file with a
+   password.
+4. Copy the file as text for the secret:
+
+```
+base64 -i DeveloperID.p12 | pbcopy
+```
+
+5. Create an app-specific password at https://account.apple.com, under
+   Sign-In and Security.
+6. Find your Team ID under Membership details at
+   https://developer.apple.com/account.
+
+| Secret | Value |
+|---|---|
+| `MACOS_CERTIFICATE` | The base64 text from step 4 |
+| `MACOS_CERTIFICATE_PASSWORD` | The password you gave the `.p12` file |
+| `APPLE_ID` | Your Apple Account email |
+| `APPLE_TEAM_ID` | The 10-character Team ID |
+| `APPLE_APP_PASSWORD` | The app-specific password |
+
+`build.py` signs every binary in the app with the hardened runtime,
+submits the app to Apple for notarization (usually a few minutes),
+staples the result to the app and checks it with Gatekeeper. If Apple
+rejects it, the build fails and the log shows Apple's reasons. The
+entitlements the app is signed with are in `assets/entitlements.plist`.
+
+#### Windows: Azure Artifact Signing
+
+Cost: about 10 USD per month (Basic plan). Available to individuals in
+the USA and Canada and to organizations in the USA, Canada, the EU and
+the UK. A signed app shows your verified name as the publisher.
+
+1. Create an Azure account with a paid (pay-as-you-go) subscription;
+   free and trial subscriptions are not accepted.
+2. In the Azure portal, under Subscriptions, then Resource providers,
+   register `Microsoft.CodeSigning`.
+3. Create an Artifact Signing account (Basic). Note its name and the
+   region's endpoint, for example `https://eus.codesigning.azure.net/`
+   for East US.
+4. In the account, start an identity validation for Public Trust, as an
+   individual or for your organization. Microsoft checks it, which can
+   take from a day to a few weeks.
+5. Once validated, create a Public Trust certificate profile and note
+   its name.
+6. In Microsoft Entra ID, under App registrations, register an app (any
+   name, for example "GitHub signing"). Note the Directory (tenant) ID
+   and Application (client) ID, then under Certificates and secrets
+   create a client secret and copy its value.
+7. Back on the Artifact Signing account, under Access control (IAM),
+   assign the role "Artifact Signing Certificate Profile Signer" to that
+   app.
+
+| Secret | Value |
+|---|---|
+| `AZURE_TENANT_ID` | Directory (tenant) ID |
+| `AZURE_CLIENT_ID` | Application (client) ID |
+| `AZURE_CLIENT_SECRET` | The client secret value |
+| `AZURE_SIGNING_ENDPOINT` | The endpoint from step 3 |
+| `AZURE_SIGNING_ACCOUNT` | The Artifact Signing account name |
+| `AZURE_CERTIFICATE_PROFILE` | The certificate profile name |
+
+Client secrets expire (at most after two years). Note the date and
+create a new one before then, or signing will fail.
+
+Signing does not remove the Windows warning immediately. SmartScreen
+also looks at how many people have downloaded and run an app, so the
+first releases may still show "Windows protected your PC", now with
+your name as the publisher. The warning goes away as downloads
+accumulate. To open the app while it shows, choose "More info", then
+"Run anyway".
+
+#### Opening an unsigned build
+
+- Windows: choose "More info", then "Run anyway".
+- macOS: unzip the app and move it to Applications, right-click it,
+  choose Open, and confirm. If macOS says the app is damaged, run:
 
 ```
 xattr -dr com.apple.quarantine "/Applications/GBIF Herbaria Pipeline.app"
 ```
-
-Removing these warnings requires a paid Apple Developer ID for macOS
-signing and notarization, and a code-signing certificate for Windows.
-Both can be added to the workflow later as repository secrets.
-
-GitHub's Intel macOS runner (`macos-15-intel`) is the last one GitHub
-plans to offer and is available until August 2027. After that, remove
-the Intel entry from the workflow's build matrix.
 
 ## 12. Troubleshooting
 
