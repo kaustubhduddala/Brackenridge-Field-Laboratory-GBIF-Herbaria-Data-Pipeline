@@ -5,7 +5,7 @@ from tkinter import filedialog, ttk
 
 from config import DATA_DIR
 from .modify import load_table
-from .widgets import CSV_TYPES
+from .widgets import CSV_TYPES, PathCombo
 
 MAX_RECENT = 12
 MAX_CACHED = 3
@@ -70,10 +70,8 @@ class CsvPicker(ttk.Frame):
         super().__init__(parent)
         self.app, self.variable, self.choices, self.on_select = app, variable, choices, on_select
         self.columnconfigure(1, weight=1)
-        self.combo = ttk.Combobox(self, textvariable=variable, postcommand=self.refresh_choices)
+        self.combo = PathCombo(self, app, variable, choices, on_select)
         self.combo.grid(row=0, column=1, sticky="ew", pady=3)
-        self.combo.bind("<<ComboboxSelected>>", lambda _: self._chosen())
-        self.combo.bind("<Return>", lambda _: self._chosen())
         buttons = [("Browse…", self._browse), ("Open", lambda: app._open(variable.get().strip())), *extras]
         for column, (text, command) in enumerate(buttons, start=2):
             ttk.Button(self, text=text, command=command).grid(row=0, column=column, padx=(6, 0), pady=3)
@@ -86,13 +84,10 @@ class CsvPicker(ttk.Frame):
         return self
 
     def refresh_choices(self):
-        self.combo.configure(values=self.choices())
+        self.combo._fill()
 
     def set_info(self, text):
         self.info.configure(text=text)
-
-    def _chosen(self):
-        self.on_select(self.variable.get().strip())
 
     def _browse(self):
         current = Path(self.variable.get().strip() or ".")

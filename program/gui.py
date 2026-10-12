@@ -27,7 +27,7 @@ from .processor import REQUIRED_COLUMNS, available_columns, run_cleaning
 from .power import KeepAwake
 from .modify_tab import ModifyTab
 from .utils import TaskControl, find_dwca_files, open_path, scan_issues
-from .widgets import CSV_TYPES, ColumnChecklist, ScrollFrame, _check_image, _set_entry, _set_text
+from .widgets import CSV_TYPES, ColumnChecklist, PathCombo, ScrollFrame, _check_image, _set_entry, _set_text
 from .workspace import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_by_name,
                         workspace_of)
 
@@ -937,9 +937,30 @@ class PipelineApp:
         frame.columnconfigure(1, weight=1)
         return frame
 
-    def _field(self, parent, row, label, value="", browse=None, variable=None, openable=False):
+    def _path_choices(self, kind):
+        """Full paths offered in a file or folder drop-down, the active download's first."""
+        spaces = list_workspaces()
+        spaces.sort(key=lambda ws: ws != self.workspace)
+        if kind == "csv":
+            paths = self.csv_source.choices()
+            for ws in spaces:
+                paths += [str(ws.master_csv), str(ws.measurements_csv)]
+        elif kind == "folder":
+            paths = [str(ws.media_dir) for ws in spaces]
+        else:
+            paths = []
+            for ws in spaces:
+                paths += [str(ws.raw_dir), *map(str, sorted(ws.root.glob("*.zip")))]
+        return [p for p in dict.fromkeys(paths) if Path(p).exists()]
+
+    def _field(self, parent, row, label, value="", browse=None, variable=None, openable=False, kind=None):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=3)
-        entry = ttk.Entry(parent, textvariable=variable) if variable is not None else ttk.Entry(parent)
+        if kind:
+            variable = variable if variable is not None else tk.StringVar(value=str(value))
+            entry = PathCombo(parent, self, variable, lambda: self._path_choices(kind))
+            entry.var = variable
+        else:
+            entry = ttk.Entry(parent, textvariable=variable) if variable is not None else ttk.Entry(parent)
         if variable is None:
             entry.insert(0, str(value))
         entry.grid(row=row, column=1, sticky="ew", pady=3)
@@ -947,7 +968,8 @@ class PipelineApp:
             ttk.Button(parent, text="Browse…", command=lambda: self._browse(entry, browse)).grid(
                 row=row, column=2, padx=(6, 0), pady=3)
         if openable:
-            ttk.Button(parent, text="Open", command=lambda: self._open(entry.get().strip())).grid(
+            ttk.Button(parent, text="Open", command=lambda: self._open(
+                (variable.get() if kind else entry.get()).strip())).grid(
                 row=row, column=3, padx=(6, 0), pady=3)
         return entry
 
@@ -994,7 +1016,7 @@ class PipelineApp:
         tab.columnconfigure((0, 1), weight=1, uniform="half")
 
         data = self._section(tab, "Input data", 0, columnspan=2)
-        self.data_entry = self._field(data, 0, "Folder or ZIP")
+        self.data_entry = self._field(data, 0, "Folder or ZIP", kind="input")
         ttk.Button(data, text="Folder…", command=lambda: self._browse(
             self.data_entry, lambda: filedialog.askdirectory(title="Select data folder"))).grid(
             row=0, column=2, padx=(6, 0))
@@ -1045,9 +1067,9 @@ class PipelineApp:
         tab = ttk.Frame(self.notebook, padding=16)
         tab.columnconfigure(0, weight=1)
         files = self._section(tab, "Files", 0)
-        self._field(files, 0, "Dataset CSV", variable=self.dataset_var, openable=True,
+        self._field(files, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
                     browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
-        self._field(files, 1, "Image folder", variable=self.media_dir_var, openable=True,
+        self._field(files, 1, "Image folder", variable=self.media_dir_var, openable=True, kind="folder",
                     browse=lambda: filedialog.askdirectory(title="Select image folder"))
 
         download = self._section(tab, "Download images", 1)
@@ -1060,9 +1082,9 @@ class PipelineApp:
         tab.columnconfigure(0, weight=1)
 
         files = self._section(tab, "Files", 0)
-        self._field(files, 0, "Image folder", variable=self.media_dir_var, openable=True,
+        self._field(files, 0, "Image folder", variable=self.media_dir_var, openable=True, kind="folder",
                     browse=lambda: filedialog.askdirectory(title="Select image folder"))
-        self._field(files, 1, "Measurements CSV", variable=self.measurements_var, openable=True,
+        self._field(files, 1, "Measurements CSV", variable=self.measurements_var, openable=True, kind="csv",
                     browse=lambda: filedialog.asksaveasfilename(title="Measurements CSV", defaultextension=".csv",
                                                                 filetypes=CSV_TYPES, confirmoverwrite=False))
 
@@ -1083,7 +1105,7 @@ class PipelineApp:
                                                       ("Choose images…", self._choose_measurements)])
 
         join = self._section(tab, "Add results to the dataset", 2)
-        self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True,
+        self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
                     browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
         self.join_status = self._action(join, 2, [("Join into dataset…", self._run_join)])
         return tab
@@ -1122,7 +1144,7 @@ class PipelineApp:
         self.dataset_var.set(str(next((p for p in (ws.master_csv, ws.full_master_csv, ws.inspect_csv)
                                        if p.is_file()), ws.master_csv)))
         if ws.raw_dir.is_dir():
-            _set_entry(self.data_entry, ws.raw_dir)
+            self.data_entry.var.set(str(ws.raw_dir))
         self.csv_source.select(self.dataset_var.get() if Path(self.dataset_var.get()).is_file() else "")
         self._save_settings()
 
@@ -1137,7 +1159,7 @@ class PipelineApp:
     def _browse(self, entry, ask):
         path = ask()
         if path:
-            _set_entry(entry, path)
+            (entry.var.set if hasattr(entry, "var") else lambda p: _set_entry(entry, p))(path)
 
     def _open(self, path):
         try:
@@ -1156,7 +1178,7 @@ class PipelineApp:
         self._refresh_issue_summary()
 
     def _data_folder(self):
-        path = self.data_entry.get().strip()
+        path = self.data_entry.var.get().strip()
         if not path:
             return None
         try:
@@ -1431,7 +1453,7 @@ class PipelineApp:
         def work():
             folder = download_dataset(*inputs, log=self._log)
             self._ui(self._set_workspace, workspace_of(folder))
-            self._ui(_set_entry, self.data_entry, folder)
+            self._ui(self.data_entry.var.set, folder)
             return "Downloaded"
 
         self._start(self.download_status, "Downloading…", work)
@@ -1458,7 +1480,7 @@ class PipelineApp:
 
     def _run_clean(self):
         phases = [n for n, var in enumerate(self.phase_vars, 1) if var.get()]
-        path = self.data_entry.get().strip()
+        path = self.data_entry.var.get().strip()
         if not phases:
             messagebox.showwarning("No steps", "Tick at least one phase to run.", parent=self.root)
             return

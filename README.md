@@ -138,6 +138,13 @@ alone. The **Download** box at the top of the window selects the active
 download; choosing one fills in the file paths on every tab. A download
 or a cleaning run makes its folder the active one automatically.
 
+Every file and folder box in the app is a drop-down as well as having
+a Browse button. The drop-down lists the files of the active download
+first, then those of other downloads. Paths inside the active download
+are shown as just the file name (`master_cleaned.csv`); paths in other
+downloads are shown relative to `data/`, and anything else is shown in
+full. You can also type a name or a full path.
+
 ### Tab 1: Download
 
 Choose a preset and a species, or paste the DOI of an existing GBIF

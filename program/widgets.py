@@ -1,10 +1,12 @@
 """Widgets shared by the dialogs and the Modify and Analysis tabs."""
 import sys
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, ttk
 
 import pandas as pd
 
+from config import DATA_DIR
 from .stats import numbers
 from .utils import save_csv
 
@@ -270,3 +272,62 @@ class BarChart(tk.Canvas):
             self.create_text(self.LABEL_W + length + 6, y + 10, text=self._format(value), anchor="w",
                              fill=p["muted"])
         self.configure(scrollregion=(0, 0, width, top + len(self.items) * self.ROW + 8))
+
+
+def path_label(path, workspace=None):
+    """The shortest clear text for a path: relative to the active download, else to data/, else in full."""
+    path = str(path or "").strip()
+    if not path:
+        return ""
+    for base in ([workspace.root] if workspace else []) + [DATA_DIR]:
+        try:
+            return str(Path(path).resolve().relative_to(base.resolve())) or path
+        except (ValueError, OSError):
+            continue
+    return path
+
+
+class PathCombo(ttk.Combobox):
+    """A drop-down of files or folders. `variable` always holds the full path; the box shows a short label
+    for paths inside the active download (the file name) and the full path for anything else."""
+
+    def __init__(self, parent, app, variable, choices, on_select=None, **options):
+        self.display = tk.StringVar()
+        super().__init__(parent, textvariable=self.display, postcommand=self._fill, **options)
+        self.app, self.variable, self.choices, self.on_select = app, variable, choices, on_select
+        self.labels = {}
+        variable.trace_add("write", lambda *_: self._sync())
+        self.bind("<<ComboboxSelected>>", lambda _: self._commit())
+        self.bind("<Return>", lambda _: self._commit())
+        self.bind("<FocusOut>", lambda _: self._commit(notify=False))
+        self._fill()
+        self._sync()
+
+    def _label(self, path):
+        return path_label(path, self.app.workspace)
+
+    def _fill(self):
+        paths = list(dict.fromkeys([*self.choices(), self.variable.get().strip()]))
+        self.labels = {}
+        for path in filter(None, paths):
+            self.labels.setdefault(self._label(path), path)
+        self.configure(values=list(self.labels))
+
+    def _sync(self):
+        self.display.set(self._label(self.variable.get()))
+
+    def _commit(self, notify=True):
+        text = self.display.get().strip()
+        if not self.labels:
+            self._fill()
+        path = self.labels.get(text)
+        if path is None and text and self.app.workspace and not Path(text).is_absolute():
+            candidate = self.app.workspace.root / text
+            path = str(candidate) if candidate.exists() else None
+        path = path if path is not None else text
+        changed = path != self.variable.get().strip()
+        if changed:
+            self.variable.set(path)
+        self._sync()
+        if self.on_select and (notify or changed):
+            self.on_select(path)
