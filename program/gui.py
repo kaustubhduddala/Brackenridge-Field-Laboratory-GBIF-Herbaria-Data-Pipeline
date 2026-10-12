@@ -16,7 +16,7 @@ from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA
                     password_store_name, remove_gbif_account, save_gbif_account, save_settings, saved_gbif_account,
                     saved_gbif_password)
 
-from . import theme
+from . import site_login, sites, theme
 from .analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
                        measure_images, measurement_status)
 from .analysis_tab import AnalysisTab
@@ -591,6 +591,172 @@ class JoinDialog(tk.Toplevel):
         self.destroy()
 
 
+class SiteLoginDialog(tk.Toplevel):
+    """Sites that refused image downloads, and the sign-ins saved for them."""
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.title("Site logins")
+        self.geometry("640x520")
+        self.minsize(520, 380)
+        self.transient(app.root)
+        self.configure(background=app.palette["bg"])
+        theme.set_title_bar(self, app.theme_name == "dark")
+        self.app = app
+        self.retry_ids = None
+        self.done = None
+        self.signing_in = False
+
+        body = ttk.Frame(self, padding=14)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        ttk.Label(body, text="Some image sites only allow downloads from a signed-in or verified browser. Sign in to "
+                             "a site in the window that opens, then click Done. The app keeps the cookies and uses "
+                             "them for that site's downloads.", style="Muted.TLabel", wraplength=580,
+                  justify="left").grid(row=0, column=0, sticky="w")
+        self.list_frame = ttk.Frame(body)
+        self.list_frame.grid(row=1, column=0, sticky="nsew", pady=10)
+        self.list_frame.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        other = ttk.LabelFrame(body, text="Sign in to another site")
+        other.grid(row=2, column=0, sticky="ew")
+        other.columnconfigure(0, weight=1)
+        self.url_entry = ttk.Entry(other)
+        self.url_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(other, text="Open browser", command=lambda: self._start(self.url_entry.get())).grid(row=0, column=1)
+
+        self.status = ttk.Label(body, style="Muted.TLabel", wraplength=580, justify="left")
+        self.status.grid(row=3, column=0, sticky="w", pady=(10, 0))
+        footer = ttk.Frame(body)
+        footer.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        self.done_button = ttk.Button(footer, text="Done, save my sign-in", style="Accent.TButton",
+                                      command=self._finish, state="disabled")
+        self.done_button.pack(side="left")
+        ttk.Button(footer, text="Close", command=self.destroy).pack(side="right")
+        if not site_login.available():
+            self._say("Browser sign-in needs Playwright. " + site_login.INSTALL_HINT, "error")
+        self._render()
+        _finish_dialog(self)
+
+    def _say(self, text, kind="muted"):
+        self.status.configure(text=text, foreground=self.app.palette[kind])
+
+    def _render(self):
+        for child in self.list_frame.winfo_children():
+            child.destroy()
+        saved = sites.saved_hosts()
+        refused = sites.known_sites()
+        row = 0
+        if refused:
+            ttk.Label(self.list_frame, text="Sites that have refused access", style="Heading.TLabel").grid(
+                row=row, column=0, columnspan=3, sticky="w")
+            row += 1
+            for host in sorted(refused):
+                ids = self.app._refused_ids(host)
+                signed_in = any(sites._domain_matches(host, h) or sites._domain_matches(h, host) for h in saved)
+                ttk.Label(self.list_frame, text=f"{host}   {len(ids)} images waiting"
+                          + ("   (signed in)" if signed_in else "")).grid(row=row, column=0, sticky="w")
+                ttk.Button(self.list_frame, text="Sign in…", command=lambda h=host: self._start(h)).grid(
+                    row=row, column=1, padx=6, pady=2)
+                ttk.Button(self.list_frame, text=f"Retry {len(ids)}", command=lambda i=list(ids): self._retry(i),
+                           state="normal" if ids else "disabled").grid(row=row, column=2, pady=2)
+                row += 1
+        ttk.Label(self.list_frame, text="Saved sign-ins", style="Heading.TLabel").grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(8 if row else 0, 0))
+        row += 1
+        if not saved:
+            ttk.Label(self.list_frame, text="None yet", style="Muted.TLabel").grid(row=row, column=0, sticky="w")
+        for host, when in sorted(saved.items()):
+            ttk.Label(self.list_frame, text=f"{host}   saved {when.replace('T', ' ')}").grid(
+                row=row, column=0, sticky="w")
+            ttk.Button(self.list_frame, text="Sign in again", command=lambda h=host: self._start(h)).grid(
+                row=row, column=1, padx=6, pady=2)
+            ttk.Button(self.list_frame, text="Forget", command=lambda h=host: self._forget(h)).grid(
+                row=row, column=2, pady=2)
+            row += 1
+
+    def _forget(self, host):
+        sites.forget_login(host)
+        self._render()
+
+    def _retry(self, ids):
+        self.retry_ids = set(ids)
+        self.destroy()
+
+    def _start(self, url):
+        url = url.strip()
+        if not url:
+            self.bell()
+            return
+        if self.signing_in:
+            return
+        if not site_login.available():
+            self._say("Browser sign-in needs Playwright. " + site_login.INSTALL_HINT, "error")
+            return
+        self.signing_in = True
+        self.done = threading.Event()
+        self.done_button.configure(state="normal")
+        self._say("A browser window is opening. Sign in or pass the check, then click Done here.", "busy")
+        done = self.done
+
+        def work():
+            try:
+                host = site_login.sign_in(url, done, self.app._log)
+                result = (True, f"Saved the sign-in for {host}. You can retry its images now.")
+            except site_login.BrowserMissing as exc:
+                self.after(0, lambda: self._offer_browser(url, str(exc)))
+                return
+            except Exception as exc:
+                result = (False, str(exc))
+            self.after(0, lambda: self._finished(*result))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _offer_browser(self, url, message):
+        self.signing_in = False
+        self.done_button.configure(state="disabled")
+        if not self.winfo_exists():
+            return
+        if messagebox.askyesno("Browser needed", message + "\n\nDownload Chromium now?", parent=self):
+            self._say("Downloading Chromium…", "busy")
+            self.signing_in = True
+
+            def work():
+                try:
+                    site_login.install_chromium(self.app._log)
+                    error = None
+                except Exception as exc:
+                    error = str(exc)
+                self.after(0, lambda: self._installed(url, error))
+
+            threading.Thread(target=work, daemon=True).start()
+        else:
+            self._say(message, "error")
+
+    def _installed(self, url, error):
+        self.signing_in = False
+        if not self.winfo_exists():
+            return
+        if error:
+            self._say(error, "error")
+        else:
+            self._start(url)
+
+    def _finish(self):
+        if self.done:
+            self.done.set()
+            self._say("Saving…", "busy")
+
+    def _finished(self, ok, message):
+        self.signing_in = False
+        if not self.winfo_exists():
+            return
+        self.done_button.configure(state="disabled")
+        self._say(message, "ok" if ok else "error")
+        self._render()
+
+
 class AccountDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app.root)
@@ -738,6 +904,7 @@ class PipelineApp:
         self.progress_started = None
         self.workspace = None
         self.restyle_hooks = []
+        self.idle_callbacks = []
 
         get = self.settings.get
         self.theme_var = tk.StringVar(value=get("theme", "System"))
@@ -1074,7 +1241,8 @@ class PipelineApp:
 
         download = self._section(tab, "Download images", 1)
         self.media_status = self._action(download, 1, [("Download missing images", self._run_download_media),
-                                                       ("Choose records…", self._choose_downloads)])
+                                                       ("Choose records…", self._choose_downloads),
+                                                       ("Site logins…", self._open_site_logins)])
         return tab
 
     def _build_measure_tab(self):
@@ -1354,6 +1522,8 @@ class PipelineApp:
             self.progress.stop()
             self.progress.configure(mode="determinate", value=0)
             self.status_var.set("Ready")
+            while self.idle_callbacks:
+                self.root.after(0, self.idle_callbacks.pop(0))
 
     def _start(self, status_label, busy_text, work, cancellable=False):
         if self.running:
@@ -1554,6 +1724,23 @@ class PipelineApp:
         if choice:
             self._run_download_media(*choice)
 
+    def _refused_ids(self, host):
+        """gbifIDs in the current dataset whose last image download was refused by `host`."""
+        csv_path, media_dir = self.dataset_var.get().strip(), self.media_dir_var.get().strip()
+        if not csv_path or not media_dir or not Path(csv_path).is_file():
+            return []
+        try:
+            items = media_status(csv_path, media_dir, lambda *_: None)
+        except Exception:
+            return []
+        return [i["id"] for i in items if i["status"] == "Failed" and f"by {host}" in str(i["detail"])]
+
+    def _open_site_logins(self):
+        dialog = SiteLoginDialog(self)
+        self.root.wait_window(dialog)
+        if dialog.retry_ids:
+            self._run_download_media(dialog.retry_ids)
+
     def _run_download_media(self, only_ids=None, force=False):
         csv_path = self._dataset_csv()
         if not csv_path:
@@ -1567,6 +1754,8 @@ class PipelineApp:
             r = download_media(csv_path, media_dir, self._log, self.control, self._progress, only_ids, force)
             if r["cancelled"]:
                 return "Cancelled"
+            if r["blocked"]:
+                self.idle_callbacks.append(self._open_site_logins)
             return (f"{r['downloaded']} downloaded, {r['skipped']} already present, "
                     f"{r['skipped_by_user']} skipped, {r['failed']} failed")
 

@@ -33,6 +33,11 @@ def self_test():
                          utils, workspace)
         import bs4, keyring, numpy, openai, pandas, PIL.Image, pygbif, requests  # noqa: F401
         import tkinter  # noqa: F401
+        from program import site_login
+        if not site_login.available():
+            raise ImportError('playwright is not installed or was not bundled')
+        if not site_login.driver_ready():
+            raise RuntimeError("Playwright's browser driver cannot run")
         from program import gui  # noqa: F401
     except Exception as exc:
         print(f"Self-test failed: {exc!r}", file=sys.stderr)

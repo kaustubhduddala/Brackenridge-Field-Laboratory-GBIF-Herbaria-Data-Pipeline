@@ -12,3 +12,6 @@
 /program/data
 credentials.json
 settings.json
+site_logins.json
+/browser_profile
+/browsers

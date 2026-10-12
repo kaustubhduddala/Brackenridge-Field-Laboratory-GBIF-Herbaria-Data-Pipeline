@@ -304,6 +304,37 @@ Summaries of any CSV, with every table saveable as a CSV:
   deviation and sum of a numeric column for each group of another
   column, for example the measured leaf width per country.
 
+### Sites that refuse image downloads
+
+Some image servers answer 403 Forbidden or show a verification page. The
+downloader first retries such a request once with browser-like headers
+and a Referer. If the site still refuses, the images are listed under
+the site's name, and after three refusals in a row the rest of that
+site's images are skipped for the run so the site is not hammered. When
+the run ends a **Site logins** window opens with each site that
+refused access:
+
+1. **Sign in…** opens a real browser window (Chrome if installed,
+   otherwise Playwright's Chromium) on that site. Sign in or pass the
+   check, then click **Done, save my sign-in**.
+2. The cookies are saved in `site_logins.json` (readable only by you,
+   and ignored by git) and used for every later request to that site.
+   The browser profile is kept in `browser_profile/`.
+3. **Retry** downloads just that site's refused images again.
+
+The same window is available any time from Images, **Site logins…**,
+where you can also sign in to a site before downloading, sign in again
+when cookies expire, or forget a saved sign-in. This needs Playwright:
+`pip install playwright`, and `playwright install chromium` if Chrome is
+not installed. Nothing else in the app needs it.
+
+Sites that need their own download method have a branch in
+`download_special()` in `program/sites.py`. It currently has empty
+placeholders for the Meise Botanic Garden (`oxalis.br.fgov.be`),
+Google Drive and the Smithsonian NMNH; return the saved file's path from
+a branch to take over the download for that site, or `None` to fall back
+to the general downloader.
+
 ### Choosing specific records or images
 
 The checklist window lists each gbifID with its status (for example
@@ -597,6 +628,8 @@ them in this list, so there are no circular imports.
 | `program/gbif.py` | GBIF species lookup and dataset downloads |
 | `program/processor.py` | Phase 1 and phase 2 |
 | `program/media.py` | Image downloading |
+| `program/sites.py` | Saved site sign-ins, browser-like retries, site-specific downloaders |
+| `program/site_login.py` | The browser window used to sign in to a site |
 | `program/analysis.py` | Model requests, measurements CSV and join |
 | `program/modify.py` | Editing any CSV: columns, joins, rows, combining, backups |
 | `program/stats.py` | Summaries used by the Analysis tab |

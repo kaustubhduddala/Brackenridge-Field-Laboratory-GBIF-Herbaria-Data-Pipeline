@@ -29,6 +29,7 @@ openai>=3.24.0
 packaging>=26.3
 pandas>=3.0.6
 pillow>=12.3.0
+playwright>=1.49.0
 platformdirs>=4.12.3
 pydantic>=2.13.5
 pydantic_core>=2.46.5

@@ -27,6 +27,11 @@ DATA_DIR = BASE_DIR / "data"
 RESPONSES_DIR_NAME = "responses"
 LOG_FILE = DATA_DIR / "pipeline.log"
 SETTINGS_FILE = BASE_DIR / "settings.json"
+SITE_LOGINS_FILE = BASE_DIR / "site_logins.json"
+BROWSER_PROFILE_DIR = BASE_DIR / "browser_profile"
+BROWSERS_DIR = BASE_DIR / "browsers"  # Playwright's Chromium, downloaded on demand
+BROWSER_USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/126.0.0.0 Safari/537.36")
 
 LMSTUDIO_URL = os.environ.get("LMSTUDIO_URL", "http://localhost:1234/v1")
 LMSTUDIO_MODEL = os.environ.get("LMSTUDIO_MODEL", "")

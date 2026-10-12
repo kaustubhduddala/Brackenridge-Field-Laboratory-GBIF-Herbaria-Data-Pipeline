@@ -13,7 +13,8 @@ import pandas as pd
 import requests
 import urllib3
 
-from config import HEADERS, IMAGE_EXTENSIONS, LINK_COLUMNS
+from config import IMAGE_EXTENSIONS, LINK_COLUMNS
+from . import sites
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -147,7 +148,7 @@ def request_with_backoff(url, max_retries=3, log=print, control=None, stream=Fal
     for attempt in range(1, max_retries + 1):
         check(control)
         try:
-            resp = requests.get(url, timeout=30, verify=False, headers=HEADERS, stream=stream)
+            resp = sites.fetch(url, stream=stream)
         except requests.exceptions.RequestException as exc:
             error = str(exc)
         else:

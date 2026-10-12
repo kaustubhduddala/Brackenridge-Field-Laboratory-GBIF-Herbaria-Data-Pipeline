@@ -5,9 +5,11 @@ from urllib.parse import urljoin, urlparse
 import pandas as pd
 
 from config import IMAGE_EXTENSIONS
+from program.sites import AccessDenied, download_special, host_of, looks_blocked, note_refused
 from program.utils import (ItemSkipped, check, find_media_url, gbif_ids, index_images, is_blank, read_csv,
                    request_with_backoff, save_csv)
 
+BLOCKED_AFTER = 3  # skip a site for the rest of the run after this many refusals in a row
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
 
 
@@ -96,6 +98,9 @@ def _detect_extension(content_type, url=""):
 
 
 def _fetch_image(url, stem, log=print, control=None):
+    special = download_special(url, stem, log, control)
+    if special:
+        return special
     resp = request_with_backoff(url, log=log, control=control, stream=True)
     content_type = resp.headers.get("Content-Type", "").lower()
     if "json" in content_type:
@@ -107,6 +112,8 @@ def _fetch_image(url, stem, log=print, control=None):
     elif "text/html" in content_type:
         image_url = _resolve_image_from_html(resp, url, log)
         if not image_url:
+            if looks_blocked(resp.text):
+                raise AccessDenied(url, reason="the site showed a sign-in or verification page")
             raise ValueError("HTML page has no recognizable image (it may need JavaScript)")
         log(f"    Image from page: {image_url[:80]}")
         resp = request_with_backoff(image_url, log=log, control=control, stream=True)
@@ -173,7 +180,8 @@ def download_media(csv_path, media_dir, log=print, control=None, progress=None, 
     images = index_images(media_dir)
 
     summary = {"total": len(rows), "downloaded": 0, "skipped": 0, "skipped_by_user": 0, "failed": 0,
-               "cancelled": False}
+               "cancelled": False, "blocked": {}}
+    denied_in_a_row = {}
     scope = f"{len(rows)} selected records" if only_ids is not None else f"{len(rows)} records"
     log(f"Downloading images for {scope} to {media_dir}")
 
@@ -201,6 +209,12 @@ def download_media(csv_path, media_dir, log=print, control=None, progress=None, 
             df.at[idx, "media_error"] = "No media link found in row"
             summary["failed"] += 1
             continue
+        host = host_of(url)
+        if denied_in_a_row.get(host, 0) >= BLOCKED_AFTER:
+            df.at[idx, "media_error"] = f"Access denied by {host}; skipped after repeated refusals"
+            summary["blocked"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
         log(f"[{number}/{len(rows)}] {label}: {url[:80]}")
         try:
             path = _fetch_image(url, media_dir / label, log, control)
@@ -208,12 +222,21 @@ def download_media(csv_path, media_dir, log=print, control=None, progress=None, 
             df.at[idx, "media_path"] = str(path)
             df.at[idx, "media_error"] = ""
             summary["downloaded"] += 1
+            denied_in_a_row.pop(host, None)
         except ItemSkipped:
             if control and control.cancelled:
                 summary["cancelled"] = True
                 break
             log(f"    Skipped {label}")
             summary["skipped_by_user"] += 1
+        except AccessDenied as exc:
+            log(f"    Failed: {exc}")
+            df.at[idx, "media_error"] = str(exc)
+            if host not in denied_in_a_row:
+                note_refused(host)
+            denied_in_a_row[host] = denied_in_a_row.get(host, 0) + 1
+            summary["blocked"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
         except Exception as exc:
             log(f"    Failed: {exc}")
             df.at[idx, "media_error"] = str(exc)
@@ -231,6 +254,8 @@ def download_media(csv_path, media_dir, log=print, control=None, progress=None, 
         log("Image download cancelled")
     elif progress:
         progress(len(rows), len(rows))
+    for host, blocked_ids in summary["blocked"].items():
+        log(f"{host} refused access for {len(blocked_ids)} images. Use Images, Site logins to sign in, then retry.")
     log(f"Image download complete: {summary['downloaded']} downloaded, {summary['skipped']} already present, "
         f"{summary['skipped_by_user']} skipped by you, {summary['failed']} failed")
     return summary
