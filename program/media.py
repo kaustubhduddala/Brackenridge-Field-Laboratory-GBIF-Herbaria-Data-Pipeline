@@ -4,7 +4,7 @@ from urllib.parse import urljoin, urlparse
 
 import pandas as pd
 
-from config import IMAGE_EXTENSIONS, MEDIA_DIR
+from config import IMAGE_EXTENSIONS
 from program.utils import (ItemSkipped, check, find_media_url, gbif_ids, index_images, is_blank, read_csv,
                    request_with_backoff, save_csv)
 
@@ -134,7 +134,7 @@ def _replace_old_versions(path):
             old.unlink(missing_ok=True)
 
 
-def media_status(csv_path, media_dir=MEDIA_DIR, log=print):
+def media_status(csv_path, media_dir, log=print):
     df = read_csv(csv_path, log)
     ids = gbif_ids(df)
     images = index_images(media_dir)
@@ -156,9 +156,9 @@ def media_status(csv_path, media_dir=MEDIA_DIR, log=print):
     return list(items.values())
 
 
-def download_media(csv_path, media_dir=None, log=print, control=None, progress=None, only_ids=None, force=False):
+def download_media(csv_path, media_dir, log=print, control=None, progress=None, only_ids=None, force=False):
     csv_path = Path(csv_path)
-    media_dir = Path(media_dir or MEDIA_DIR)
+    media_dir = Path(media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)
     failed_csv = csv_path.with_name(csv_path.stem + "_failed_media.csv")
 

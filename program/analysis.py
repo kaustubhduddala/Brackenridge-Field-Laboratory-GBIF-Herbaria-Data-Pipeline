@@ -9,8 +9,8 @@ import pandas as pd
 import requests
 from openai import APIConnectionError, BadRequestError, NotFoundError, OpenAI
 
-from config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MASTER_CSV, MAX_IMAGE_SIDE,
-                    MEASUREMENTS_CSV, MEDIA_DIR, MIN_CONTEXT_LENGTH, REQUEST_TIMEOUT_S, RESPONSES_DIR)
+from config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MAX_IMAGE_SIDE, MIN_CONTEXT_LENGTH,
+                    REQUEST_TIMEOUT_S, RESPONSES_DIR_NAME)
 from .utils import ItemSkipped, check, gbif_ids, index_images, is_blank, read_csv, save_csv
 
 TRAITS = ("panicle_length", "leaf_width", "seed_length")
@@ -58,40 +58,30 @@ JSON_SHAPE = json.dumps({
     "voucher": {field: "string" for field in VOUCHER_FIELDS},
 }, indent=2)
 
-SYSTEM_PROMPT = """You are a meticulous botanical measurement assistant analyzing one herbarium
-specimen image of Guinea grass (Megathyrsus maximus).
+SYSTEM_PROMPT = """
+Role: You are a meticulous botanical measurement assistant analyzing one Megathyrsus maximus (Guinea grass) herbarium specimen image. 
 
-Calibration
-- Use the ruler or scale bar if visible. It may not look like a standard ruler; any scale with
-  visible tick marks can be used.
-- If there is no usable scale but the full herbarium sheet is visible, use 29 cm as the sheet
-  width only as a fallback.
-- If neither is possible, return null measurements and explain why in notes. Never invent
-  measurements.
-- Say in one sentence how you calibrated in the calibration field.
+Instructions: Analyze the image and return strictly a JSON object based on the rules below. Keep reasoning brief; estimate endpoints once and move on.
 
-Measurements
-Return two independent measurements per trait when possible, from different structures: two
-panicles, two leaves, two seeds. If only one valid structure is visible, fill measurement 1 and
-set measurement 2 to null.
-- panicle_length: from the lowest panicle node to the panicle tip.
-- leaf_width: the maximum margin-to-margin width of a leaf at its broadest point.
-- seed_length: from the branch point of an individual seed to its tip.
-Use centimetres rounded to two decimals. If a trait is absent, obscured or cannot be calibrated,
-use null for both its value and confidence. If the specimen has flowers but no visible seeds,
-seed length is null. Confidence (0 to 1) must reflect visibility, calibration quality and
-endpoint clarity, not certainty created by guessing.
+1. Calibration
+* Primary: Use any visible ruler or scale bar (any visible tick marks).
+* Fallback: If no scale is visible but the full herbarium sheet is visible, assume a sheet width of 29 cm. 
+* Failure: If neither is available, set all measurement values and confidences to null and explain why in notes. Never guess or invent scale.
+* Documentation: Provide exactly one sentence in the calibration_method field explaining your scale reference.
 
-Voucher label
-Transcribe any readable label or voucher text into voucher_text as one line, separating the
-label's lines with " | ". Copy details into the voucher fields (Darwin Core terms) only when the
-label states them; leave a field empty rather than guessing, and do not repeat one value in
-several fields (for example a collector's name is recordedBy, not locality). Write eventDate as
-YYYY-MM-DD, YYYY-MM or YYYY depending on what is readable; never use 00 for an unknown part.
-Use an empty string for anything you cannot read.
+2. Measurements (cm, rounded to 2 decimals)
+Take 2 independent measurements per trait from different structures (e.g., 2 panicles). If only one is visible, populate measurement 1 and set measurement 2 to null. 
+* panicle_length: From the lowest panicle node to the panicle tip.
+* leaf_width: Maximum margin-to-margin width at the broadest point.
+* seed_length: From the branch point of an individual seed to its tip. (If flowers are present but seeds are not, use null).
+* Confidence (0.0 to 1.0): Must strictly reflect visibility, endpoint clarity, and calibration quality. If a trait is missing/obscured, set both its value and confidence to null.
 
-Keep your reasoning brief: estimate each endpoint once against the scale and move on.
-Respond with only this JSON object:
+3. Voucher Label (Darwin Core Terms)
+* voucher_text: Transcribe all readable text into a single line, replacing physical line breaks with " | ".
+* DwC Fields: Map text to fields (e.g., recordedBy, locality) only if explicitly stated. Do not guess, and do not repeat the same value in multiple fields. Use "" (empty string) for unreadable/missing data.
+* eventDate: Strictly use YYYY-MM-DD, YYYY-MM, or YYYY. Never use 00 for unknown parts.
+
+Output constraint: Respond ONLY with the requested JSON object. No markdown formatting outside of the JSON block, and no introductory or concluding text.
 """ + JSON_SHAPE
 
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
@@ -230,7 +220,7 @@ class ModelOutputError(ValueError):
         self.raw = raw
 
 
-def save_response(gbif_id, image, raw, error="", responses_dir=RESPONSES_DIR):
+def save_response(gbif_id, image, raw, error, responses_dir):
     responses_dir = Path(responses_dir)
     responses_dir.mkdir(parents=True, exist_ok=True)
     record = {"gbifID": gbif_id, "image": image.name, "saved_at": _now(), "error": error, **raw}
@@ -374,7 +364,7 @@ class VisionModel:
         return _normalise_result(raw["parsed"]), model, raw
 
 
-def load_measurements(csv_path=MEASUREMENTS_CSV):
+def load_measurements(csv_path):
     csv_path = Path(csv_path)
     if not csv_path.exists():
         return {}
@@ -402,9 +392,9 @@ def _describe(row):
     return ", ".join(parts)
 
 
-def measurement_status(media_dir=MEDIA_DIR, csv_path=MEASUREMENTS_CSV):
+def measurement_status(media_dir, csv_path):
     rows = load_measurements(csv_path)
-    responses_dir = Path(csv_path).parent / RESPONSES_DIR.name
+    responses_dir = Path(csv_path).parent / RESPONSES_DIR_NAME
     items = []
     for gbif_id, image in index_images(media_dir).items():
         row = rows.get(gbif_id)
@@ -430,12 +420,12 @@ def check_connection(base_url=LMSTUDIO_URL):
     return "\n".join(lines)
 
 
-def measure_images(media_dir=MEDIA_DIR, csv_path=MEASUREMENTS_CSV, log=print, control=None, progress=None,
+def measure_images(media_dir, csv_path, log=print, control=None, progress=None,
                    status=None, base_url=LMSTUDIO_URL, token_limit=DEFAULT_TOKEN_LIMIT, reasoning_effort=None,
                    only_ids=None, force=False):
     csv_path = Path(csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    responses_dir = csv_path.parent / RESPONSES_DIR.name
+    responses_dir = csv_path.parent / RESPONSES_DIR_NAME
     images = index_images(media_dir)
     rows = load_measurements(csv_path)
     targets = [(gbif_id, path) for gbif_id, path in images.items() if only_ids is None or gbif_id in only_ids]
@@ -465,7 +455,7 @@ def measure_images(media_dir=MEDIA_DIR, csv_path=MEASUREMENTS_CSV, log=print, co
         started = datetime.now()
         try:
             result, model, raw = vision.measure(image, control, status)
-            save_response(gbif_id, image, raw, responses_dir=responses_dir)
+            save_response(gbif_id, image, raw, "", responses_dir)
             rows[gbif_id] = {"gbifID": gbif_id, **_result_columns(result, model, image)}
             summary["measured"] += 1
             log(f"    Done in {(datetime.now() - started).seconds} s: {_describe(rows[gbif_id])}")
@@ -481,7 +471,7 @@ def measure_images(media_dir=MEDIA_DIR, csv_path=MEASUREMENTS_CSV, log=print, co
                                "Check that the server is running with a vision model loaded.") from exc
         except Exception as exc:
             if isinstance(exc, ModelOutputError):
-                save_response(gbif_id, image, exc.raw, error=str(exc), responses_dir=responses_dir)
+                save_response(gbif_id, image, exc.raw, str(exc), responses_dir)
             previous = rows.get(gbif_id, {})
             rows[gbif_id] = {**previous, "gbifID": gbif_id, "ai_image": image.name, "ai_error": str(exc),
                              "ai_measured_at": _now()}
@@ -513,7 +503,7 @@ def count_matches(master_csv, master_key, measurements_csv, measurement_key):
     return int(master_ids.isin(measured).sum()), len(master_ids), len(measured)
 
 
-def join_measurements(master_csv=MASTER_CSV, measurements_csv=MEASUREMENTS_CSV, log=print, fill_blanks=False,
+def join_measurements(master_csv, measurements_csv, log=print, fill_blanks=False,
                       master_key="gbifID", measurement_key="gbifID", master_columns=None,
                       measurement_columns=None, output_csv=None, matched_only=False):
     master_csv, measurements_csv = Path(master_csv), Path(measurements_csv)

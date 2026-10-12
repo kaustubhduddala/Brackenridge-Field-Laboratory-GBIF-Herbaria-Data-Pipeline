@@ -1,6 +1,5 @@
 import queue
 import re
-import sys
 import threading
 import time
 import tkinter as tk
@@ -12,67 +11,28 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA_DIR, DEFAULT_TOKEN_LIMIT,
-                    FULL_MASTER_CSV, GBIF_SIGNUP_URL, INSPECT_CSV, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, MASTER_CSV,
-                    MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, PRESETS,
-                    THINKING_CHOICES, gbif_credentials, load_settings, password_store_name, remove_gbif_account,
-                    save_gbif_account, save_settings, saved_gbif_account, saved_gbif_password)
+                    GBIF_SIGNUP_URL, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, PRECISION_NONE, PRECISION_RELAXED,
+                    PRECISION_STRICT, PRESETS, THINKING_CHOICES, gbif_credentials, load_settings,
+                    password_store_name, remove_gbif_account, save_gbif_account, save_settings, saved_gbif_account,
+                    saved_gbif_password)
 
 from . import theme
 from .analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
                        measure_images, measurement_status)
+from .analysis_tab import AnalysisTab
+from .csv_source import CsvSource
 from .gbif import check_gbif_login, download_dataset
 from .media import download_media, media_status
 from .processor import REQUIRED_COLUMNS, available_columns, run_cleaning
 from .power import KeepAwake
-from .utils import TaskControl, find_dwca_files, open_path, prepare_folder, scan_issues
-
-CSV_TYPES = [("CSV files", "*.csv"), ("All files", "*.*")]
-CHECK_MARK = [(4, 8), (5, 9), (6, 10), (7, 11), (8, 10), (9, 9), (10, 8), (11, 7), (12, 6)]
-
-
-def _set_entry(entry, value):
-    entry.delete(0, "end")
-    entry.insert(0, str(value))
-
-
-def _set_text(widget, value):
-    widget.delete("1.0", "end")
-    widget.insert("1.0", value)
-
-
-def _check_image(master, p, checked):
-    image = tk.PhotoImage(master=master, width=16, height=16)
-    image.put(p["accent"] if checked else p["muted"], to=(1, 1, 15, 15))
-    image.put(p["accent"] if checked else p["surface"], to=(2, 2, 14, 14))
-    if checked:
-        for x, y in CHECK_MARK:
-            image.put(p["on_accent"], to=(x, y - 1, x + 1, y + 1))
-    return image
-
+from .modify_tab import ModifyTab
+from .utils import TaskControl, find_dwca_files, open_path, scan_issues
+from .widgets import CSV_TYPES, ColumnChecklist, ScrollFrame, _check_image, _set_entry, _set_text
+from .workspace import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_by_name,
+                        workspace_of)
 
 ISSUE_ACTIONS = ("Remove", "Inspect", "Nothing")
 DEFAULT_PRESET = "Default"
-
-
-class ScrollFrame(ttk.Frame):
-    def __init__(self, master, palette):
-        super().__init__(master)
-        self.canvas = tk.Canvas(self, background=palette["bg"], highlightthickness=0)
-        bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=bar.set)
-        bar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.inner = ttk.Frame(self.canvas)
-        window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.inner.columnconfigure(0, weight=1)
-        self.inner.bind("<Configure>", lambda _: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(window, width=e.width))
-        self.winfo_toplevel().bind("<MouseWheel>", self._wheel, add="+")
-
-    def _wheel(self, event):
-        step = -event.delta if sys.platform == "darwin" else -event.delta // 120
-        if step:
-            self.canvas.yview_scroll(step, "units")
 
 
 class PresetBar(ttk.Frame):
@@ -517,82 +477,6 @@ class ItemPicker(tk.Toplevel):
         self.destroy()
 
 
-class ColumnChecklist(ttk.LabelFrame):
-    def __init__(self, parent, app, title, columns, checked, key_default):
-        super().__init__(parent, text=title)
-        self.columns = list(columns)
-        self.checked = set(checked)
-        self.box_on = _check_image(self, app.palette, True)
-        self.box_off = _check_image(self, app.palette, False)
-        self.columnconfigure(1, weight=1)
-        self.rowconfigure(2, weight=1)
-
-        ttk.Label(self, text="Match on").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.key_var = tk.StringVar(value=key_default if key_default in self.columns else self.columns[0])
-        self.key_box = ttk.Combobox(self, textvariable=self.key_var, values=self.columns, state="readonly")
-        self.key_box.grid(row=0, column=1, sticky="ew")
-        self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self._refresh())
-        search = ttk.Entry(self, textvariable=self.search_var)
-        search.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 6))
-        ttk.Label(self, text="Search", style="Muted.TLabel").grid(row=1, column=2, sticky="w", padx=(6, 0))
-
-        frame = ttk.Frame(self)
-        frame.grid(row=2, column=0, columnspan=3, sticky="nsew")
-        self.tree = ttk.Treeview(frame, show="tree", selectmode="extended")
-        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.bind("<Button-1>", self._on_click)
-        self.tree.bind("<space>", lambda _: self._toggle(self.tree.selection()) or "break")
-
-        buttons = ttk.Frame(self)
-        buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-        ttk.Button(buttons, text="Check shown", command=lambda: self._set_shown(True)).pack(side="left")
-        ttk.Button(buttons, text="Uncheck shown", command=lambda: self._set_shown(False)).pack(side="left", padx=6)
-        self.count_label = ttk.Label(buttons, style="Muted.TLabel")
-        self.count_label.pack(side="right")
-        self._refresh()
-
-    def selected(self):
-        return [c for c in self.columns if c in self.checked]
-
-    def _refresh(self):
-        term = self.search_var.get().strip().lower()
-        self.tree.delete(*self.tree.get_children())
-        for i, column in enumerate(self.columns):
-            if not term or term in column.lower():
-                self.tree.insert("", "end", iid=str(i), text=column,
-                                 image=self.box_on if column in self.checked else self.box_off)
-        self._update_count()
-
-    def _update_count(self):
-        self.count_label.configure(text=f"{len(self.checked)} of {len(self.columns)} checked")
-
-    def _toggle(self, iids):
-        names = [self.columns[int(i)] for i in iids]
-        target = any(n not in self.checked for n in names)
-        for iid, name in zip(iids, names):
-            (self.checked.add if target else self.checked.discard)(name)
-            self.tree.item(iid, image=self.box_on if target else self.box_off)
-        self._update_count()
-
-    def _on_click(self, event):
-        if self.tree.identify_region(event.x, event.y) == "tree":
-            iid = self.tree.identify_row(event.y)
-            if iid:
-                self._toggle([iid])
-                return "break"
-
-    def _set_shown(self, checked):
-        for iid in self.tree.get_children():
-            name = self.columns[int(iid)]
-            (self.checked.add if checked else self.checked.discard)(name)
-            self.tree.item(iid, image=self.box_on if checked else self.box_off)
-        self._update_count()
-
-
 class JoinDialog(tk.Toplevel):
     def __init__(self, app, dataset_csv, measurements_csv):
         super().__init__(app.root)
@@ -852,12 +736,16 @@ class PipelineApp:
         self.settings.setdefault("issue_presets", {})
         self.settings.setdefault("column_presets", {})
         self.progress_started = None
+        self.workspace = None
+        self.restyle_hooks = []
 
         get = self.settings.get
         self.theme_var = tk.StringVar(value=get("theme", "System"))
-        self.dataset_var = tk.StringVar(value=str(get("dataset_csv") or (MASTER_CSV if MASTER_CSV.exists() else "")))
-        self.media_dir_var = tk.StringVar(value=get("media_dir", str(MEDIA_DIR)))
-        self.measurements_var = tk.StringVar(value=get("measurements_csv", str(MEASUREMENTS_CSV)))
+        self.dataset_var = tk.StringVar(value=str(get("dataset_csv") or ""))
+        self.media_dir_var = tk.StringVar(value=get("media_dir", ""))
+        self.measurements_var = tk.StringVar(value=get("measurements_csv", ""))
+        self.workspace_var = tk.StringVar()
+        self.csv_source = CsvSource(self)
         self.server_var = tk.StringVar(value=get("server", LMSTUDIO_URL))
         self.token_var = tk.StringVar(value=str(get("token_limit", DEFAULT_TOKEN_LIMIT)))
         self.thinking_var = tk.StringVar(value=get("thinking", "Model default"))
@@ -866,7 +754,7 @@ class PipelineApp:
         self.awake = KeepAwake()
 
         root.title(f"GBIF Herbaria Data Pipeline {APP_VERSION}")
-        root.geometry("960x880")
+        root.geometry("1040x960")
         root.minsize(800, 680)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._create_fonts()
@@ -874,6 +762,7 @@ class PipelineApp:
         self._build_ui()
         self._restyle_widgets()
         self._load_preset()
+        self._restore_workspace()
         if self.keep_awake_var.get():
             self._toggle_keep_awake()
 
@@ -904,6 +793,8 @@ class PipelineApp:
         self.console.tag_configure("ok", foreground=self.palette["ok"])
         for label, kind in self.status_kinds.items():
             label.configure(foreground=self.palette[kind])
+        for hook in self.restyle_hooks:
+            hook(self.palette)
 
     def _text(self, parent, **options):
         widget = tk.Text(parent, wrap="word", font=self.fonts["mono"], padx=8, pady=6, **options)
@@ -923,6 +814,7 @@ class PipelineApp:
         file_menu = tk.Menu(menubar, tearoff=False)
         file_menu.add_command(label="GBIF account…", command=self._open_account)
         file_menu.add_separator()
+        file_menu.add_command(label="Open this download's folder", command=self._open_workspace)
         file_menu.add_command(label="Open data folder", command=lambda: self._open(DATA_DIR))
         file_menu.add_command(label="Open log file", command=lambda: self._open(LOG_FILE))
         if not aqua:
@@ -972,6 +864,14 @@ class PipelineApp:
         titles = ttk.Frame(header)
         titles.pack(side="left")
         ttk.Label(titles, text="GBIF Herbaria Data Pipeline", style="Title.TLabel").pack(anchor="w")
+        chooser = ttk.Frame(titles)
+        chooser.pack(anchor="w", pady=(6, 0))
+        ttk.Label(chooser, text="Download", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        self.workspace_box = ttk.Combobox(chooser, textvariable=self.workspace_var, state="readonly", width=46,
+                                          postcommand=self._refresh_workspaces)
+        self.workspace_box.pack(side="left")
+        self.workspace_box.bind("<<ComboboxSelected>>", self._choose_workspace)
+        ttk.Button(chooser, text="Open folder", command=self._open_workspace).pack(side="left", padx=(6, 0))
         picker = ttk.Frame(header)
         picker.pack(side="right", anchor="n")
         awake = ttk.Checkbutton(picker, text="Keep computer awake", variable=self.keep_awake_var,
@@ -1002,12 +902,17 @@ class PipelineApp:
         panes = ttk.PanedWindow(self.root, orient="vertical")
         panes.pack(fill="both", expand=True, padx=14)
         self.notebook = ttk.Notebook(panes)
-        self.notebook.add(self._build_download_tab(), text="1. Download")
-        self.notebook.add(self._build_clean_tab(), text="2. Clean")
-        self.notebook.add(self._build_images_tab(), text="3. Images")
-        self.notebook.add(self._build_measure_tab(), text="4. Measure")
-        panes.add(self.notebook, weight=3)
-        panes.add(self._build_console(panes), weight=2)
+        self.notebook.add(self._build_download_tab(), text="Download")
+        self.notebook.add(self._build_clean_tab(), text="Clean")
+        self.notebook.add(self._build_images_tab(), text="Images")
+        self.notebook.add(self._build_measure_tab(), text="Measure")
+        self.modify_tab = ModifyTab(self.notebook, self, self.csv_source)
+        self.analysis_tab = AnalysisTab(self.notebook, self, self.csv_source)
+        self.notebook.add(self.modify_tab, text="Modify")
+        self.notebook.add(self.analysis_tab, text="Analysis")
+        self.notebook.bind("<<NotebookTabChanged>>", self._tab_changed)
+        panes.add(self.notebook, weight=4)
+        panes.add(self._build_console(panes), weight=1)
 
     def _build_console(self, parent):
         frame = ttk.Frame(parent, padding=(0, 10, 0, 0))
@@ -1097,7 +1002,9 @@ class PipelineApp:
             self.data_entry, lambda: filedialog.askopenfilename(
                 title="Select ZIP file", filetypes=[("ZIP files", "*.zip"), ("All files", "*.*")]))).grid(
             row=0, column=3, padx=(6, 0))
-        self._hint(data, 1, f"Phase 2 automatically reads {INSPECT_CSV.name}; phase 3 reads {FULL_MASTER_CSV.name}.", column=1, columnspan=3)
+        self._hint(data, 1, f"Each download is kept in its own folder under data/. Phase 2 reads {INSPECT_NAME} and "
+                            f"phase 3 reads {FULL_MASTER_NAME} from the folder shown in Download at the top.",
+                   column=1, columnspan=3)
 
         steps = self._section(tab, "Steps", 1, padx=(0, 6))
         self.phase_vars = []
@@ -1181,6 +1088,52 @@ class PipelineApp:
         self.join_status = self._action(join, 2, [("Join into dataset…", self._run_join)])
         return tab
 
+    def _workspace_labels(self):
+        return {ws.title: ws for ws in list_workspaces()}
+
+    def _refresh_workspaces(self):
+        labels = self._workspace_labels()
+        self.workspace_box.configure(values=list(labels))
+        if self.workspace and self.workspace.root.is_dir():
+            self.workspace_var.set(self.workspace.title)
+
+    def _choose_workspace(self, _event=None):
+        ws = self._workspace_labels().get(self.workspace_var.get())
+        if ws:
+            self._set_workspace(ws)
+
+    def _restore_workspace(self):
+        ws = workspace_by_name(self.settings.get("workspace")) or (list_workspaces() or [None])[0]
+        self._refresh_workspaces()
+        if ws:
+            self._set_workspace(ws)
+        else:
+            self.workspace_var.set("No downloads yet")
+
+    def _set_workspace(self, ws):
+        """Make `ws` the active download and point the file boxes at its files."""
+        if ws is None:
+            return
+        self.workspace = ws
+        self._refresh_workspaces()
+        self.workspace_var.set(ws.title)
+        self.media_dir_var.set(str(ws.media_dir))
+        self.measurements_var.set(str(ws.measurements_csv))
+        self.dataset_var.set(str(next((p for p in (ws.master_csv, ws.full_master_csv, ws.inspect_csv)
+                                       if p.is_file()), ws.master_csv)))
+        if ws.raw_dir.is_dir():
+            _set_entry(self.data_entry, ws.raw_dir)
+        self.csv_source.select(self.dataset_var.get() if Path(self.dataset_var.get()).is_file() else "")
+        self._save_settings()
+
+    def _open_workspace(self):
+        self._open(self.workspace.root if self.workspace else DATA_DIR)
+
+    def _tab_changed(self, _event=None):
+        tab = self.root.nametowidget(self.notebook.select())
+        if tab in (self.modify_tab, self.analysis_tab):
+            tab.on_show()
+
     def _browse(self, entry, ask):
         path = ask()
         if path:
@@ -1207,7 +1160,7 @@ class PipelineApp:
         if not path:
             return None
         try:
-            return prepare_folder(path, self._log)
+            return resolve_input(path, self._log, create=False)[0]
         except Exception as exc:
             messagebox.showerror("Input data", str(exc), parent=self.root)
             return False
@@ -1243,7 +1196,7 @@ class PipelineApp:
         if folder is False:
             return
         try:
-            columns, source = available_columns(folder)
+            columns, source = available_columns(self.workspace, folder)
         except Exception as exc:
             messagebox.showerror("Master columns", str(exc), parent=self.root)
             return
@@ -1410,7 +1363,7 @@ class PipelineApp:
         return answer.get()
 
     def _confirm_phase_2(self):
-        return self._ask_yesno("Run phase 2?", f"Phase 1 is done. Review {INSPECT_CSV.name} now if needed "
+        return self._ask_yesno("Run phase 2?", f"Phase 1 is done. Review {INSPECT_NAME} now if needed "
                                                "(type Remove in the Action column to drop a record), "
                                                "then choose Yes to run phase 2.")
 
@@ -1431,7 +1384,8 @@ class PipelineApp:
             thinking=self.thinking_var.get(), fill_blanks=self.fill_blanks_var.get(),
             dataset_csv=self.dataset_var.get().strip(), media_dir=self.media_dir_var.get().strip(),
             measurements_csv=self.measurements_var.get().strip(), keep_awake=self.keep_awake_var.get(),
-            master_columns=self.master_columns)
+            master_columns=self.master_columns, workspace=self.workspace.name if self.workspace else "",
+            recent_csvs=self.csv_source.recent)
         save_settings(self.settings)
 
     def _toggle_keep_awake(self):
@@ -1476,6 +1430,7 @@ class PipelineApp:
 
         def work():
             folder = download_dataset(*inputs, log=self._log)
+            self._ui(self._set_workspace, workspace_of(folder))
             self._ui(_set_entry, self.data_entry, folder)
             return "Downloaded"
 
@@ -1490,12 +1445,13 @@ class PipelineApp:
 
         def work():
             folder = download_dataset(*inputs, log=self._log)
-            self._ui(_set_entry, self.data_entry, folder)
-            master = run_cleaning(folder, (1, 2, 3), self._confirm_phase_2, self._log,
+            ws = workspace_of(folder)
+            self._ui(self._set_workspace, ws)
+            master = run_cleaning(ws, folder, (1, 2, 3), self._confirm_phase_2, self._log,
                                   master_columns=columns, **options)
             if not master:
                 return "Stopped after phase 1"
-            self._ui(self.dataset_var.set, master)
+            self._ui(self._set_workspace, ws)
             return "Workflow complete"
 
         self._start(self.full_status, "Running…", work)
@@ -1509,15 +1465,24 @@ class PipelineApp:
         if 1 in phases and not path:
             messagebox.showwarning("Missing input", "Select a data folder or ZIP file.", parent=self.root)
             return
+        if 1 not in phases and not self.workspace:
+            messagebox.showwarning("No download", "Choose a download at the top of the window first.",
+                                   parent=self.root)
+            return
         options = self._clean_options()
+        workspace = self.workspace
 
         def work():
-            folder = prepare_folder(path, self._log) if 1 in phases else None
-            master = run_cleaning(folder, phases, self._confirm_phase_2, self._log,
+            if 1 in phases:
+                folder, ws = resolve_input(path, self._log)
+                self._ui(self._set_workspace, ws)
+            else:
+                folder, ws = None, workspace
+            master = run_cleaning(ws, folder, phases, self._confirm_phase_2, self._log,
                                   column_chooser=self._choose_columns_blocking, **options)
             if not master:
                 return "Stopped after phase 1" if 1 in phases else "Done"
-            self._ui(self.dataset_var.set, master)
+            self._ui(self._set_workspace, ws)
             return "Finalized"
 
         self._start(self.clean_status, "Running…", work)
@@ -1530,7 +1495,18 @@ class PipelineApp:
         return csv_path
 
     def _media_dir(self):
-        return self.media_dir_var.get().strip() or str(MEDIA_DIR)
+        path = self.media_dir_var.get().strip()
+        if not path:
+            messagebox.showwarning("Missing folder", "Choose a download at the top of the window, or select an "
+                                                     "image folder.", parent=self.root)
+        return path
+
+    def _measurements_csv(self):
+        path = self.measurements_var.get().strip()
+        if not path:
+            messagebox.showwarning("Missing file", "Choose a download at the top of the window, or select a "
+                                                   "measurements CSV.", parent=self.root)
+        return path
 
     def _pick(self, title, items, action_text, redo_text):
         if not items:
@@ -1544,8 +1520,11 @@ class PipelineApp:
         csv_path = self._dataset_csv()
         if not csv_path or self.running:
             return
+        media_dir = self._media_dir()
+        if not media_dir:
+            return
         try:
-            items = media_status(csv_path, self._media_dir())
+            items = media_status(csv_path, media_dir)
         except Exception as exc:
             messagebox.showerror("Could not read the dataset", str(exc), parent=self.root)
             return
@@ -1558,6 +1537,8 @@ class PipelineApp:
         if not csv_path:
             return
         media_dir = self._media_dir()
+        if not media_dir:
+            return
         self._save_settings()
 
         def work():
@@ -1572,8 +1553,11 @@ class PipelineApp:
     def _choose_measurements(self):
         if self.running:
             return
+        media_dir, measurements_csv = self._media_dir(), self._measurements_csv()
+        if not media_dir or not measurements_csv:
+            return
         try:
-            items = measurement_status(self._media_dir(), self.measurements_var.get().strip() or MEASUREMENTS_CSV)
+            items = measurement_status(media_dir, measurements_csv)
         except Exception as exc:
             messagebox.showerror("Could not read measurements", str(exc), parent=self.root)
             return
@@ -1582,8 +1566,9 @@ class PipelineApp:
             self._run_measurements(*choice)
 
     def _run_measurements(self, only_ids=None, force=False):
-        measurements_csv = self.measurements_var.get().strip() or str(MEASUREMENTS_CSV)
-        media_dir = self._media_dir()
+        media_dir, measurements_csv = self._media_dir(), self._measurements_csv()
+        if not media_dir or not measurements_csv:
+            return
         base_url = self.server_var.get().strip() or LMSTUDIO_URL
         token_limit = self._token_limit()
         thinking = THINKING_CHOICES.get(self.thinking_var.get())
@@ -1614,7 +1599,9 @@ class PipelineApp:
         csv_path = self._dataset_csv()
         if not csv_path or self.running:
             return
-        measurements_csv = self.measurements_var.get().strip() or str(MEASUREMENTS_CSV)
+        measurements_csv = self._measurements_csv()
+        if not measurements_csv:
+            return
         if not Path(measurements_csv).is_file():
             messagebox.showwarning("No measurements yet", f"{measurements_csv} does not exist yet. "
                                    "Measure some images first.", parent=self.root)

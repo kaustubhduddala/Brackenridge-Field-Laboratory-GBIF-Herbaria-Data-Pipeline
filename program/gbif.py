@@ -6,8 +6,9 @@ from urllib.parse import urlparse
 import requests
 from pygbif import occurrences
 
-from config import BASE_FILTERS, DATA_DIR, HEADERS, PRESETS, gbif_credentials
+from config import BASE_FILTERS, HEADERS, PRESETS, gbif_credentials
 from .utils import extract_archive
+from .workspace import create_workspace, species_for_download, species_from_occurrences
 
 
 def resolve_species(scientific_name, log=print):
@@ -37,7 +38,7 @@ def build_predicate(taxon_key, preset_name=None):
     return {"type": "and", "predicates": [{"type": "equals", "key": k, "value": v} for k, v in clauses]}
 
 
-def wait_and_download(download_key, output_dir=DATA_DIR, log=print):
+def wait_and_download(download_key, output_dir, log=print):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     meta = occurrences.download_meta(download_key)
@@ -52,15 +53,21 @@ def wait_and_download(download_key, output_dir=DATA_DIR, log=print):
     return output_dir / f"{download_key}.zip"
 
 
-def download_from_doi_link(doi_text, output_dir=DATA_DIR, log=print):
+def open_download_folder(download_key, species="", log=print, **info):
+    """The data folder for a download: data/<download id>_<Species_name>/."""
+    species = species or species_for_download(download_key, log)
+    ws = create_workspace(download_key, species, **info)
+    log(f"Data folder for this download: {ws.root}")
+    return ws
+
+
+def download_from_doi_link(doi_text, log=print):
     doi_text = doi_text.strip()
     if doi_text.lower().startswith("doi:"):
         doi_text = doi_text[4:].strip()
     if not doi_text:
         raise ValueError("No DOI provided")
     url = doi_text if doi_text.startswith(("http://", "https://")) else "https://doi.org/" + doi_text
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     log(f"Resolving {url}")
     with requests.get(url, allow_redirects=True, stream=True, timeout=30, headers=HEADERS) as resp:
@@ -70,21 +77,25 @@ def download_from_doi_link(doi_text, output_dir=DATA_DIR, log=print):
             raise ValueError(f"DOI did not resolve to a GBIF download: {final_url}")
         content_type = resp.headers.get("content-type", "").lower()
         if final_url.lower().endswith(".zip") or content_type.startswith(("application/zip", "application/octet-stream")):
-            out_path = output_dir / (Path(parsed.path).name or "gbif_download.zip")
+            name = Path(parsed.path).name or "gbif_download.zip"
+            ws = open_download_folder(Path(name).stem, log=log, doi=doi_text, source="DOI")
+            out_path = ws.root / name
             with open(out_path, "wb") as out_file:
                 for chunk in resp.iter_content(1 << 16):
                     out_file.write(chunk)
-            return out_path
+            return out_path, ws
 
     match = re.search(r"/download/([^/?#&]+)", final_url)
     if match:
-        return wait_and_download(match.group(1), output_dir, log)
+        ws = open_download_folder(match.group(1), log=log, doi=doi_text, source="DOI")
+        return wait_and_download(match.group(1), ws.root, log), ws
     raise ValueError("DOI did not resolve to a downloadable ZIP or a GBIF download key")
 
 
 def download_dataset(species="", doi_text="", preset_name=None, log=print):
+    """Download into its own folder and return the folder holding the extracted data."""
     if doi_text:
-        archive = download_from_doi_link(doi_text, log=log)
+        archive, ws = download_from_doi_link(doi_text, log=log)
     else:
         user, password, email, _ = gbif_credentials()
         if not (user and password and email):
@@ -96,5 +107,9 @@ def download_dataset(species="", doi_text="", preset_name=None, log=print):
                                       user=user, pwd=password, email=email)
         download_key = result[0] if isinstance(result, (tuple, list)) else result
         log(f"Download key {download_key}. GBIF usually takes 5 to 30 minutes.")
-        archive = wait_and_download(download_key, log=log)
-    return extract_archive(archive, DATA_DIR / Path(archive).stem, log)
+        ws = open_download_folder(download_key, species, log, source="GBIF request", preset=preset_name)
+        archive = wait_and_download(download_key, ws.root, log)
+    extract_archive(archive, ws.raw_dir, log)
+    if not ws.species:
+        ws = ws.rename_species(species_from_occurrences(ws.raw_dir))
+    return str(ws.raw_dir)

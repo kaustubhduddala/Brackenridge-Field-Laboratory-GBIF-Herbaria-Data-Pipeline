@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 import urllib3
 
-from config import DATA_DIR, HEADERS, IMAGE_EXTENSIONS, LINK_COLUMNS
+from config import HEADERS, IMAGE_EXTENSIONS, LINK_COLUMNS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -187,17 +187,6 @@ def extract_archive(zip_path, extract_dir, log=print):
         archive.extractall(extract_dir)
     log(f"Extracted to {extract_dir}")
     return str(extract_dir)
-
-
-def prepare_folder(path, log=print):
-    if not str(path).strip():
-        raise ValueError("Select a data folder or ZIP file")
-    path = Path(path)
-    if path.is_file() and path.suffix.lower() == ".zip":
-        return extract_archive(path, DATA_DIR / path.stem, log)
-    if path.is_dir():
-        return str(path)
-    raise ValueError(f"Not a folder or ZIP file: {path}")
 
 
 def find_dwca_files(folder):

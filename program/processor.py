@@ -3,21 +3,21 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import (BAD_GEOSPATIAL_ISSUES, DUPLICATES_CSV, FULL_MASTER_CSV, INSPECT_CSV, REMOVED_COLUMNS_CSV, INSPECTION_ISSUES, LINK_COLUMNS,
-                    MASTER_CSV, MEASUREMENT_COLUMNS, MEDIA_COLUMNS, MEDIA_EVIDENCE_COLUMNS, MULTIMEDIA_RENAMES,
-                    PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT)
+from config import (BAD_GEOSPATIAL_ISSUES, INSPECTION_ISSUES, LINK_COLUMNS, MEASUREMENT_COLUMNS, MEDIA_COLUMNS,
+                    MEDIA_EVIDENCE_COLUMNS, MULTIMEDIA_RENAMES, PRECISION_NONE, PRECISION_RELAXED,
+                    PRECISION_STRICT)
 from .geo import clean_coordinates
 from .utils import (all_links, find_dwca_files, first_url_series, insert_after_gbif, issue_sets, read_csv,
                    read_dwca, save_csv)
 
 
-def phase_1_clean_and_merge(occurrence_file, multimedia_file, output_csv=None, removed_csv=None,
+def phase_1_clean_and_merge(occurrence_file, multimedia_file, ws, output_csv=None, removed_csv=None,
                             exclude_taxa=None, coordinate_precision=PRECISION_RELAXED,
                             bad_geospatial_issues=None, inspection_issues=None, log=print):
-    output_csv = Path(output_csv or INSPECT_CSV)
+    output_csv = Path(output_csv or ws.inspect_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
-    removed_csv = Path(removed_csv or output_csv.with_name("GBIFdownload_removed.csv"))
-    missing_csv = output_csv.with_name("Missing_Media.csv")
+    removed_csv = Path(removed_csv or output_csv.with_name(ws.removed_csv.name))
+    missing_csv = output_csv.with_name(ws.missing_csv.name)
     exclude_taxa = list(exclude_taxa or [])
     bad_issues = frozenset(BAD_GEOSPATIAL_ISSUES if bad_geospatial_issues is None else bad_geospatial_issues)
     inspect_issues = frozenset(INSPECTION_ISSUES if inspection_issues is None else inspection_issues)
@@ -103,9 +103,10 @@ def phase_1_clean_and_merge(occurrence_file, multimedia_file, output_csv=None, r
     return str(output_csv)
 
 
-def phase_2_finalize_dataset(inspected_csv=INSPECT_CSV, final_master=None, final_duplicates=None, log=print):
-    final_master = Path(final_master or MASTER_CSV)
-    final_duplicates = Path(final_duplicates or DUPLICATES_CSV)
+def phase_2_finalize_dataset(ws, inspected_csv=None, final_master=None, final_duplicates=None, log=print):
+    inspected_csv = Path(inspected_csv or ws.inspect_csv)
+    final_master = Path(final_master or ws.master_csv)
+    final_duplicates = Path(final_duplicates or ws.duplicates_csv)
     final_master.parent.mkdir(parents=True, exist_ok=True)
     log("Phase 2: finalizing and deduplicating")
     df = read_csv(inspected_csv, log)
@@ -133,9 +134,9 @@ def phase_2_finalize_dataset(inspected_csv=INSPECT_CSV, final_master=None, final
 
     master = master.dropna(axis=1, how="all")
     save_csv(master, final_master)
-    if Path(final_master) == MASTER_CSV:
-        save_csv(master, FULL_MASTER_CSV)
-        REMOVED_COLUMNS_CSV.unlink(missing_ok=True)
+    if final_master == ws.master_csv:
+        save_csv(master, ws.full_master_csv)
+        ws.removed_columns_csv.unlink(missing_ok=True)
     save_csv(duplicates.dropna(axis=1, how="all"), final_duplicates)
     log(f"  Duplicates saved to {final_duplicates}")
     log(f"Phase 2 complete: {len(master)} unique records saved to {final_master}")
@@ -149,10 +150,11 @@ def _header(path):
     return list(pd.read_csv(path, nrows=0, dtype=str, encoding="utf-8-sig").columns)
 
 
-def available_columns(folder=None):
+def available_columns(ws, folder=None):
     """Every column found in the pipeline's files, and a note on where they came from."""
     columns = []
-    for path in (FULL_MASTER_CSV, MASTER_CSV, REMOVED_COLUMNS_CSV, INSPECT_CSV):
+    known = (ws.full_master_csv, ws.master_csv, ws.removed_columns_csv, ws.inspect_csv) if ws else ()
+    for path in known:
         if Path(path).is_file():
             columns += _header(path)
     if columns:
@@ -169,10 +171,10 @@ def available_columns(folder=None):
     return [], ""
 
 
-def phase_3_select_columns(columns=None, full_csv=None, final_master=None, removed_columns_csv=None, log=print):
-    full_csv = Path(full_csv or FULL_MASTER_CSV)
-    final_master = Path(final_master or MASTER_CSV)
-    removed_columns_csv = Path(removed_columns_csv or REMOVED_COLUMNS_CSV)
+def phase_3_select_columns(ws, columns=None, full_csv=None, final_master=None, removed_columns_csv=None, log=print):
+    full_csv = Path(full_csv or ws.full_master_csv)
+    final_master = Path(final_master or ws.master_csv)
+    removed_columns_csv = Path(removed_columns_csv or ws.removed_columns_csv)
     if not full_csv.is_file():
         raise FileNotFoundError(f"{full_csv.name} not found; run phase 2 first")
     log("Phase 3: selecting master columns")
@@ -207,26 +209,27 @@ def phase_3_select_columns(columns=None, full_csv=None, final_master=None, remov
     return str(final_master)
 
 
-def run_cleaning(folder=None, phases=(1, 2, 3), confirm=None, log=print, master_columns=None,
+def run_cleaning(ws, folder=None, phases=(1, 2, 3), confirm=None, log=print, master_columns=None,
                  column_chooser=None, **options):
     phases = set(phases)
+    log(f"Working in {ws.root}")
     if 1 in phases:
         occurrence, multimedia = find_dwca_files(folder)
-        phase_1_clean_and_merge(occurrence, multimedia, log=log, **options)
+        phase_1_clean_and_merge(occurrence, multimedia, ws, log=log, **options)
         if 2 in phases:
-            log(f"Review {INSPECT_CSV} now. Type Remove in the Action column to drop a record.")
+            log(f"Review {ws.inspect_csv} now. Type Remove in the Action column to drop a record.")
             if confirm and not confirm():
                 return None
     master = None
     if 2 in phases:
-        master, _ = phase_2_finalize_dataset(INSPECT_CSV, log=log)
+        master, _ = phase_2_finalize_dataset(ws, log=log)
     if 3 in phases:
-        if not FULL_MASTER_CSV.is_file():
-            raise FileNotFoundError(f"{FULL_MASTER_CSV.name} not found; run phase 2 first")
+        if not ws.full_master_csv.is_file():
+            raise FileNotFoundError(f"{ws.full_master_csv.name} not found in {ws.root}; run phase 2 first")
         if column_chooser:
-            master_columns = column_chooser(available_columns()[0])
+            master_columns = column_chooser(available_columns(ws)[0])
             if master_columns is False:
                 log("Phase 3 skipped: no columns chosen")
                 return master
-        master = phase_3_select_columns(master_columns, log=log)
+        master = phase_3_select_columns(ws, master_columns, log=log)
     return master
