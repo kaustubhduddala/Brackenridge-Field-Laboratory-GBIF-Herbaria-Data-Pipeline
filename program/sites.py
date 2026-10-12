@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -12,8 +13,22 @@ import requests
 from config import BROWSER_USER_AGENT, HEADERS, SITE_LOGINS_FILE
 
 DENIED_STATUSES = (401, 403)
+MODE_REQUESTS, MODE_BROWSER = "requests", "browser"
+STRATEGIES = {
+    "Automatic: plain request, then browser-like headers, then the browser": "auto",
+    "Plain requests only (never open a browser)": "requests",
+    "Always use the browser for sites that refuse access": "browser",
+    "Ask me: stop and open Site logins": "ask",
+}
+PREFS = {"strategy": "auto", "challenge_wait": 180, "browser_delay": 2.0, "request_delay": 0.0}
+_last_request = {}
+_gave_up = set()  # sites the browser could not get past in this run
 BLOCK_MARKERS = re.compile(r"just a moment|cf-challenge|captcha|access denied|attention required|"
                            r"verify you are (?:a )?human|please (?:log|sign) ?in", re.IGNORECASE)
+
+
+class ItemSkipped(Exception):
+    pass
 
 
 class AccessDenied(Exception):
@@ -88,6 +103,39 @@ def note_refused(host):
     _write_logins(data)
 
 
+def site_mode(host):
+    """How downloads from `host` are made: plain requests, or through the signed-in browser."""
+    modes = load_logins().get("modes", {})
+    best = max((h for h in modes if _domain_matches(host, h)), key=len, default=None)
+    return modes.get(best, MODE_REQUESTS)
+
+
+def set_site_mode(host, mode):
+    data = load_logins()
+    data.setdefault("modes", {})[host] = mode
+    _write_logins(data)
+
+
+def configure(**prefs):
+    PREFS.update({k: v for k, v in prefs.items() if k in PREFS and v is not None})
+
+
+def new_run():
+    _gave_up.clear()
+
+
+def throttle(host, mode, control=None):
+    """Wait so that requests to one site keep a polite distance."""
+    interval = PREFS["browser_delay"] if mode == MODE_BROWSER else PREFS["request_delay"]
+    wait = _last_request.get(host, 0) + interval - time.monotonic()
+    while wait > 0:
+        if control:
+            control.check()
+        time.sleep(min(wait, 0.25))
+        wait -= 0.25
+    _last_request[host] = time.monotonic()
+
+
 def save_login(host, cookies, user_agent=""):
     data = load_logins()
     known = {(c.get("name"), c.get("domain"), c.get("path")): c for c in data.get("cookies", [])}
@@ -133,10 +181,54 @@ def _has_login(host):
     return any(_domain_matches(host, h) or _domain_matches(h, host) for h in saved_hosts())
 
 
-def fetch(url, stream=False, timeout=30):
-    """GET `url` with any saved sign-in. A refusal is retried once with browser-like headers, then raises
-    AccessDenied. Other statuses are returned for the caller to judge."""
+def _browser_fetch(url, control, log):
+    from . import site_login  # imported here: site_login imports this module
+    return site_login.browser_fetch(url, control, log)
+
+
+def fetch(url, stream=False, timeout=30, control=None, log=print):
+    """GET `url`, escalating as far as the download preference allows:
+    1. a plain request with any saved sign-in, retried once with browser-like headers;
+    2. the same download through a visible browser, where a person can pass a check;
+    3. raise AccessDenied, which lists the site under Site logins for a sign-in or a manual download.
+    Other statuses are returned for the caller to judge."""
     host = host_of(url)
+    strategy = PREFS["strategy"]
+    if strategy == "browser" or site_mode(host) == MODE_BROWSER:
+        return _through_browser(url, host, control, log)
+    throttle(host, MODE_REQUESTS, control)
+    try:
+        return _plain_fetch(url, host, stream, timeout)
+    except AccessDenied:
+        if strategy != "auto":
+            raise
+        resp = _through_browser(url, host, control, log, fallback=True)
+        set_site_mode(host, MODE_BROWSER)
+        log(f"    {host} will be downloaded through the browser from now on")
+        return resp
+
+
+def _through_browser(url, host, control, log, fallback=False):
+    from . import site_login
+    if host in _gave_up:
+        raise AccessDenied(url, reason="the browser could not get past this site earlier in the run")
+    if not site_login.available():
+        raise AccessDenied(url, reason="a browser is needed; " + site_login.INSTALL_HINT)
+    if fallback:
+        log(f"    {host} refuses plain requests; trying through the browser")
+    throttle(host, MODE_BROWSER, control)
+    try:
+        return site_login.browser_fetch(url, control, log)
+    except (AccessDenied, ItemSkipped) as exc:
+        if isinstance(exc, AccessDenied):
+            _gave_up.add(host)
+        raise
+    except Exception as exc:  # no browser installed, profile in use, browser closed by the user, ...
+        _gave_up.add(host)
+        raise AccessDenied(url, reason=f"the browser could not be used: {str(exc).splitlines()[0][:120]}") from exc
+
+
+def _plain_fetch(url, host, stream, timeout):
     headers = dict(HEADERS)
     agent = load_logins().get("user_agent")
     if agent and _has_login(host):

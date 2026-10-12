@@ -5,7 +5,8 @@ from urllib.parse import urljoin, urlparse
 import pandas as pd
 
 from config import IMAGE_EXTENSIONS
-from program.sites import AccessDenied, download_special, host_of, looks_blocked, note_refused
+from program import site_login
+from program.sites import AccessDenied, download_special, host_of, looks_blocked, new_run, note_refused
 from program.utils import (ItemSkipped, check, find_media_url, gbif_ids, index_images, is_blank, read_csv,
                    request_with_backoff, save_csv)
 
@@ -164,6 +165,14 @@ def media_status(csv_path, media_dir, log=print):
 
 
 def download_media(csv_path, media_dir, log=print, control=None, progress=None, only_ids=None, force=False):
+    new_run()
+    try:
+        return _download_media(csv_path, media_dir, log, control, progress, only_ids, force)
+    finally:
+        site_login.close_fetcher()
+
+
+def _download_media(csv_path, media_dir, log, control, progress, only_ids, force):
     csv_path = Path(csv_path)
     media_dir = Path(media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)

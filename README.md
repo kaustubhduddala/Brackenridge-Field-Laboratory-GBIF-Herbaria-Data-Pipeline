@@ -304,29 +304,51 @@ Summaries of any CSV, with every table saveable as a CSV:
   deviation and sum of a numeric column for each group of another
   column, for example the measured leaf width per country.
 
-### Sites that refuse image downloads
+### Sites that refuse image downloads, CAPTCHAs and bot checks
 
-Some image servers answer 403 Forbidden or show a verification page. The
-downloader first retries such a request once with browser-like headers
-and a Referer. If the site still refuses, the images are listed under
-the site's name, and after three refusals in a row the rest of that
-site's images are skipped for the run so the site is not hammered. When
-the run ends a **Site logins** window opens with each site that
-refused access:
+The app does not solve CAPTCHAs or disguise itself; a person passes the
+check once, in a real browser window, and the app reuses the result.
+When a site refuses a download (403 Forbidden, a "verify you are human"
+or sign-in page) the app works through these steps, as far as the
+**Method** preference allows:
 
-1. **Sign in…** opens a real browser window (Chrome if installed,
-   otherwise Playwright's Chromium) on that site. Sign in or pass the
-   check, then click **Done, save my sign-in**.
-2. The cookies are saved in `site_logins.json` (readable only by you,
-   and ignored by git) and used for every later request to that site.
-   The browser profile is kept in `browser_profile/`.
-3. **Retry** downloads just that site's refused images again.
+1. A plain request, with any saved cookies, retried once with
+   browser-like headers and a Referer.
+2. The same download through a visible Chrome window (Playwright's
+   Chromium if Chrome is not installed). If the site shows a check, the
+   window stays open and the app waits (3 minutes by default) for you to
+   pass it, then carries on by itself. Use **Skip this item** to give
+   up on one image. Once this works, the site is downloaded through the
+   browser from then on; the browser keeps its cookies in
+   `browser_profile/`, so a passed check usually lasts.
+3. If that is not possible (no browser, the check was not passed in
+   time), the images are listed under the site's name. After three
+   refusals in a row the rest of that site's images are skipped for the
+   run so the site is not hammered.
 
-The same window is available any time from Images, **Site logins…**,
-where you can also sign in to a site before downloading, sign in again
-when cookies expire, or forget a saved sign-in. This needs Playwright:
-`pip install playwright`, and `playwright install chromium` if Chrome is
-not installed. Nothing else in the app needs it.
+When a run ends with refused sites, the **Site logins** window opens
+(also under Images, **Site logins…**). It lists every site that has ever
+refused access, with the number of images waiting:
+
+- **Sign in…** opens the browser on the site so you can sign in or pass
+  the check before downloading; click **Done, save my sign-in**. The
+  cookies go to `site_logins.json` (readable only by you, ignored by
+  git; the previous version is kept as `.bak`).
+- **Retry** downloads that site's waiting images again.
+- **Download through the browser** (per saved site) forces step 2 for
+  that site, **Sign in again** refreshes expired cookies and **Forget**
+  removes a site's sign-in.
+- **When a site refuses a download** chooses the method: *Automatic*
+  (the steps above), *Plain requests only* (never opens a browser),
+  *Always use the browser* for refused sites, or *Ask me* (stop and
+  list the site). It also sets how long to wait for you to pass a check
+  and the pause between browser downloads (2 seconds by default, to
+  stay polite). These are saved in `settings.json`.
+
+Browser features need Playwright, which is in `requirements.txt` and is
+bundled in the packaged app. Chromium itself is not bundled; if Chrome
+is not installed the app offers to download it (about 150 MB) into
+`browsers/` next to your data, so it survives app updates.
 
 Sites that need their own download method have a branch in
 `download_special()` in `program/sites.py`. It currently has empty

@@ -15,15 +15,12 @@ import urllib3
 
 from config import IMAGE_EXTENSIONS, LINK_COLUMNS
 from . import sites
+from .sites import ItemSkipped  # noqa: F401  (re-exported)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 URL_RE = re.compile(r"https?://[^\s;,|]+")
 LINK_RE = re.compile(r"(?:https?://|ftp://|doi:)[^\s;,|]+")
-
-
-class ItemSkipped(Exception):
-    pass
 
 
 class TaskControl:
@@ -148,7 +145,7 @@ def request_with_backoff(url, max_retries=3, log=print, control=None, stream=Fal
     for attempt in range(1, max_retries + 1):
         check(control)
         try:
-            resp = sites.fetch(url, stream=stream)
+            resp = sites.fetch(url, stream=stream, control=control, log=log)
         except requests.exceptions.RequestException as exc:
             error = str(exc)
         else:

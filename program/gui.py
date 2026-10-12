@@ -597,7 +597,7 @@ class SiteLoginDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app.root)
         self.title("Site logins")
-        self.geometry("640x520")
+        self.geometry("700x640")
         self.minsize(520, 380)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
@@ -626,10 +626,32 @@ class SiteLoginDialog(tk.Toplevel):
         self.url_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(other, text="Open browser", command=lambda: self._start(self.url_entry.get())).grid(row=0, column=1)
 
+        prefs = ttk.LabelFrame(body, text="When a site refuses a download")
+        prefs.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        prefs.columnconfigure(1, weight=1)
+        current = sites.PREFS
+        labels = {v: k for k, v in sites.STRATEGIES.items()}
+        self.strategy_var = tk.StringVar(value=labels.get(current["strategy"], next(iter(sites.STRATEGIES))))
+        self.wait_var = tk.StringVar(value=str(int(current["challenge_wait"] // 60)))
+        self.delay_var = tk.StringVar(value=str(current["browser_delay"]))
+        ttk.Label(prefs, text="Method").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        box = ttk.Combobox(prefs, textvariable=self.strategy_var, values=list(sites.STRATEGIES), state="readonly")
+        box.grid(row=0, column=1, columnspan=3, sticky="ew", pady=2)
+        box.bind("<<ComboboxSelected>>", lambda _: self._save_prefs())
+        ttk.Label(prefs, text="Minutes to wait for you to pass a check").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        wait = ttk.Spinbox(prefs, textvariable=self.wait_var, from_=1, to=30, width=5, command=self._save_prefs)
+        wait.grid(row=1, column=1, sticky="w")
+        ttk.Label(prefs, text="Seconds between browser downloads").grid(row=1, column=2, sticky="e", padx=(12, 8))
+        delay = ttk.Spinbox(prefs, textvariable=self.delay_var, from_=0, to=60, increment=0.5, width=5,
+                            command=self._save_prefs)
+        delay.grid(row=1, column=3, sticky="w")
+        for widget in (wait, delay):
+            widget.bind("<FocusOut>", lambda _: self._save_prefs())
+
         self.status = ttk.Label(body, style="Muted.TLabel", wraplength=580, justify="left")
-        self.status.grid(row=3, column=0, sticky="w", pady=(10, 0))
+        self.status.grid(row=4, column=0, sticky="w", pady=(10, 0))
         footer = ttk.Frame(body)
-        footer.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        footer.grid(row=5, column=0, sticky="ew", pady=(10, 0))
         self.done_button = ttk.Button(footer, text="Done, save my sign-in", style="Accent.TButton",
                                       command=self._finish, state="disabled")
         self.done_button.pack(side="left")
@@ -639,12 +661,22 @@ class SiteLoginDialog(tk.Toplevel):
         self._render()
         _finish_dialog(self)
 
+    def _save_prefs(self):
+        try:
+            wait = max(int(float(self.wait_var.get())), 1) * 60
+            delay = max(float(self.delay_var.get()), 0.0)
+        except ValueError:
+            return
+        self.app._set_site_prefs({"strategy": sites.STRATEGIES[self.strategy_var.get()],
+                                  "challenge_wait": wait, "browser_delay": delay})
+
     def _say(self, text, kind="muted"):
         self.status.configure(text=text, foreground=self.app.palette[kind])
 
     def _render(self):
         for child in self.list_frame.winfo_children():
             child.destroy()
+        self.mode_vars = []
         saved = sites.saved_hosts()
         refused = sites.known_sites()
         row = 0
@@ -674,6 +706,12 @@ class SiteLoginDialog(tk.Toplevel):
                 row=row, column=1, padx=6, pady=2)
             ttk.Button(self.list_frame, text="Forget", command=lambda h=host: self._forget(h)).grid(
                 row=row, column=2, pady=2)
+            mode = tk.BooleanVar(value=sites.site_mode(host) == sites.MODE_BROWSER)
+            self.mode_vars.append(mode)
+            ttk.Checkbutton(self.list_frame, text="Download through the browser", variable=mode,
+                            command=lambda h=host, v=mode: sites.set_site_mode(
+                                h, sites.MODE_BROWSER if v.get() else sites.MODE_REQUESTS)).grid(
+                row=row, column=3, padx=(10, 0))
             row += 1
 
     def _forget(self, host):
@@ -903,6 +941,7 @@ class PipelineApp:
         self.settings.setdefault("column_presets", {})
         self.progress_started = None
         self.workspace = None
+        sites.configure(**self.settings.get("site_prefs", {}))
         self.restyle_hooks = []
         self.idle_callbacks = []
 
@@ -1723,6 +1762,11 @@ class PipelineApp:
         choice = self._pick("Choose records to download", items, "Download", "Download again if the image exists")
         if choice:
             self._run_download_media(*choice)
+
+    def _set_site_prefs(self, prefs):
+        self.settings["site_prefs"] = prefs
+        sites.configure(**prefs)
+        save_settings(self.settings)
 
     def _refused_ids(self, host):
         """gbifIDs in the current dataset whose last image download was refused by `host`."""
