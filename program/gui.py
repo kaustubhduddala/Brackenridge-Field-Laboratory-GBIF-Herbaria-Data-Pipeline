@@ -754,7 +754,7 @@ class PipelineApp:
         self.awake = KeepAwake()
 
         root.title(f"GBIF Herbaria Data Pipeline {APP_VERSION}")
-        root.geometry("1040x960")
+        root.geometry(f"{min(1040, root.winfo_screenwidth() - 40)}x{min(960, root.winfo_screenheight() - 110)}")
         root.minsize(800, 680)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._create_fonts()

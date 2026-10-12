@@ -31,22 +31,20 @@ class OutputBar(ttk.LabelFrame):
 
     def __init__(self, parent):
         super().__init__(parent, text="Save the result")
-        self.columnconfigure(1, weight=1)
+        self.columnconfigure(2, weight=1)
         self.mode = tk.StringVar(value="auto")
         self.continue_var = tk.BooleanVar(value=True)
-        ttk.Radiobutton(self, text="As a new file next to the original (named automatically)", variable=self.mode,
-                        value="auto").grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Radiobutton(self, text="As", variable=self.mode, value="path").grid(row=1, column=0, sticky="w")
+        ttk.Radiobutton(self, text="As a new file next to the original", variable=self.mode, value="auto").grid(
+            row=0, column=0, sticky="w", padx=(0, 16))
+        ttk.Radiobutton(self, text="Replace the original (Undo brings it back)", variable=self.mode,
+                        value="replace").grid(row=0, column=1, columnspan=2, sticky="w")
+        ttk.Radiobutton(self, text="Save as", variable=self.mode, value="path").grid(row=1, column=0, sticky="w")
         self.entry = ttk.Entry(self)
-        self.entry.grid(row=1, column=1, sticky="ew", padx=(4, 0))
+        self.entry.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(4, 0))
         self.entry.bind("<Key>", lambda _: self.mode.set("path"))
-        ttk.Button(self, text="Browse…", command=self._browse).grid(row=1, column=2, padx=(6, 0))
-        self.replace_button = ttk.Radiobutton(
-            self, text="Replace the original (the old version is kept, and Undo brings it back)",
-            variable=self.mode, value="replace")
-        self.replace_button.grid(row=2, column=0, columnspan=3, sticky="w")
+        ttk.Button(self, text="Browse…", command=self._browse).grid(row=1, column=3, padx=(6, 0))
         ttk.Checkbutton(self, text="Open the result afterwards so the next change builds on it",
-                        variable=self.continue_var).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+                        variable=self.continue_var).grid(row=2, column=0, columnspan=4, sticky="w")
 
     def _browse(self):
         path = filedialog.asksaveasfilename(parent=self.winfo_toplevel(), title="Save as", defaultextension=".csv",
