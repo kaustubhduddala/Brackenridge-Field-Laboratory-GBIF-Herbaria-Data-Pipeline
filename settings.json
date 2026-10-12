@@ -4,9 +4,9 @@
   "token_limit": 0,
   "thinking": "Off",
   "fill_blanks": false,
-  "dataset_csv": "/Users/kaustubhduddala/Library/CloudStorage/GoogleDrive-kaustubhduddala@gmail.com/My Drive/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/master_cleaned.csv",
-  "media_dir": "/Users/kaustubhduddala/Library/CloudStorage/GoogleDrive-kaustubhduddala@gmail.com/My Drive/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/media",
-  "measurements_csv": "/Users/kaustubhduddala/Library/CloudStorage/GoogleDrive-kaustubhduddala@gmail.com/My Drive/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/measurements.csv",
+  "dataset_csv": "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/master_cleaned_joined.csv",
+  "media_dir": "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/media",
+  "measurements_csv": "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/measurements.csv",
   "keep_awake": false,
   "master_columns": [
     "gbifID",
@@ -14,6 +14,9 @@
   ],
   "issue_presets": {},
   "column_presets": {},
-  "workspace": "",
-  "recent_csvs": []
+  "workspace": "0011409-260928105237408_Megathyrsus_maximus",
+  "recent_csvs": [
+    "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/master_cleaned_joined.csv",
+    "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/master_cleaned.csv"
+  ]
 }
