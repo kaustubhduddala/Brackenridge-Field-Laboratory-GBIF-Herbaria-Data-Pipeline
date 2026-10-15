@@ -351,11 +351,25 @@ is not installed the app offers to download it (about 150 MB) into
 `browsers/` next to your data, so it survives app updates.
 
 Sites that need their own download method have a branch in
-`download_special()` in `program/sites.py`. It currently has empty
-placeholders for the Meise Botanic Garden (`oxalis.br.fgov.be`),
-Google Drive and the Smithsonian NMNH; return the saved file's path from
-a branch to take over the download for that site, or `None` to fall back
-to the general downloader.
+`download_special()` in `program/sites.py`; return the saved file's path
+from a branch to take over the download for that site, or `None` to fall
+back to the general downloader. To add a site, add an `if` on the host
+and a handler next to the others (`_try_get()` makes one plain request,
+`_save_image()` saves an image response, `_stitch()` joins tiles). Built in:
+
+- **Meise Botanic Garden** (`oxalis.br.fgov.be`): the server answers 403
+  to most User-Agent strings, including Python's and Chrome's, and accepts
+  a bare `GBIF-HerbariaPipeline/1.0`, which every download now tries
+  after the usual one. The image is joined from full-resolution IIIF
+  regions when it is larger than the server's `maxArea`.
+- **CRIA / speciesLink** (`images.cria.org.br/viewer/...`): the viewer
+  page only wraps a Zoomify tile pyramid; the tiles of the largest level
+  are fetched and joined into one JPEG, with the speciesLink download
+  address as a fallback.
+- **Smithsonian NMNH** (`collections.nmnh.si.edu/media/...`): the page
+  redirects to the image on `ids.si.edu` but its firewall needs
+  browser-like headers.
+- **Google Drive** share links: the file's download address is used.
 
 ### Choosing specific records or images
 

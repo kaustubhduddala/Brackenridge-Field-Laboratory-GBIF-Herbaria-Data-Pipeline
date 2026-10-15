@@ -11,6 +11,7 @@ from program.utils import (ItemSkipped, check, find_media_url, gbif_ids, index_i
                    request_with_backoff, save_csv)
 
 BLOCKED_AFTER = 3  # skip a site for the rest of the run after this many refusals in a row
+FAILING_AFTER = 5  # ...or after this many other failures in a row
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
 
 
@@ -189,8 +190,9 @@ def _download_media(csv_path, media_dir, log, control, progress, only_ids, force
     images = index_images(media_dir)
 
     summary = {"total": len(rows), "downloaded": 0, "skipped": 0, "skipped_by_user": 0, "failed": 0,
-               "cancelled": False, "blocked": {}}
+               "cancelled": False, "blocked": {}, "skipped_sites": {}, "failing": {}}
     denied_in_a_row = {}
+    failed_in_a_row = {}
     scope = f"{len(rows)} selected records" if only_ids is not None else f"{len(rows)} records"
     log(f"Downloading images for {scope} to {media_dir}")
 
@@ -224,6 +226,16 @@ def _download_media(csv_path, media_dir, log, control, progress, only_ids, force
             summary["blocked"].setdefault(host, []).append(ids[idx])
             summary["failed"] += 1
             continue
+        if control and host in control.skipped_hosts:
+            df.at[idx, "media_error"] = f"Site skipped by you: {host}"
+            summary["skipped_sites"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
+        if failed_in_a_row.get(host, 0) >= FAILING_AFTER:
+            df.at[idx, "media_error"] = f"Site {host} skipped after {FAILING_AFTER} failures in a row"
+            summary["failing"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
         log(f"[{number}/{len(rows)}] {label}: {url[:80]}")
         try:
             path = _fetch_image(url, media_dir / label, log, control)
@@ -232,12 +244,20 @@ def _download_media(csv_path, media_dir, log, control, progress, only_ids, force
             df.at[idx, "media_error"] = ""
             summary["downloaded"] += 1
             denied_in_a_row.pop(host, None)
+            failed_in_a_row.pop(host, None)
         except ItemSkipped:
             if control and control.cancelled:
                 summary["cancelled"] = True
                 break
-            log(f"    Skipped {label}")
-            summary["skipped_by_user"] += 1
+            if control and control.skip_site:
+                control.skipped_hosts.add(host)
+                log(f"    Skipped {label} and the rest of {host}")
+                df.at[idx, "media_error"] = f"Site skipped by you: {host}"
+                summary["skipped_sites"].setdefault(host, []).append(ids[idx])
+                summary["failed"] += 1
+            else:
+                log(f"    Skipped {label}")
+                summary["skipped_by_user"] += 1
         except AccessDenied as exc:
             log(f"    Failed: {exc}")
             df.at[idx, "media_error"] = str(exc)
@@ -250,6 +270,10 @@ def _download_media(csv_path, media_dir, log, control, progress, only_ids, force
             log(f"    Failed: {exc}")
             df.at[idx, "media_error"] = str(exc)
             summary["failed"] += 1
+            failed_in_a_row[host] = failed_in_a_row.get(host, 0) + 1
+            if failed_in_a_row[host] == FAILING_AFTER:
+                log(f"    {host} failed {FAILING_AFTER} times in a row; skipping it for the rest of this run")
+                summary["failing"].setdefault(host, []).append(ids[idx])
 
     save_csv(df, csv_path)
     failed = df[df["media_error"].astype(str).str.strip() != ""]
@@ -263,6 +287,12 @@ def _download_media(csv_path, media_dir, log, control, progress, only_ids, force
         log("Image download cancelled")
     elif progress:
         progress(len(rows), len(rows))
+    for host, skipped_ids in summary["skipped_sites"].items():
+        note_refused(host, "skipped by you")
+        log(f"{host} was skipped by you for {len(skipped_ids)} images. It is listed under Images, Site logins.")
+    for host, failing_ids in summary["failing"].items():
+        note_refused(host, f"failed {FAILING_AFTER} times in a row")
+        log(f"{host} kept failing and was skipped ({len(failing_ids)} images). It is listed under Images, Site logins.")
     for host, blocked_ids in summary["blocked"].items():
         log(f"{host} refused access for {len(blocked_ids)} images. Use Images, Site logins to sign in, then retry.")
     log(f"Image download complete: {summary['downloaded']} downloaded, {summary['skipped']} already present, "

@@ -27,13 +27,22 @@ class TaskControl:
     def __init__(self):
         self.cancel_event = threading.Event()
         self.skip_event = threading.Event()
+        self.skip_site = False  # the pending skip covers the whole website, not just this item
+        self.skipped_hosts = set()
 
     def reset(self):
         self.cancel_event.clear()
         self.skip_event.clear()
+        self.skip_site = False
+        self.skipped_hosts = set()
 
     def new_item(self):
         self.skip_event.clear()
+        self.skip_site = False
+
+    def request_skip(self, site=False):
+        self.skip_site = site
+        self.skip_event.set()
 
     @property
     def cancelled(self):

@@ -679,15 +679,18 @@ class SiteLoginDialog(tk.Toplevel):
         self.mode_vars = []
         saved = sites.saved_hosts()
         refused = sites.known_sites()
+        reasons = sites.site_reasons()
         row = 0
         if refused:
-            ttk.Label(self.list_frame, text="Sites that have refused access", style="Heading.TLabel").grid(
+            ttk.Label(self.list_frame, text="Sites that refused access, failed repeatedly, or were skipped", style="Heading.TLabel").grid(
                 row=row, column=0, columnspan=3, sticky="w")
             row += 1
             for host in sorted(refused):
                 ids = self.app._refused_ids(host)
                 signed_in = any(sites._domain_matches(host, h) or sites._domain_matches(h, host) for h in saved)
+                reason = reasons.get(host)
                 ttk.Label(self.list_frame, text=f"{host}   {len(ids)} images waiting"
+                          + (f"   ({reason})" if reason else "")
                           + ("   (signed in)" if signed_in else "")).grid(row=row, column=0, sticky="w")
                 ttk.Button(self.list_frame, text="Sign in…", command=lambda h=host: self._start(h)).grid(
                     row=row, column=1, padx=6, pady=2)
@@ -1100,8 +1103,13 @@ class PipelineApp:
         ttk.Label(status, textvariable=self.detail_var, style="Muted.TLabel").pack(side="left", padx=12)
         self.cancel_btn = ttk.Button(status, text="Cancel", command=self._cancel, state="disabled")
         self.cancel_btn.pack(side="right")
-        self.skip_btn = ttk.Button(status, text="Skip this item", command=self._skip, state="disabled")
+        self.skip_btn = ttk.Button(status, text="Skip", command=self._skip_menu, state="disabled")
         self.skip_btn.pack(side="right", padx=6)
+        self.skip_menu = tk.Menu(self.root, tearoff=False)
+        self.skip_menu.add_command(label="Skip this item", command=self._skip)
+        self.skip_menu.add_command(label="Skip this website", command=lambda: self._skip(site=True))
+        self.site_skip_ok = False
+        self.cancel_confirm_job = None
         self.progress = ttk.Progressbar(status, length=220, mode="determinate")
         self.progress.pack(side="right", padx=6)
 
@@ -1543,8 +1551,10 @@ class PipelineApp:
         self.status_kinds[label] = kind
         label.configure(text=text, foreground=self.palette[kind])
 
-    def _set_running(self, running, cancellable=False):
+    def _set_running(self, running, cancellable=False, site_skip=False):
         self.running = running
+        self.site_skip_ok = running and site_skip
+        self._reset_cancel_button()
         for button in self.action_buttons:
             button.configure(state="disabled" if running else "normal")
         state = "normal" if running and cancellable else "disabled"
@@ -1564,10 +1574,10 @@ class PipelineApp:
             while self.idle_callbacks:
                 self.root.after(0, self.idle_callbacks.pop(0))
 
-    def _start(self, status_label, busy_text, work, cancellable=False):
+    def _start(self, status_label, busy_text, work, cancellable=False, site_skip=False):
         if self.running:
             return
-        self._set_running(True, cancellable)
+        self._set_running(True, cancellable, site_skip)
         self._set_status(status_label, busy_text, "busy")
 
         def runner():
@@ -1598,11 +1608,27 @@ class PipelineApp:
                                                "(type Remove in the Action column to drop a record), "
                                                "then choose Yes to run phase 2.")
 
-    def _skip(self):
-        self.control.skip_event.set()
-        self.detail_var.set("Skipping…")
+    def _skip_menu(self):
+        self.skip_menu.entryconfigure("Skip this website", state="normal" if self.site_skip_ok else "disabled")
+        button = self.skip_btn
+        self.skip_menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+
+    def _skip(self, site=False):
+        self.control.request_skip(site)
+        self.detail_var.set("Skipping this website…" if site else "Skipping…")
+
+    def _reset_cancel_button(self):
+        if self.cancel_confirm_job:
+            self.root.after_cancel(self.cancel_confirm_job)
+            self.cancel_confirm_job = None
+        self.cancel_btn.configure(text="Cancel")
 
     def _cancel(self):
+        if not self.cancel_confirm_job:
+            self.cancel_btn.configure(text="Confirm")
+            self.cancel_confirm_job = self.root.after(4000, self._reset_cancel_button)
+            return
+        self._reset_cancel_button()
         self.control.cancel_event.set()
         self._log("Cancelling…")
         self.cancel_btn.configure(state="disabled")
@@ -1777,7 +1803,7 @@ class PipelineApp:
             items = media_status(csv_path, media_dir, lambda *_: None)
         except Exception:
             return []
-        return [i["id"] for i in items if i["status"] == "Failed" and f"by {host}" in str(i["detail"])]
+        return [i["id"] for i in items if i["status"] == "Failed" and host in str(i["detail"])]
 
     def _open_site_logins(self):
         dialog = SiteLoginDialog(self)
@@ -1798,12 +1824,12 @@ class PipelineApp:
             r = download_media(csv_path, media_dir, self._log, self.control, self._progress, only_ids, force)
             if r["cancelled"]:
                 return "Cancelled"
-            if r["blocked"]:
+            if r["blocked"] or r["skipped_sites"] or r["failing"]:
                 self.idle_callbacks.append(self._open_site_logins)
             return (f"{r['downloaded']} downloaded, {r['skipped']} already present, "
                     f"{r['skipped_by_user']} skipped, {r['failed']} failed")
 
-        self._start(self.media_status, "Downloading…", work, cancellable=True)
+        self._start(self.media_status, "Downloading…", work, cancellable=True, site_skip=True)
 
     def _choose_measurements(self):
         if self.running:
