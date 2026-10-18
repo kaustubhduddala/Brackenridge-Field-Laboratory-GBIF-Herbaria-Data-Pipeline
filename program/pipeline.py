@@ -12,7 +12,7 @@ import math
 import numpy as np
 
 from .calibration import Calibration, calibrate, load_rgb
-from .plant import PlantImage
+from .plant import PlantImage, spikelet_axis
 
 TRAITS = ("panicle_length", "leaf_width", "seed_length")
 TRAIT_LABELS = {"panicle_length": "panicle", "leaf_width": "leaf", "seed_length": "seed"}
@@ -216,7 +216,15 @@ def measure_sheet(image_path, locator, log=print, control=None, status=None, rea
             best = max(good, key=lambda e: e.get("on_plant", 0))
             centre = [(best["anchors"]["base"][0] + best["anchors"]["tip"][0]) / 2,
                       (best["anchors"]["base"][1] + best["anchors"]["tip"][1]) / 2]
-            seeds, raw["seeds"] = locator.seed_lengths(image, cal.px_per_cm, centre, control, status)
+            if getattr(locator, "seed_mode", "points") == "boxes":
+                boxes, raw["seeds"] = locator.seed_boxes(image, cal.px_per_cm, centre, control, status)
+                seeds = []
+                for box in boxes:
+                    axis = spikelet_axis(rgb, box)
+                    if axis:
+                        seeds.append({"base": axis[0], "tip": axis[1]})
+            else:
+                seeds, raw["seeds"] = locator.seed_lengths(image, cal.px_per_cm, centre, control, status)
             if not seeds:
                 result["notes"]["seed_length"] = "no clear spikelet found"
             for item in seeds:

@@ -134,6 +134,11 @@ SEED_SCHEMA = {
         "required": ["base", "tip"], "additionalProperties": False}}},
     "required": ["seeds"], "additionalProperties": False,
 }
+SEED_BOX_SCHEMA = {
+    "type": "object",
+    "properties": {"spikelets": {"type": "array", "items": _box("tight box around one whole spikelet")}},
+    "required": ["spikelets"], "additionalProperties": False,
+}
 LEAF_SIZE_CM = 7.0          # side of the zoomed crop used to place the two margin points
 SEED_SIZE_CM = 3.0
 CROP_MARGIN = 0.25          # share of the panicle box added on each side of the zoomed crop
@@ -151,9 +156,10 @@ def _convention_text(convention, size):
 class Locator:
     """Wraps a provider client; converts the model's coordinates to full-resolution pixels."""
 
-    def __init__(self, client, use_references=False):
+    def __init__(self, client, use_references=False, seed_mode="points"):
         self.client = client
         self.use_references = use_references
+        self.seed_mode = seed_mode          # "points" (base/tip) or "boxes" (box, then axis found by plant.py)
         self.convention = COORDINATES.get(client.provider, "norm1000")
 
     def _prepare(self, image, crop=None):
@@ -333,6 +339,29 @@ class Locator:
             base, tip = item.get("base") or {}, item.get("tip") or {}
             if {"x", "y"} <= base.keys() and {"x", "y"} <= tip.keys():
                 out.append({"base": to_full(base["x"], base["y"]), "tip": to_full(tip["x"], tip["y"])})
+        return out, raw
+
+    def seed_boxes(self, image, px_per_cm, centre, control=None, status=None):
+        """Tight boxes (full-res pixels) around up to 6 intact spikelets near `centre`, plus the raw answer.
+
+        Models are far better at boxing an object than at marking both ends of it; plant.spikelet_axis
+        then finds the spikelet's long axis inside each box.
+        """
+        half = SEED_SIZE_CM * px_per_cm / 2
+        crop = [max(0, centre[0] - half), max(0, centre[1] - half), min(image.width, centre[0] + half),
+                min(image.height, centre[1] + half)]
+        prompt = (PROTOCOL_DEFINITIONS + "\n\nThis is a close-up of part of a panicle. Draw a tight bounding box "
+                  "around each of up to 6 separate spikelets (small, pointed, boat-shaped capsules about 2.5 times "
+                  "longer than wide) that are intact, in focus and not overlapping others. Each box must contain "
+                  "exactly one whole spikelet, from its bottom end to its tip, and no neighbours. Skip unclear ones.")
+        parsed, raw, to_full = self._ask(image, prompt, SEED_BOX_SCHEMA, "spikelet_boxes", control, status,
+                                         "Finding seeds", crop=crop)
+        out = []
+        for b in (parsed.get("spikelets") or [])[:6]:
+            p0, p1 = to_full(b.get("x0", 0), b.get("y0", 0)), to_full(b.get("x1", 0), b.get("y1", 0))
+            box = [min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1])]
+            if box[2] - box[0] > 2 and box[3] - box[1] > 2:
+                out.append(box)
         return out, raw
 
     def voucher(self, image, control=None, status=None):

@@ -228,3 +228,49 @@ def simplify(points, tolerance):
 
 def segment_length_cm(a, b, px_per_cm):
     return math.hypot(b[0] - a[0], b[1] - a[1]) / px_per_cm
+
+
+def spikelet_axis(rgb, box, pad=0.15):
+    """(base, tip, length_px) of the spikelet inside `box` ([x0, y0, x1, y1] in rgb's pixels), or None.
+
+    Pixels that differ in hue from the paper (grey shadows do not) are grouped, the largest group near the
+    box centre is kept, and its principal axis gives the length. Base/tip are returned as the axis ends,
+    ordered so that the tip is the upper end.
+    """
+    cv2 = _cv2()
+    h, w = rgb.shape[:2]
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    x0, y0 = max(0, int(box[0] - pad * bw)), max(0, int(box[1] - pad * bh))
+    x1, y1 = min(w, int(box[2] + pad * bw)), min(h, int(box[3] + pad * bh))
+    sub = rgb[y0:y1, x0:x1]
+    if sub.shape[0] < 6 or sub.shape[1] < 6:
+        return None
+    lab = cv2.cvtColor(sub, cv2.COLOR_RGB2LAB).astype(np.float32)
+    ring = np.ones(sub.shape[:2], bool)
+    ring[int(0.25 * sub.shape[0]):int(0.75 * sub.shape[0]), int(0.25 * sub.shape[1]):int(0.75 * sub.shape[1])] = False
+    light = lab[..., 0]
+    paper = ring & (light >= np.percentile(light[ring], 40))
+    if paper.sum() < 20:
+        return None
+    paper_ab = np.median(lab[..., 1:][paper], axis=0)
+    dist = np.hypot(*(lab[..., 1:] - paper_ab).transpose(2, 0, 1))
+    mask = (dist > max(6.0, np.percentile(dist[paper], 95) * 1.5)).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
+    if count < 2:
+        return None
+    centre = np.array([(box[0] + box[2]) / 2 - x0, (box[1] + box[3]) / 2 - y0])
+    best = max(range(1, count), key=lambda i: stats[i, cv2.CC_STAT_AREA] / (1 + np.linalg.norm(centroids[i] - centre) / max(bw, bh)))
+    ys, xs = np.nonzero(labels == best)
+    if len(xs) < 30:
+        return None
+    pts = np.stack([xs, ys], 1).astype(np.float32)
+    mean = pts.mean(0)
+    _, vecs = np.linalg.eigh(np.cov((pts - mean).T))
+    axis = vecs[:, 1]
+    proj = (pts - mean) @ axis
+    lo, hi = np.percentile(proj, [1, 99])
+    ends = [mean + axis * lo, mean + axis * hi]
+    ends.sort(key=lambda e: e[1])                      # upper end first = tip
+    tip, base = [[round(float(e[0] + x0), 1), round(float(e[1] + y0), 1)] for e in ends]
+    return base, tip, float(hi - lo)
