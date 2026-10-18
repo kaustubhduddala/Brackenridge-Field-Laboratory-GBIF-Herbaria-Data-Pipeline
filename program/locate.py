@@ -318,10 +318,14 @@ class Locator:
         half = SEED_SIZE_CM * px_per_cm / 2
         crop = [max(0, centre[0] - half), max(0, centre[1] - half), min(image.width, centre[0] + half),
                 min(image.height, centre[1] + half)]
-        prompt = (PROTOCOL_DEFINITIONS + "\n\nThe first image is a lab reference figure: the short line runs along "
-                  "one spikelet from where it attaches to its branch to its tip. The LAST image is a close-up of a "
-                  "panicle. Pick up to 4 separate spikelets that are intact, in focus and not overlapping others, "
-                  "and mark the base and tip of each. Skip any you cannot see clearly.")
+        prompt = (PROTOCOL_DEFINITIONS + "\n\nThis is a close-up of part of a panicle. Pick up to 4 separate spikelets "
+                  "that are intact, in focus and not overlapping others. A spikelet is a small, pointed, boat-shaped "
+                  "capsule about 2.5 times longer than it is wide. For each, mark base and tip so that the segment "
+                  "covers the WHOLE spikelet: base at its very bottom end where it joins the branch, tip at its very "
+                  "top end. A segment that stops halfway is wrong. Each spikelet has its own length and direction; "
+                  "do not reuse one segment. Skip any you cannot see clearly." + (
+                      " The first image is a lab reference figure; the LAST image is the close-up."
+                      if self.use_references else ""))
         parsed, raw, to_full = self._ask_with_references(image, ("seed_length",), prompt, SEED_SCHEMA, "spikelets",
                                                          control, status, "Measuring seeds", crop=crop)
         out = []

@@ -16,11 +16,37 @@ from .plant import PlantImage
 
 TRAITS = ("panicle_length", "leaf_width", "seed_length")
 TRAIT_LABELS = {"panicle_length": "panicle", "leaf_width": "leaf", "seed_length": "seed"}
+# Hard limits (outside them a value is rejected) and the typical range (5th-95th percentile) of the lab's
+# 163 hand measurements of Megathyrsus maximus sheets (01-06-2025_GBIFdownload_CFmeasurements.csv). A value
+# inside the hard limits but outside the typical range is kept and flagged so a person checks it.
 TRAIT_BOUNDS_CM = {
-    "panicle_length": (3.0, 75.0),
-    "leaf_width": (0.15, 5.0),
-    "seed_length": (0.15, 0.8),
+    "panicle_length": (6.0, 75.0),      # hand values 8.0-60.7 cm
+    "leaf_width": (0.3, 4.5),           # hand values 0.38-3.79 cm
+    "seed_length": (0.22, 0.75),        # hand values 0.25-0.61 cm
 }
+TYPICAL_CM = {
+    "panicle_length": (12.0, 48.0),
+    "leaf_width": (0.5, 2.4),
+    "seed_length": (0.33, 0.55),
+}
+COPY_SPREAD = 0.03          # lengths this close together across 3+ marks mean the model copied one segment
+
+
+def _flag_unusual(entry, trait):
+    low, high = TYPICAL_CM[trait]
+    value = entry.get("value_cm")
+    if value is not None and not low <= value <= high:
+        entry["flags"].append(f"unusual: lab hand measurements are mostly {low:g}-{high:g} cm, please check")
+
+
+def reject_copied(entries):
+    """Marks with (nearly) identical lengths were not measured one by one; reject them all."""
+    values = [e["value_cm"] for e in entries if e.get("value_cm")]
+    if len(values) >= 3 and (max(values) - min(values)) / (sum(values) / len(values)) < COPY_SPREAD:
+        for entry in entries:
+            entry["ok"] = False
+            entry["flags"].append("all marks have the same length (the model copied one segment)")
+    return entries
 VOUCHER_FIELDS = ["catalogNumber", "recordedBy", "recordNumber", "eventDate", "country", "stateProvince",
                   "county", "locality", "habitat", "verbatimElevation", "identifiedBy", "scientificName"]
 MIN_ON_PLANT = 0.8          # share of a traced path that must lie on plant pixels
@@ -64,6 +90,8 @@ def measure_panicle(plant, cal, base, tip, visible="whole"):
     if not low <= length_cm <= high:
         entry["flags"].append(f"{length_cm:.1f} cm is outside {low:g}-{high:g} cm")
     entry["ok"] = on_plant >= MIN_ON_PLANT and low <= length_cm <= high
+    if entry["ok"]:
+        _flag_unusual(entry, "panicle_length")
     return entry
 
 
@@ -84,6 +112,8 @@ def measure_leaf(plant, cal, a, b):
     if not low <= value <= high:
         entry["flags"].append(f"{value:.2f} cm is outside {low:g}-{high:g} cm")
     entry["ok"] = low <= value <= high
+    if entry["ok"]:
+        _flag_unusual(entry, "leaf_width")
     return entry
 
 
@@ -94,6 +124,8 @@ def measure_seed(cal, base, tip):
     entry["ok"] = low <= entry["value_cm"] <= high
     if not entry["ok"]:
         entry["flags"].append(f"{entry['value_cm']:.2f} cm is outside {low:g}-{high:g} cm")
+    else:
+        _flag_unusual(entry, "seed_length")
     return entry
 
 
@@ -128,8 +160,10 @@ def trait_value(result, trait):
     entries = [e for e in result["traits"][trait] if e.get("ok") and e.get("value_cm") is not None]
     values = [e["value_cm"] for e in entries]
     if not values:
-        return [], None, result["notes"].get(trait) or "; ".join(
-            f for e in result["traits"][trait] for f in e["flags"]) or "not found"
+        return [], None, result["notes"].get(trait) or "; ".join(dict.fromkeys(
+            f for e in result["traits"][trait] for f in e["flags"] if "outside" not in f or len(
+                result["traits"][trait]) == 1)) or "; ".join(dict.fromkeys(
+            f for e in result["traits"][trait] for f in e["flags"])) or "not found"
     summary = float(np.median(values)) if trait == "seed_length" else float(np.mean(values))
     flags = [f for e in entries for f in e["flags"]]
     return values, round(summary, 3), "; ".join(dict.fromkeys(flags))
@@ -173,6 +207,7 @@ def measure_sheet(image_path, locator, log=print, control=None, status=None, rea
             result["notes"]["leaf_width"] = "no flat, fully visible leaf found"
         for item in leaves:
             result["traits"]["leaf_width"].append(measure_leaf(plant, cal, item["a"], item["b"]))
+        reject_copied(result["traits"]["leaf_width"])
     good = [e for e in result["traits"]["panicle_length"] if e.get("points")]
     if cal.allows("seed_length"):
         if not good:
@@ -186,6 +221,7 @@ def measure_sheet(image_path, locator, log=print, control=None, status=None, rea
                 result["notes"]["seed_length"] = "no clear spikelet found"
             for item in seeds:
                 result["traits"]["seed_length"].append(measure_seed(cal, item["base"], item["tip"]))
+            reject_copied(result["traits"]["seed_length"])
 
     if read_labels:
         try:
