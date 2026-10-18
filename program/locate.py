@@ -4,7 +4,20 @@ The model answers with points and boxes; plant.py and calibration.py then measur
 pixels. Points use named x/y fields so models cannot mix up the axis order, and each provider's
 coordinate convention is converted back to full-resolution pixels here.
 """
+from pathlib import Path
+
 from PIL import Image
+
+MIN_CROP_SIDE = 900
+REFERENCE_DIR = Path(__file__).parent / "reference"
+_reference_cache = {}
+
+
+def reference_image(name):
+    """An exemplar figure from the lab's measurement protocol (program/reference/<name>.jpg)."""
+    if name not in _reference_cache:
+        _reference_cache[name] = Image.open(REFERENCE_DIR / f"{name}.jpg").convert("RGB")
+    return _reference_cache[name]
 
 # How each provider reports positions. Qwen-VL (LM Studio's usual vision models) and Gemini are
 # trained on 0-1000 normalised coordinates; current Claude models answer in pixels of the image sent.
@@ -14,6 +27,26 @@ COORDINATES = {"lmstudio": "norm1000", "custom": "norm1000", "openai": "norm1000
 SYSTEM = ("You are a botanist helping to measure dried Megathyrsus maximus (Guinea grass) herbarium specimens. "
           "You only point at things; software does the measuring. Be precise: put points exactly on the "
           "structure described. Answer with JSON only.")
+
+
+# What each trait is, as defined by the lab's protocol (G064 Herbaria Image Measurement Protocol, 3.3).
+PROTOCOL_DEFINITIONS = (
+    "Lab protocol definitions:\n"
+    "- Panicle length: from the LOWEST PANICLE NODE (the lowest point where a whorl of side branches leaves the "
+    "main axis; below it the stem is bare) up along the main axis to the TIP of the panicle.\n"
+    "- Leaf width: from margin to margin (edge to edge) across the leaf blade at its widest point, measured "
+    "straight across the blade, perpendicular to the leaf's length. Use a flat, fully visible blade.\n"
+    "- Seed length: one spikelet (the small enclosed capsule at the end of a panicle branch) measured from the point "
+    "where it attaches to its branch to its tip. Spikelets are about 0.4-0.6 cm long.")
+
+PANICLE_EXAMPLES = (
+    "Reference figures from the lab protocol come first, then the specimen sheet to analyse.\n"
+    "Reference 1 shows a panicle: the arrow runs from the lowest node (where the lowest branches leave the bare "
+    "stem) to the tip.\n"
+    "Reference 2 shows a whole herbarium sheet: the arrow marks one panicle, the thin feathery seed head at the top "
+    "of a tall stem, not the leaves (flat ribbons).\n"
+    "Reference 3 shows a panicle that is folded or hidden by leaves: the line is drawn from the lowest point where "
+    "the seed branches taper in toward the stem up to the tip.\n")
 
 
 def _point(desc):
@@ -77,6 +110,32 @@ PANICLE_REFINE_SCHEMA = {
     "required": ["tip", "base"],
     "additionalProperties": False,
 }
+LEAF_SCHEMA = {
+    "type": "object",
+    "properties": {"leaves": {"type": "array", "items": _point(
+        "centre of the widest part of one flat, fully visible leaf blade")}},
+    "required": ["leaves"], "additionalProperties": False,
+}
+LEAF_WIDTH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "left_margin": _point("point on one edge (margin) of the leaf blade, at its widest part"),
+        "right_margin": _point("point on the opposite edge of the same blade, straight across from left_margin"),
+        "usable": {"type": "boolean"},
+    },
+    "required": ["left_margin", "right_margin", "usable"], "additionalProperties": False,
+}
+SEED_SCHEMA = {
+    "type": "object",
+    "properties": {"seeds": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"base": _point("where the spikelet attaches to its branch"),
+                       "tip": _point("the far end of the same spikelet")},
+        "required": ["base", "tip"], "additionalProperties": False}}},
+    "required": ["seeds"], "additionalProperties": False,
+}
+LEAF_SIZE_CM = 7.0          # side of the zoomed crop used to place the two margin points
+SEED_SIZE_CM = 3.0
 CROP_MARGIN = 0.25          # share of the panicle box added on each side of the zoomed crop
 
 
@@ -92,8 +151,9 @@ def _convention_text(convention, size):
 class Locator:
     """Wraps a provider client; converts the model's coordinates to full-resolution pixels."""
 
-    def __init__(self, client):
+    def __init__(self, client, use_references=False):
         self.client = client
+        self.use_references = use_references
         self.convention = COORDINATES.get(client.provider, "norm1000")
 
     def _prepare(self, image, crop=None):
@@ -103,6 +163,9 @@ class Locator:
         side = self.client.max_image_side
         if max(sent.size) > side:
             sent.thumbnail((side, side), Image.Resampling.LANCZOS)
+        elif crop and max(sent.size) < MIN_CROP_SIDE:   # a small close-up: enlarge so fine structures are visible
+            factor = MIN_CROP_SIDE / max(sent.size)
+            sent = sent.resize((round(sent.width * factor), round(sent.height * factor)), Image.Resampling.LANCZOS)
         ox, oy = (crop[0], crop[1]) if crop else (0, 0)
         rw, rh = region.size
         sw, sh = sent.size
@@ -158,17 +221,29 @@ class Locator:
                                    "ticks": [pa + [ta.get("value")], pb + [tb.get("value")]]}
         return result, raw
 
+    def _ask_with_references(self, image, references, prompt, schema, name, control, status, stage, crop=None):
+        """Like _ask, but reference figures are sent before the specimen image."""
+        sent, to_full = self._prepare(image, crop)
+        text = prompt + "\n\n" + _convention_text(self.convention, sent.size)
+        shots = [reference_image(r) for r in references] if self.use_references else []
+        parsed, raw = self.client.ask_json(shots + [sent], SYSTEM, text, schema, name, control, status, stage)
+        return parsed, raw, to_full
+
     def panicles(self, image, control=None, status=None):
         prompt = (
-            "Find each panicle (the flowering seed head: a loose, branched cluster of thin branches carrying "
-            "small oval spikelets) on this sheet. Do not confuse it with leaves (flat ribbons) or stems.\n"
+            PANICLE_EXAMPLES if self.use_references else "") + PROTOCOL_DEFINITIONS + (
+            "\n\nFind each panicle (the flowering seed head: a loose, branched cluster of thin branches carrying "
+            "small oval spikelets) on the specimen sheet (the LAST image). Do not confuse it with leaves (flat "
+            "ribbons) or stems.\n"
             "For each panicle (at most 2, the most complete first) give:\n"
+            "- box: a box around the whole panicle;\n"
             "- tip: the top end of the panicle's main axis;\n"
             "- base: the lowest panicle node, where the lowest branch of the panicle leaves the main stem;\n"
             "- visible: whole, partly covered, or unsure.\n"
             "Return an empty list if there is no panicle.")
-        parsed, raw, to_full = self._ask(image, prompt, PANICLE_SCHEMA, "panicles", control, status,
-                                         "Locating panicles")
+        parsed, raw, to_full = self._ask_with_references(
+            image, ("panicle_diagram", "panicle_on_sheet", "panicle_covered"), prompt, PANICLE_SCHEMA, "panicles",
+            control, status, "Locating panicles")
         found = []
         for item in (parsed.get("panicles") or [])[:2]:
             tip, base, box = item.get("tip") or {}, item.get("base") or {}, item.get("box") or {}
@@ -181,9 +256,9 @@ class Locator:
         for item in found:
             crop = self._panicle_crop(image.size, item)
             try:
-                refined, refine_raw, crop_to_full = self._ask(
-                    image, PANICLE_REFINE_PROMPT, PANICLE_REFINE_SCHEMA, "panicle_ends", control, status,
-                    "Refining panicle ends", crop=crop)
+                refined, refine_raw, crop_to_full = self._ask_with_references(
+                    image, ("panicle_diagram",), PROTOCOL_DEFINITIONS + "\n\n" + PANICLE_REFINE_PROMPT,
+                    PANICLE_REFINE_SCHEMA, "panicle_ends", control, status, "Refining panicle ends", crop=crop)
             except (ValueError, KeyError) as exc:   # keep the first answer if the second look fails
                 raw["refine"].append({"error": str(exc)})
                 continue
@@ -204,6 +279,58 @@ class Locator:
         mx, my = max(x1 - x0, 0.05 * w) * CROP_MARGIN, max(y1 - y0, 0.05 * h) * CROP_MARGIN
         return [max(0, x0 - mx), max(0, y0 - my), min(w, x1 + mx), min(h, y1 + my)]
 
+    def leaf_widths(self, image, px_per_cm, avoid_boxes=(), control=None, status=None, limit=3):
+        """[{"a": point, "b": point}] across the widest part of up to `limit` leaf blades, plus raw answers."""
+        prompt = (PROTOCOL_DEFINITIONS + "\n\nFind up to %d leaf blades on this sheet that are flat, fully visible and "
+                  "not folded, curled, torn or hidden under other leaves. A leaf blade is a flat green or tan ribbon; "
+                  "do not pick stems, sheaths wrapped round a stem, or the panicle. For each give the centre of its "
+                  "widest part. Return an empty list if none is suitable." % limit)
+        parsed, raw, to_full = self._ask(image, prompt, LEAF_SCHEMA, "leaf_positions", control, status,
+                                         "Locating leaves")
+        out, raws = [], {"positions": raw, "widths": []}
+        for centre in (parsed.get("leaves") or [])[:limit]:
+            cx, cy = to_full(centre.get("x", 0), centre.get("y", 0))
+            if any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in avoid_boxes or ()):
+                continue
+            half = LEAF_SIZE_CM * px_per_cm / 2
+            crop = [max(0, cx - half), max(0, cy - half), min(image.width, cx + half), min(image.height, cy + half)]
+            try:
+                ans, ans_raw, crop_to_full = self._ask_with_references(
+                    image, ("leaf_width",), PROTOCOL_DEFINITIONS + (
+                        "\n\nThe first image is a lab reference figure: the short line goes straight across the "
+                        "leaf blade from margin to margin. The LAST image is a close-up of a leaf. Mark the two "
+                        "margins of the blade at its widest point, on a line perpendicular to the blade's length. "
+                        "Set usable false if the blade is folded, overlapped or its edges are unclear."),
+                    LEAF_WIDTH_SCHEMA, "leaf_width", control, status, "Measuring a leaf", crop=crop)
+            except (ValueError, KeyError) as exc:
+                raws["widths"].append({"error": str(exc)})
+                continue
+            raws["widths"].append(ans_raw)
+            if not ans.get("usable", True):
+                continue
+            a, b = ans.get("left_margin") or {}, ans.get("right_margin") or {}
+            if {"x", "y"} <= a.keys() and {"x", "y"} <= b.keys():
+                out.append({"a": crop_to_full(a["x"], a["y"]), "b": crop_to_full(b["x"], b["y"])})
+        return out, raws
+
+    def seed_lengths(self, image, px_per_cm, centre, control=None, status=None):
+        """[{"base": point, "tip": point}] for a few intact spikelets near `centre`, plus the raw answer."""
+        half = SEED_SIZE_CM * px_per_cm / 2
+        crop = [max(0, centre[0] - half), max(0, centre[1] - half), min(image.width, centre[0] + half),
+                min(image.height, centre[1] + half)]
+        prompt = (PROTOCOL_DEFINITIONS + "\n\nThe first image is a lab reference figure: the short line runs along "
+                  "one spikelet from where it attaches to its branch to its tip. The LAST image is a close-up of a "
+                  "panicle. Pick up to 4 separate spikelets that are intact, in focus and not overlapping others, "
+                  "and mark the base and tip of each. Skip any you cannot see clearly.")
+        parsed, raw, to_full = self._ask_with_references(image, ("seed_length",), prompt, SEED_SCHEMA, "spikelets",
+                                                         control, status, "Measuring seeds", crop=crop)
+        out = []
+        for item in (parsed.get("seeds") or [])[:4]:
+            base, tip = item.get("base") or {}, item.get("tip") or {}
+            if {"x", "y"} <= base.keys() and {"x", "y"} <= tip.keys():
+                out.append({"base": to_full(base["x"], base["y"]), "tip": to_full(tip["x"], tip["y"])})
+        return out, raw
+
     def voucher(self, image, control=None, status=None):
         sent, _ = self._prepare(image)
         parsed, raw = self.client.ask_json([sent], SYSTEM, VOUCHER_PROMPT, VOUCHER_SCHEMA, "specimen_voucher", control,
@@ -214,7 +341,7 @@ class Locator:
 
 
 PANICLE_REFINE_PROMPT = (
-    "This is a close-up of one panicle (the branched seed head) of a dried grass specimen. Follow the panicle's "
+    "The first image is a lab reference figure; the LAST image is a close-up of one panicle (the branched seed head) of a dried grass specimen. Follow the panicle's "
     "main axis from its top down past every branch that carries spikelets.\n"
     "- tip: the top end of the main axis;\n"
     "- base: the lowest panicle node, where the LOWEST branch leaves the main stem. Below it the stem is bare "

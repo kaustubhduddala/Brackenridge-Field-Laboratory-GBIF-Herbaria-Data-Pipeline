@@ -67,6 +67,36 @@ def measure_panicle(plant, cal, base, tip, visible="whole"):
     return entry
 
 
+def measure_leaf(plant, cal, a, b):
+    """Leaf width from two approximate margin points: the plant mask along the line fixes the true edges."""
+    entry = {"anchors": {"a": a, "b": b}, "points": [a, b], "value_cm": None, "flags": [], "ok": False}
+    ai_cm = _distance(a, b) / cal.px_per_cm
+    entry["ai_cm"] = round(ai_cm, 2)
+    value, edges = ai_cm, None
+    found = plant.width_across(a, b)
+    if found and 0.6 <= found[0] / max(ai_cm, 1e-6) <= 1.5:
+        value, edges = found[0], (found[1], found[2])
+        entry["points"] = list(edges)
+    else:
+        entry["flags"].append("blade edges not confirmed on the image; using the marked points")
+    entry["value_cm"] = round(value, 2)
+    low, high = TRAIT_BOUNDS_CM["leaf_width"]
+    if not low <= value <= high:
+        entry["flags"].append(f"{value:.2f} cm is outside {low:g}-{high:g} cm")
+    entry["ok"] = low <= value <= high
+    return entry
+
+
+def measure_seed(cal, base, tip):
+    entry = {"anchors": {"base": base, "tip": tip}, "points": [base, tip], "flags": [], "ok": False,
+             "value_cm": round(_distance(base, tip) / cal.px_per_cm, 3)}
+    low, high = TRAIT_BOUNDS_CM["seed_length"]
+    entry["ok"] = low <= entry["value_cm"] <= high
+    if not entry["ok"]:
+        entry["flags"].append(f"{entry['value_cm']:.2f} cm is outside {low:g}-{high:g} cm")
+    return entry
+
+
 def remeasure(result, rgb=None, image_path=None):
     """Recompute every trait value from the stored points (after a person edits them)."""
     cal = Calibration(**result["calibration"]) if result.get("calibration") else None
@@ -82,6 +112,14 @@ def remeasure(result, rgb=None, image_path=None):
         new["reviewed"] = entry.get("reviewed", False)
         entries.append(new)
     result["traits"]["panicle_length"] = entries
+    for trait, redo in (("leaf_width", lambda e: measure_leaf(plant, cal, e["anchors"]["a"], e["anchors"]["b"])),
+                        ("seed_length", lambda e: measure_seed(cal, e["anchors"]["base"], e["anchors"]["tip"]))):
+        redone = []
+        for entry in result["traits"][trait]:
+            new = redo(entry)
+            new["reviewed"] = entry.get("reviewed", False)
+            redone.append(new)
+        result["traits"][trait] = redone
     return result
 
 
@@ -128,6 +166,26 @@ def measure_sheet(image_path, locator, log=print, control=None, status=None, rea
         for item in panicles:
             result["traits"]["panicle_length"].append(
                 measure_panicle(plant, cal, item["base"], item["tip"], item.get("visible")))
+
+    if cal.allows("leaf_width"):
+        leaves, raw["leaves"] = locator.leaf_widths(image, cal.px_per_cm, layout.get("non_plant_boxes"), control, status)
+        if not leaves:
+            result["notes"]["leaf_width"] = "no flat, fully visible leaf found"
+        for item in leaves:
+            result["traits"]["leaf_width"].append(measure_leaf(plant, cal, item["a"], item["b"]))
+    good = [e for e in result["traits"]["panicle_length"] if e.get("points")]
+    if cal.allows("seed_length"):
+        if not good:
+            result["notes"]["seed_length"] = "no panicle located, so no seeds to measure"
+        else:
+            best = max(good, key=lambda e: e.get("on_plant", 0))
+            centre = [(best["anchors"]["base"][0] + best["anchors"]["tip"][0]) / 2,
+                      (best["anchors"]["base"][1] + best["anchors"]["tip"][1]) / 2]
+            seeds, raw["seeds"] = locator.seed_lengths(image, cal.px_per_cm, centre, control, status)
+            if not seeds:
+                result["notes"]["seed_length"] = "no clear spikelet found"
+            for item in seeds:
+                result["traits"]["seed_length"].append(measure_seed(cal, item["base"], item["tip"]))
 
     if read_labels:
         try:

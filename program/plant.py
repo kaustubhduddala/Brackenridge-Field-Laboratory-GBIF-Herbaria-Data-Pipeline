@@ -131,6 +131,38 @@ class PlantImage:
         length_cm = polyline_length(smooth) / self.work_px_per_cm
         return [self.to_full(p) for p in simplify(smooth, 0.5)], length_cm, on_plant
 
+    def width_across(self, a, b, reach=0.5):
+        """Width (cm) of the plant run along the line a-b (full-res points), measured on the plant mask.
+
+        The line is extended by `reach` of its length each way; the run of plant pixels that contains
+        (or lies nearest to) the midpoint is the blade. Returns (width_cm, edge_a, edge_b) or None.
+        """
+        (ax, ay), (bx, by) = self.to_work(a), self.to_work(b)
+        length = math.hypot(bx - ax, by - ay)
+        if length < 2:
+            return None
+        n = int(length * (1 + 2 * reach)) * 2 + 1
+        t = np.linspace(-reach, 1 + reach, n)
+        xs, ys = ax + t * (bx - ax), ay + t * (by - ay)
+        h, w = self.mask.shape
+        ok = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+        on = np.zeros(n, bool)
+        on[ok] = self.mask[ys[ok].astype(int), xs[ok].astype(int)] > 0
+        if not on.any():
+            return None
+        mid = int(np.argmin(np.abs(t - 0.5)))
+        if not on[mid]:
+            near = np.flatnonzero(on)
+            mid = int(near[np.argmin(np.abs(near - mid))])
+        lo, hi = mid, mid
+        while lo > 0 and on[lo - 1]:
+            lo -= 1
+        while hi < n - 1 and on[hi + 1]:
+            hi += 1
+        step = length * (1 + 2 * reach) / (n - 1)
+        edge_a, edge_b = (xs[lo], ys[lo]), (xs[hi], ys[hi])
+        return ((hi - lo) * step / self.work_px_per_cm, self.to_full(edge_a), self.to_full(edge_b))
+
     def extremity_near(self, anchor, near, radius_cm=1.5, margin_cm=4.0):
         """The plant pixel within radius_cm of `near` that is farthest (along the plant) from `anchor`.
 
