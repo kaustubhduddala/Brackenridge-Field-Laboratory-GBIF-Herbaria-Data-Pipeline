@@ -8,7 +8,8 @@ from pathlib import Path
 import pandas as pd
 
 from config import MEASUREMENT_COLUMNS
-from .analysis import TRAIT_BOUNDS_CM, TRAITS, load_measurements, measure_images
+from .analysis import TRAIT_BOUNDS_CM, TRAITS, load_measurements
+from .measure import measure_images
 from .utils import index_images, is_blank, save_csv
 
 REFERENCE_COLUMNS = dict(zip(TRAITS, MEASUREMENT_COLUMNS))
@@ -160,6 +161,7 @@ def run_benchmark(reference_csv, media_dir, output_dir, measurements_csv=None, m
     if measure:
         measurements_csv = run_dir / "measurements.csv"
         log(f"Measuring {len(ids)} hand-measured images into {measurements_csv}")
+        measure_options.setdefault("read_labels", False)   # only the traits are scored
         result = measure_images(media_dir, measurements_csv, log=log, only_ids=ids, force=True, **measure_options)
         if result.get("cancelled"):
             log("Benchmark cancelled; scoring the images measured so far")

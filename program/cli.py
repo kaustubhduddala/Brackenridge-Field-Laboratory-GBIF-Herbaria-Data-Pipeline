@@ -2,9 +2,10 @@ import re
 import sys
 from pathlib import Path
 
-from .analysis import join_measurements, measure_images
+from .analysis import join_measurements
 from config import PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, load_settings
 from .gbif import download_dataset
+from .measure import measure_images
 from .media import download_media
 from .processor import phase_1_clean_and_merge, phase_2_finalize_dataset, phase_3_select_columns, run_cleaning
 from .workspace import list_workspaces, resolve_input, workspace_by_name, workspace_of

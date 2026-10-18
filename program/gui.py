@@ -18,10 +18,11 @@ from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA
 
 from . import site_login, sites, theme
 from .analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
-                       measure_images, measurement_status)
+                       measurement_status)
 from .analysis_tab import AnalysisTab
 from .csv_source import CsvSource
 from .gbif import check_gbif_login, download_dataset
+from .measure import measure_images
 from .media import download_media, media_status
 from .processor import REQUIRED_COLUMNS, available_columns, run_cleaning
 from .power import KeepAwake

@@ -1,3 +1,8 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
 <div style="width: 50%; margin: 0 auto;">
 
 # G064 Herbaria Image Measurement Protocol for MaxEnt (Revised)
