@@ -341,13 +341,13 @@ class Locator:
                 out.append({"base": to_full(base["x"], base["y"]), "tip": to_full(tip["x"], tip["y"])})
         return out, raw
 
-    def seed_boxes(self, image, px_per_cm, centre, control=None, status=None):
+    def seed_boxes(self, image, px_per_cm, centre, control=None, status=None, size_cm=None):
         """Tight boxes (full-res pixels) around up to 6 intact spikelets near `centre`, plus the raw answer.
 
         Models are far better at boxing an object than at marking both ends of it; plant.spikelet_axis
         then finds the spikelet's long axis inside each box.
         """
-        half = SEED_SIZE_CM * px_per_cm / 2
+        half = (size_cm or SEED_SIZE_CM) * px_per_cm / 2
         crop = [max(0, centre[0] - half), max(0, centre[1] - half), min(image.width, centre[0] + half),
                 min(image.height, centre[1] + half)]
         prompt = (PROTOCOL_DEFINITIONS + "\n\nThis is a close-up of part of a panicle. Draw a tight bounding box "
