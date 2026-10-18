@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from .analysis import join_measurements, measure_images
-from config import PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT
+from config import PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, load_settings
 from .gbif import download_dataset
 from .media import download_media
 from .processor import phase_1_clean_and_merge, phase_2_finalize_dataset, phase_3_select_columns, run_cleaning
@@ -98,7 +98,7 @@ def _measure():
     ws = _ask_workspace()
     only = _ids(_ask("gbifIDs to measure (blank for all new images)"))
     measure_images(_ask("Image folder", ws.media_dir), _ask("Measurements CSV", ws.measurements_csv),
-                   only_ids=only, force=bool(only))
+                   only_ids=only, force=bool(only), settings=_model_settings([]))
 
 
 def _join():
@@ -179,13 +179,39 @@ def _positional(args, value_options=()):
     return result
 
 
+def _model_settings(args):
+    """The provider and model saved in the app, overridden by --provider and --model."""
+    from .providers import settings_from_app
+
+    return settings_from_app(load_settings(), _option(args, "--provider"), _option(args, "--model"))
+
+
+MODEL_OPTIONS = ("--provider", "--model")
+
+
 def measure_command(args):
-    positional = _positional(args, ("--ids", "--download"))
+    positional = _positional(args, ("--ids", "--download", *MODEL_OPTIONS))
     ws = _workspace(_option(args, "--download"))
     only = _ids(_option(args, "--ids"))
     measure_images(positional[0] if positional else ws.media_dir,
                    positional[1] if len(positional) > 1 else ws.measurements_csv,
-                   only_ids=only, force=bool(only) or "--redo" in args)
+                   only_ids=only, force=bool(only) or "--redo" in args, settings=_model_settings(args))
+
+
+def benchmark_command(args):
+    from .benchmark import BENCHMARK_DIR_NAME, run_benchmark
+
+    positional = _positional(args, ("--measurements", "--ids", "--download", "--label", "--key", *MODEL_OPTIONS))
+    if not positional:
+        print("Usage: python main.py benchmark <hand_measurements_csv> [--measure | --measurements file.csv] "
+              "[--ids 123,456] [--label NAME] [--key gbifID] [--provider NAME] [--model ID] [--download NAME]")
+        sys.exit(1)
+    ws = _workspace(_option(args, "--download"))
+    run_benchmark(positional[0], ws.media_dir, ws.root / BENCHMARK_DIR_NAME,
+                  measurements_csv=_option(args, "--measurements") or ws.measurements_csv,
+                  measure="--measure" in args, only_ids=_ids(_option(args, "--ids")),
+                  label=_option(args, "--label") or "", reference_key=_option(args, "--key") or "gbifID",
+                  settings=_model_settings(args))
 
 
 def join_command(args):

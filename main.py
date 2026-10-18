@@ -8,9 +8,13 @@ USAGE = """Usage:
   python main.py --version       print the version
   python main.py cleaner ...     run phase 1 or 2 directly (run without arguments for details)
   python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo] [--download NAME]
+                      [--provider lmstudio|openai|gemini|anthropic|custom] [--model ID]
   python main.py join [dataset_csv] [measurements_csv] [--fill-blanks] [--matched-only]
                       [--key gbifID] [--measurement-key gbifID] [--columns a,b,c] [--output file.csv]
                       [--download NAME]
+  python main.py benchmark hand_measurements.csv [--measure | --measurements file.csv] [--ids 123,456]
+                      [--label NAME] [--key gbifID] [--provider NAME] [--model ID] [--download NAME]
+                                 score AI measurements against hand measurements
 
 Each download is kept in data/<download id>_<Species>/. --download NAME picks the folder (newest by default)."""
 
@@ -74,6 +78,9 @@ def main(argv=None):
     elif command == "join":
         from program import cli
         cli.join_command(args[1:])
+    elif command == "benchmark":
+        from program import cli
+        cli.benchmark_command(args[1:])
     else:
         print(USAGE)
         sys.exit(1)

@@ -7,12 +7,11 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-import requests
-from openai import APIConnectionError, BadRequestError, NotFoundError, OpenAI
 
-from config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MAX_IMAGE_SIDE, MIN_CONTEXT_LENGTH,
-                    REQUEST_TIMEOUT_S, RESPONSES_DIR_NAME)
-from .utils import ItemSkipped, check, gbif_ids, index_images, is_blank, read_csv, save_csv
+from config import MAX_IMAGE_SIDE, RESPONSES_DIR_NAME
+from .providers import ModelOutputError, ModelSettings, ProviderError, open_client
+from .providers import check_connection as provider_check_connection
+from .utils import ItemSkipped, index_images, is_blank, read_csv, save_csv
 
 TRAITS = ("panicle_length", "leaf_width", "seed_length")
 FIELDS = [f"{trait}_{n}_{kind}" for trait in TRAITS for n in (1, 2) for kind in ("cm", "confidence")]
@@ -390,27 +389,6 @@ def _crop_seed_roi_gridded(image_path, geom_parsed, orig_size):
     return data_url, (x0, y0, box_side, box_side)
 
 
-def _parse_json(content):
-    text = re.sub(r"<think>.*?</think>", "", str(content or ""), flags=re.DOTALL | re.IGNORECASE)
-    if "</think>" in text:
-        text = text.rsplit("</think>", 1)[1]
-    if not text.strip():
-        raise ValueError("Model returned an empty response")
-
-    decoder = json.JSONDecoder()
-    found = None
-    for match in re.finditer(r"\{", text):
-        try:
-            payload, _ = decoder.raw_decode(text, match.start())
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and payload:
-            found = payload
-    if found is None:
-        raise ValueError("No valid JSON object found in model response")
-    return found
-
-
 def _to_number(value):
     if isinstance(value, bool):
         return None
@@ -617,19 +595,6 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _extra(obj, name):
-    value = getattr(obj, name, None)
-    if value is None:
-        value = (getattr(obj, "model_extra", None) or {}).get(name)
-    return value
-
-
-class ModelOutputError(ValueError):
-    def __init__(self, message, raw):
-        super().__init__(message)
-        self.raw = raw
-
-
 def save_response(gbif_id, image, raw, error, responses_dir):
     responses_dir = Path(responses_dir)
     responses_dir.mkdir(parents=True, exist_ok=True)
@@ -646,125 +611,35 @@ def save_response(gbif_id, image, raw, error, responses_dir):
     return path
 
 
-def _api_root(base_url):
-    root = base_url.rstrip("/")
-    return root[:-3] if root.endswith("/v1") else root
-
-
-def find_loaded_model(base_url=LMSTUDIO_URL):
-    if LMSTUDIO_MODEL:
-        return {"id": LMSTUDIO_MODEL, "type": "", "context": None}
-    try:
-        resp = requests.get(f"{_api_root(base_url)}/api/v0/models", timeout=10)
-        resp.raise_for_status()
-        models = resp.json().get("data", [])
-    except (requests.RequestException, ValueError):
-        models = None
-
-    if models is not None:
-        loaded = [m for m in models if m.get("state") == "loaded" and m.get("type") in ("vlm", "llm")]
-        if not loaded:
-            raise RuntimeError("LM Studio is running but no model is loaded. Load a vision model in LM Studio first.")
-        best = next((m for m in loaded if m.get("type") == "vlm"), loaded[0])
-        return {"id": best["id"], "type": best.get("type", ""), "context": best.get("loaded_context_length")}
-
-    try:
-        resp = requests.get(f"{base_url.rstrip('/')}/models", timeout=10)
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-    except (requests.RequestException, ValueError) as exc:
-        raise RuntimeError(f"Could not reach LM Studio at {base_url}: {exc}") from exc
-    if not data:
-        raise RuntimeError("The server reports no models. Load a vision model in LM Studio first.")
-    return {"id": data[0]["id"], "type": "", "context": None}
-
-
-def model_warnings(model):
-    warnings = []
-    if model["type"] == "llm":
-        warnings.append(f"{model['id']} is a text-only model; load a vision model to measure images.")
-    if model["context"] and model["context"] < MIN_CONTEXT_LENGTH:
-        warnings.append(f"{model['id']} is loaded with a {model['context']}-token context. Reload it in LM Studio "
-                        f"with at least {MIN_CONTEXT_LENGTH} so the image, prompt and answer fit.")
-    return warnings
-
-
 class VisionModel:
-    def __init__(self, base_url=LMSTUDIO_URL, log=print, token_limit=DEFAULT_TOKEN_LIMIT, reasoning_effort=None):
-        self.client = OpenAI(base_url=base_url, api_key="lm-studio", timeout=REQUEST_TIMEOUT_S)
-        self.base_url = base_url
+    def __init__(self, settings=None, log=print):
+        self.settings = settings or ModelSettings()
         self.log = log
-        self.token_limit = token_limit
-        self.reasoning_effort = reasoning_effort
-        self.structured = True
-        self.model = find_loaded_model(base_url)
-        for warning in model_warnings(self.model):
+        self.client = open_client(self.settings, log)
+        self.model = {"id": self.client.model_id}
+        for warning in self.client.warnings:
             log(f"Warning: {warning}")
 
-    def _build_request(self, data_url, system_prompt, user_text, response_format):
-        request = {
-            "model": self.model["id"],
-            "temperature": 0.1,
-            "stream": True,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ]},
-            ],
-        }
-        if self.token_limit:
-            request["max_tokens"] = int(self.token_limit)
-        if self.reasoning_effort:
-            request["reasoning_effort"] = self.reasoning_effort
-        if self.structured and response_format is not None:
-            request["response_format"] = response_format
-        return request
-
-    def _run_with_fallback(self, request, control, status, stage_label="Thinking"):
-        while True:
-            try:
-                return self._stream(request, control, status, stage_label=stage_label)
-            except BadRequestError as exc:
-                if "reasoning_effort" in request:
-                    request.pop("reasoning_effort")
-                    self.reasoning_effort = None
-                    self.log(f"    The server rejected the thinking setting ({exc}); continuing without it")
-                elif "response_format" in request:
-                    request.pop("response_format")
-                    self.structured = False
-                    self.log(f"    The server rejected structured output ({exc}); continuing with plain JSON prompting")
-                else:
-                    raise
+    def _ask(self, data_url, system_prompt, user_text, schema, name, control, status, stage):
+        return self.client.ask_json([data_url], system_prompt, user_text, schema, name, control, status, stage)
 
     def measure(self, image_path, control=None, status=None):
         gridded_url, clean_url, orig_size, sheet_span_norm = _prepare_images(image_path)
 
         # Pass 1A: Botanical Geometry on Gridded Image
-        geom_req = self._build_request(
-            gridded_url,
-            GEOMETRY_PROMPT,
+        geom_parsed, raw = self._ask(
+            gridded_url, GEOMETRY_PROMPT,
             "Read the 0..1000 coordinate grid on this image and locate the ruler, panicles, leaf blade widths, and spikelet cluster.",
-            GEOMETRY_RESPONSE_FORMAT,
-        )
-        geom_parsed, model, raw = self._run_with_fallback(
-            geom_req, control, status, stage_label="Pass 1/3 (gridded geometry)"
-        )
+            GEOMETRY_SCHEMA, "specimen_geometry", control, status, "Pass 1/3 (gridded geometry)")
+        model = raw["model"]
         raw["image_size_px"] = list(orig_size) if orig_size else None
         raw["detected_sheet_span_norm"] = sheet_span_norm
 
         # Pass 1B: Voucher OCR on Clean Un-gridded Image
         try:
-            voucher_req = self._build_request(
-                clean_url,
-                VOUCHER_PROMPT,
-                "Transcribe the specimen voucher label into Darwin Core fields.",
-                VOUCHER_RESPONSE_FORMAT,
-            )
-            voucher_parsed, _, _ = self._run_with_fallback(
-                voucher_req, control, status, stage_label="Pass 2/3 (voucher OCR)"
-            )
+            voucher_parsed, _ = self._ask(
+                clean_url, VOUCHER_PROMPT, "Transcribe the specimen voucher label into Darwin Core fields.",
+                VOUCHER_SCHEMA, "specimen_voucher", control, status, "Pass 2/3 (voucher OCR)")
             geom_parsed["voucher_text"] = voucher_parsed.get("voucher_text", "")
             geom_parsed["voucher"] = voucher_parsed.get("voucher", {})
         except ItemSkipped:
@@ -780,15 +655,10 @@ class VisionModel:
                 x0, y0, cw, ch = crop_box
                 orig_w, orig_h = orig_size
                 try:
-                    seed_req = self._build_request(
-                        crop_url,
-                        SEED_CROP_PROMPT,
+                    seed_parsed, _ = self._ask(
+                        crop_url, SEED_CROP_PROMPT,
                         "Read the 0..1000 grid on this zoomed panicle crop and place endpoints on 2 individual oval spikelets (seeds).",
-                        SEED_CROP_RESPONSE_FORMAT,
-                    )
-                    seed_parsed, _, seed_raw = self._run_with_fallback(
-                        seed_req, control, status, stage_label="Pass 3/3 (zoomed seed crop)"
-                    )
+                        SEED_CROP_SCHEMA, "seed_crop_measurements", control, status, "Pass 3/3 (zoomed seed crop)")
                     raw["seed_crop_pass"] = {
                         "crop_box_px": list(crop_box),
                         "parsed": seed_parsed,
@@ -815,48 +685,6 @@ class VisionModel:
         normalised = _normalise_result(geom_parsed, orig_size=orig_size, sheet_span_norm=sheet_span_norm)
         raw["normalised"] = normalised
         return normalised, model, raw
-
-    def _stream(self, request, control, status, stage_label="Thinking"):
-        content, reasoning = [], []
-        finish_reason, model, tokens, reported = None, self.model["id"], 0, 0
-        stream = self.client.chat.completions.create(**request)
-        try:
-            for chunk in stream:
-                check(control)
-                model = getattr(chunk, "model", None) or model
-                if not chunk.choices:
-                    continue
-                choice = chunk.choices[0]
-                delta = choice.delta
-                if delta is not None:
-                    if delta.content:
-                        content.append(delta.content)
-                        tokens += 1
-                    thought = _extra(delta, "reasoning_content") or _extra(delta, "reasoning")
-                    if thought:
-                        reasoning.append(thought)
-                        tokens += 1
-                finish_reason = choice.finish_reason or finish_reason
-                if status and tokens - reported >= 20:
-                    reported = tokens
-                    phase = "Writing answer" if content else stage_label
-                    status(f"{phase}, about {tokens} tokens")
-        finally:
-            stream.close()
-
-        text = "".join(content)
-        raw = {"model": model, "finish_reason": finish_reason, "approx_tokens": tokens,
-               "structured_output": "response_format" in request, "content": text, "reasoning": "".join(reasoning)}
-        try:
-            raw["parsed"] = _parse_json(text if text.strip() else raw["reasoning"])
-        except ValueError as exc:
-            message = str(exc)
-            if finish_reason == "length":
-                message = (f"The model stopped after about {tokens} tokens without finishing its answer. Raise the "
-                           "token limit, raise the context length for this model in LM Studio, or set Thinking to "
-                           "Low or Off.")
-            raise ModelOutputError(message, raw) from exc
-        return raw["parsed"], model, raw
 
 
 def load_measurements(csv_path):
@@ -907,17 +735,11 @@ def measurement_status(media_dir, csv_path):
     return items
 
 
-def check_connection(base_url=LMSTUDIO_URL):
-    model = find_loaded_model(base_url)
-    context = f", {model['context']}-token context" if model["context"] else ""
-    lines = [f"Connected. Measurements will use {model['id']}{context}."]
-    lines += [f"Warning: {w}" for w in model_warnings(model)]
-    return "\n".join(lines)
+check_connection = provider_check_connection
 
 
 def measure_images(media_dir, csv_path, log=print, control=None, progress=None,
-                   status=None, base_url=LMSTUDIO_URL, token_limit=DEFAULT_TOKEN_LIMIT, reasoning_effort=None,
-                   only_ids=None, force=False):
+                   status=None, settings=None, only_ids=None, force=False):
     csv_path = Path(csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     responses_dir = csv_path.parent / RESPONSES_DIR_NAME
@@ -930,9 +752,9 @@ def measure_images(media_dir, csv_path, log=print, control=None, progress=None,
         log(f"No downloaded images found in {media_dir}. Download images first.")
         return summary
 
-    vision = VisionModel(base_url, log, token_limit, reasoning_effort)
+    vision = VisionModel(settings, log)
     scope = "selected " if only_ids is not None else ""
-    log(f"Measuring {len(targets)} {scope}images from {media_dir} with {vision.model['id']}")
+    log(f"Measuring {len(targets)} {scope}images from {media_dir} with {vision.settings.label}: {vision.model['id']}")
 
     for number, (gbif_id, image) in enumerate(targets, start=1):
         if control and control.cancelled:
@@ -961,9 +783,8 @@ def measure_images(media_dir, csv_path, log=print, control=None, progress=None,
             log(f"    Skipped {image.name}")
             summary["skipped_by_user"] += 1
             continue
-        except (APIConnectionError, NotFoundError) as exc:
-            raise RuntimeError(f"Could not reach LM Studio at {base_url}: {exc}. "
-                               "Check that the server is running with a vision model loaded.") from exc
+        except ProviderError:
+            raise
         except Exception as exc:
             if isinstance(exc, ModelOutputError):
                 save_response(gbif_id, image, exc.raw, str(exc), responses_dir)

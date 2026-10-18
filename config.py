@@ -167,6 +167,59 @@ def remove_gbif_account():
     ACCOUNT_FILE.unlink(missing_ok=True)
 
 
+AI_KEYRING_SERVICE = APP_NAME + " (AI)"
+AI_KEYS_FILE = BASE_DIR / "ai_keys.json"
+
+
+def ai_api_key(provider, env_names=()):
+    """(key, where it came from) for an AI provider; environment variables win over saved keys."""
+    for name in env_names:
+        if os.environ.get(name):
+            return os.environ[name], f"the {name} environment variable"
+    store = _keyring()
+    if store:
+        try:
+            key = store.get_password(AI_KEYRING_SERVICE, provider)
+            if key:
+                return key, password_store_name()
+        except Exception:
+            pass
+    key = _read_json(AI_KEYS_FILE).get(provider, "")
+    return key, (AI_KEYS_FILE.name if key else "")
+
+
+def save_ai_api_key(provider, key):
+    """Save a provider's API key in the system keychain, or a private file when there is none."""
+    store = _keyring()
+    if store:
+        try:
+            store.set_password(AI_KEYRING_SERVICE, provider, key)
+            return password_store_name()
+        except Exception:
+            pass
+    keys = _read_json(AI_KEYS_FILE)
+    keys[provider] = key
+    AI_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AI_KEYS_FILE.write_text(json.dumps(keys, indent=2))
+    try:
+        os.chmod(AI_KEYS_FILE, 0o600)
+    except OSError:
+        pass
+    return AI_KEYS_FILE.name
+
+
+def remove_ai_api_key(provider):
+    store = _keyring()
+    if store:
+        try:
+            store.delete_password(AI_KEYRING_SERVICE, provider)
+        except Exception:
+            pass
+    keys = _read_json(AI_KEYS_FILE)
+    if keys.pop(provider, None) is not None:
+        AI_KEYS_FILE.write_text(json.dumps(keys, indent=2))
+
+
 def load_settings():
     try:
         return json.loads(SETTINGS_FILE.read_text())

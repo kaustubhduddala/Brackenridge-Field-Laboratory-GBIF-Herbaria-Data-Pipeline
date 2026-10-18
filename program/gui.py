@@ -12,9 +12,9 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA_DIR, DEFAULT_TOKEN_LIMIT,
                     GBIF_SIGNUP_URL, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, PRECISION_NONE, PRECISION_RELAXED,
-                    PRECISION_STRICT, PRESETS, THINKING_CHOICES, gbif_credentials, load_settings,
-                    password_store_name, remove_gbif_account, save_gbif_account, save_settings, saved_gbif_account,
-                    saved_gbif_password)
+                    PRECISION_STRICT, PRESETS, THINKING_CHOICES, ai_api_key, gbif_credentials, load_settings,
+                    password_store_name, remove_ai_api_key, remove_gbif_account, save_ai_api_key, save_gbif_account,
+                    save_settings, saved_gbif_account, saved_gbif_password)
 
 from . import site_login, sites, theme
 from .analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
@@ -25,6 +25,7 @@ from .gbif import check_gbif_login, download_dataset
 from .media import download_media, media_status
 from .processor import REQUIRED_COLUMNS, available_columns, run_cleaning
 from .power import KeepAwake
+from .providers import DEFAULT_PROVIDER, PROVIDERS, describe_key, list_models, settings_from_app
 from .modify_tab import ModifyTab
 from .utils import TaskControl, find_dwca_files, open_path, scan_issues
 from .widgets import CSV_TYPES, ColumnChecklist, PathCombo, ScrollFrame, _check_image, _set_entry, _set_text
@@ -746,7 +747,8 @@ class SiteLoginDialog(tk.Toplevel):
                 host = site_login.sign_in(url, done, self.app._log)
                 result = (True, f"Saved the sign-in for {host}. You can retry its images now.")
             except site_login.BrowserMissing as exc:
-                self.after(0, lambda: self._offer_browser(url, str(exc)))
+                message = str(exc)
+                self.after(0, lambda: self._offer_browser(url, message))
                 return
             except Exception as exc:
                 result = (False, str(exc))
@@ -927,6 +929,110 @@ class AccountDialog(tk.Toplevel):
             self.destroy()
 
 
+class ApiKeyDialog(tk.Toplevel):
+    """Save, test or remove the API key for one AI provider."""
+
+    def __init__(self, app, provider):
+        super().__init__(app.root)
+        info = PROVIDERS[provider]
+        self.title(f"{info['label']} API key")
+        self.resizable(False, False)
+        self.transient(app.root)
+        self.configure(background=app.palette["bg"])
+        theme.set_title_bar(self, app.theme_name == "dark")
+        self.app, self.provider = app, provider
+
+        body = ttk.Frame(self, padding=18)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text=f"Measurements can use {info['label']} instead of LM Studio. Images of the sheets are "
+                             "sent to the provider and usage is billed to the key's account.",
+                  style="Muted.TLabel", wraplength=440, justify="left").grid(row=0, column=0, columnspan=3,
+                                                                               sticky="w", pady=(0, 10))
+        self.key_var = tk.StringVar()
+        ttk.Label(body, text="API key").grid(row=1, column=0, sticky="w", padx=(0, 10))
+        self.entry = ttk.Entry(body, textvariable=self.key_var, width=44, show="•")
+        self.entry.grid(row=1, column=1, columnspan=2, sticky="ew")
+        self.entry.focus_set()
+        self.show_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, text="Show key", variable=self.show_var,
+                        command=lambda: self.entry.configure(show="" if self.show_var.get() else "•")
+                        ).grid(row=2, column=1, sticky="w", pady=(4, 0))
+        store = password_store_name()
+        notes = [describe_key(provider)]
+        notes.append(f"Saved keys are kept in {store}." if store else
+                     "No system keychain was found, so keys are kept in a file readable only by your user.")
+        if info["env"]:
+            notes.append(f"The {' or '.join(info['env'])} environment variable is used instead when set.")
+        ttk.Label(body, text=" ".join(notes), style="Muted.TLabel", wraplength=440, justify="left").grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        if info["key_url"]:
+            link = ttk.Label(body, text="Get an API key", style="Link.TLabel", cursor="hand2")
+            link.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+            link.bind("<Button-1>", lambda _: webbrowser.open(info["key_url"]))
+        self.status = ttk.Label(body, style="Muted.TLabel", wraplength=440, justify="left")
+        self.status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        footer = ttk.Frame(body)
+        footer.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+        ttk.Button(footer, text="Remove saved key", command=self._remove).pack(side="left")
+        self.save_button = ttk.Button(footer, text="Save and test", style="Accent.TButton", command=self._save)
+        self.save_button.pack(side="right")
+        ttk.Button(footer, text="Close", command=self.destroy).pack(side="right", padx=6)
+        self.bind("<Return>", lambda _: self._save())
+        self.bind("<Escape>", lambda _: self.destroy())
+        try:
+            self.wait_visibility()
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _set_status(self, text, kind="muted"):
+        if self.winfo_exists():
+            self.status.configure(text=text, foreground=self.app.palette[kind])
+
+    def _save(self):
+        key = self.key_var.get().strip()
+        if key:
+            try:
+                where = save_ai_api_key(self.provider, key)
+            except OSError as exc:
+                self._set_status(f"Could not save the key: {exc}", "error")
+                return
+            self.app._log(f"{PROVIDERS[self.provider]['label']} API key saved in {where}.")
+            self.key_var.set("")
+        elif not ai_api_key(self.provider, PROVIDERS[self.provider]["env"])[0]:
+            self._set_status("Paste an API key first.", "error")
+            return
+        self.save_button.configure(state="disabled")
+        self._set_status("Checking the key…", "busy")
+        settings = settings_from_app(self.app._model_settings_dict(), self.provider)
+
+        def work():
+            try:
+                models = list_models(settings)
+                ok, message = True, f"The key works. {len(models)} models are available."
+            except Exception as exc:
+                ok, message = False, str(exc)
+            self.after(0, lambda: self._tested(ok, message, models if ok else None))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _tested(self, ok, message, models):
+        if not self.winfo_exists():
+            return
+        self.save_button.configure(state="normal")
+        self._set_status(message, "ok" if ok else "error")
+        if ok:
+            self.app._set_model_choices(self.provider, models)
+
+    def _remove(self):
+        if messagebox.askyesno("Remove key", f"Remove the saved {PROVIDERS[self.provider]['label']} API key?",
+                               parent=self):
+            remove_ai_api_key(self.provider)
+            self.app._log(f"Saved {PROVIDERS[self.provider]['label']} API key removed.")
+            self._set_status(describe_key(self.provider))
+
+
 class PipelineApp:
     def __init__(self, root):
         self.root = root
@@ -955,7 +1061,13 @@ class PipelineApp:
         self.measurements_var = tk.StringVar(value=get("measurements_csv", ""))
         self.workspace_var = tk.StringVar()
         self.csv_source = CsvSource(self)
-        self.server_var = tk.StringVar(value=get("server", LMSTUDIO_URL))
+        self.provider = get("provider") if get("provider") in PROVIDERS else DEFAULT_PROVIDER
+        self.servers = {k: v for k, v in (get("servers") or {}).items() if k in PROVIDERS}
+        self.servers.setdefault("lmstudio", get("server", LMSTUDIO_URL))
+        self.models = {k: v for k, v in (get("models") or {}).items() if k in PROVIDERS}
+        self.provider_var = tk.StringVar(value=PROVIDERS[self.provider]["label"])
+        self.server_var = tk.StringVar(value=self.servers.get(self.provider) or PROVIDERS[self.provider]["base_url"])
+        self.model_var = tk.StringVar(value=self.models.get(self.provider, ""))
         self.token_var = tk.StringVar(value=str(get("token_limit", DEFAULT_TOKEN_LIMIT)))
         self.thinking_var = tk.StringVar(value=get("thinking", "Model default"))
         self.fill_blanks_var = tk.BooleanVar(value=get("fill_blanks", False))
@@ -1304,20 +1416,37 @@ class PipelineApp:
                                                                 filetypes=CSV_TYPES, confirmoverwrite=False))
 
         model = self._section(tab, "Model", 1)
-        self._field(model, 0, "LM Studio server", variable=self.server_var)
-        test = ttk.Button(model, text="Test connection", command=self._test_connection)
-        test.grid(row=0, column=2, columnspan=2, padx=(6, 0), sticky="w")
-        self.action_buttons.append(test)
+        ttk.Label(model, text="Provider").grid(row=0, column=0, sticky="w")
+        provider_box = ttk.Combobox(model, textvariable=self.provider_var, state="readonly", width=34,
+                                    values=[info["label"] for info in PROVIDERS.values()])
+        provider_box.grid(row=0, column=1, sticky="w", pady=3)
+        provider_box.bind("<<ComboboxSelected>>", self._provider_changed)
+        self.key_button = ttk.Button(model, text="API key…", command=self._open_api_key)
+        self.key_button.grid(row=0, column=2, columnspan=2, padx=(6, 0), sticky="w")
+        self._field(model, 4, "Server", variable=self.server_var)
+        ttk.Label(model, text="Model").grid(row=5, column=0, sticky="w")
+        self.model_box = ttk.Combobox(model, textvariable=self.model_var, width=40)
+        self.model_box.grid(row=5, column=1, sticky="ew", pady=3)
+        model_buttons = ttk.Frame(model)
+        model_buttons.grid(row=5, column=2, columnspan=2, padx=(6, 0), sticky="w")
+        refresh = ttk.Button(model_buttons, text="Refresh", command=self._refresh_models)
+        refresh.pack(side="left")
+        test = ttk.Button(model_buttons, text="Test connection", command=self._test_connection)
+        test.pack(side="left", padx=(6, 0))
+        self.action_buttons += [refresh, test]
+        self.model_hint = ttk.Label(model, style="Muted.TLabel", wraplength=640, justify="left")
+        self.model_hint.grid(row=6, column=1, columnspan=3, sticky="w")
         options = ttk.Frame(model)
-        options.grid(row=1, column=1, columnspan=3, sticky="w", pady=3)
+        options.grid(row=7, column=1, columnspan=3, sticky="w", pady=3)
         ttk.Spinbox(options, textvariable=self.token_var, from_=0, to=65536, increment=1000, width=8).pack(side="left")
         ttk.Label(options, text="token limit per image (0 for none)", style="Muted.TLabel").pack(side="left", padx=(6, 20))
         ttk.Label(options, text="Thinking").pack(side="left")
         ttk.Combobox(options, textvariable=self.thinking_var, values=list(THINKING_CHOICES), state="readonly",
                      width=14).pack(side="left", padx=6)
-        ttk.Label(model, text="Options").grid(row=1, column=0, sticky="w")
-        self.measure_status = self._action(model, 3, [("Measure new images", self._run_measurements),
+        ttk.Label(model, text="Options").grid(row=7, column=0, sticky="w")
+        self.measure_status = self._action(model, 8, [("Measure new images", self._run_measurements),
                                                       ("Choose images…", self._choose_measurements)])
+        self._update_provider_widgets()
 
         join = self._section(tab, "Add results to the dataset", 2)
         self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
@@ -1637,8 +1766,7 @@ class PipelineApp:
 
     def _save_settings(self):
         self.settings.update(
-            theme=self.theme_var.get(), server=self.server_var.get().strip(), token_limit=self._token_limit(),
-            thinking=self.thinking_var.get(), fill_blanks=self.fill_blanks_var.get(),
+            theme=self.theme_var.get(), **self._model_settings_dict(), fill_blanks=self.fill_blanks_var.get(),
             dataset_csv=self.dataset_var.get().strip(), media_dir=self.media_dir_var.get().strip(),
             measurements_csv=self.measurements_var.get().strip(), keep_awake=self.keep_awake_var.get(),
             master_columns=self.master_columns, workspace=self.workspace.name if self.workspace else "",
@@ -1850,15 +1978,12 @@ class PipelineApp:
         media_dir, measurements_csv = self._media_dir(), self._measurements_csv()
         if not media_dir or not measurements_csv:
             return
-        base_url = self.server_var.get().strip() or LMSTUDIO_URL
-        token_limit = self._token_limit()
-        thinking = THINKING_CHOICES.get(self.thinking_var.get())
         self._save_settings()
+        settings = settings_from_app(self.settings)
 
         def work():
             r = measure_images(media_dir, measurements_csv, self._log, self.control, self._progress, self._detail,
-                               base_url=base_url, token_limit=token_limit, reasoning_effort=thinking,
-                               only_ids=only_ids, force=force)
+                               settings=settings, only_ids=only_ids, force=force)
             if r["cancelled"]:
                 return "Cancelled"
             return (f"{r['measured']} measured, {r['skipped']} already done, "
@@ -1867,14 +1992,85 @@ class PipelineApp:
         self._start(self.measure_status, "Measuring…", work, cancellable=True)
 
     def _test_connection(self):
-        base_url = self.server_var.get().strip() or LMSTUDIO_URL
+        self._save_settings()
+        settings = settings_from_app(self.settings)
 
         def work():
-            message = check_connection(base_url)
+            message = check_connection(settings)
             self._log(message)
-            return "Connected" if message.startswith("Connected.") else "No model loaded"
+            return "Connected" if message.startswith("Connected") else "Not connected"
 
         self._start(self.measure_status, "Connecting…", work)
+
+    # ------------------------------------------------------------------ model provider
+
+    def _model_settings_dict(self):
+        """The provider, servers and models as saved in settings.json."""
+        self._remember_provider_fields()
+        return {"provider": self.provider, "servers": dict(self.servers), "models": dict(self.models),
+                "server": self.servers.get("lmstudio", LMSTUDIO_URL), "thinking": self.thinking_var.get(),
+                "token_limit": self._token_limit()}
+
+    def _remember_provider_fields(self):
+        server = self.server_var.get().strip()
+        default = PROVIDERS[self.provider]["base_url"]
+        if server and server != default:
+            self.servers[self.provider] = server
+        else:
+            self.servers.pop(self.provider, None)
+            if self.provider == "lmstudio":
+                self.servers["lmstudio"] = default
+        model = self.model_var.get().strip()
+        if model:
+            self.models[self.provider] = model
+        else:
+            self.models.pop(self.provider, None)
+
+    def _provider_changed(self, _event=None):
+        self._remember_provider_fields()
+        label = self.provider_var.get()
+        self.provider = next(k for k, info in PROVIDERS.items() if info["label"] == label)
+        self.server_var.set(self.servers.get(self.provider) or PROVIDERS[self.provider]["base_url"])
+        self.model_var.set(self.models.get(self.provider, PROVIDERS[self.provider].get("default_model", "")))
+        self.model_box.configure(values=[])
+        self._update_provider_widgets()
+        self._save_settings()
+
+    def _update_provider_widgets(self):
+        self.key_button.configure(state="normal" if self.provider != "lmstudio" else "disabled")
+        hints = {
+            "lmstudio": "Leave Model empty to use the vision model loaded in LM Studio.",
+            "custom": "Enter the server's OpenAI-compatible address (ending in /v1) and pick a model. "
+                      "Add an API key only if the server needs one.",
+        }
+        hint = hints.get(self.provider) or f"Pick a model after saving an API key. {describe_key(self.provider)}"
+        self.model_hint.configure(text=hint)
+
+    def _open_api_key(self):
+        dialog = ApiKeyDialog(self, self.provider)
+        self.root.wait_window(dialog)
+        self._update_provider_widgets()
+
+    def _set_model_choices(self, provider, models):
+        if provider != self.provider:
+            return
+        self.model_box.configure(values=models)
+        if models and not self.model_var.get().strip() and provider != "lmstudio":
+            preferred = PROVIDERS[provider].get("default_model")
+            self.model_var.set(preferred if preferred in models else models[0])
+
+    def _refresh_models(self):
+        self._save_settings()
+        settings = settings_from_app(self.settings)
+
+        def work():
+            models = list_models(settings)
+            self._ui(self._set_model_choices, settings.provider, models)
+            self._log(f"{settings.label}: {len(models)} models available"
+                      + (": " + ", ".join(models[:12]) + (" …" if len(models) > 12 else "") if models else ""))
+            return f"{len(models)} models"
+
+        self._start(self.measure_status, "Listing models…", work)
 
     def _run_join(self):
         csv_path = self._dataset_csv()
