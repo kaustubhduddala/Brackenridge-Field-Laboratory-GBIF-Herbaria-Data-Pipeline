@@ -57,13 +57,27 @@ PANICLE_SCHEMA = {
                 "tip": _point("the very top end of the panicle's main axis"),
                 "base": _point("the lowest panicle node: where the lowest branch of the inflorescence leaves "
                                "the main stem"),
+                "box": _box("box around the whole panicle, from its tip down to its lowest branch"),
                 "visible": {"type": "string", "enum": ["whole", "partly covered", "unsure"]},
             },
-            "required": ["tip", "base", "visible"], "additionalProperties": False}},
+            "required": ["box", "tip", "base", "visible"], "additionalProperties": False}},
     },
     "required": ["panicles"],
     "additionalProperties": False,
 }
+
+# Second look at one panicle on a zoomed crop: small models tend to stop the panicle where its
+# spikelets thin out, well above the lowest branch.
+PANICLE_REFINE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tip": _point("the very top end of the panicle's main axis"),
+        "base": _point("the lowest panicle node, where the lowest branch leaves the main stem"),
+    },
+    "required": ["tip", "base"],
+    "additionalProperties": False,
+}
+CROP_MARGIN = 0.25          # share of the panicle box added on each side of the zoomed crop
 
 
 def _convention_text(convention, size):
@@ -157,11 +171,38 @@ class Locator:
                                          "Locating panicles")
         found = []
         for item in (parsed.get("panicles") or [])[:2]:
-            tip, base = item.get("tip") or {}, item.get("base") or {}
+            tip, base, box = item.get("tip") or {}, item.get("base") or {}, item.get("box") or {}
             found.append({"tip": to_full(tip.get("x", 0), tip.get("y", 0)),
                           "base": to_full(base.get("x", 0), base.get("y", 0)),
+                          "box": [*to_full(box.get("x0", 0), box.get("y0", 0)),
+                                  *to_full(box.get("x1", 0), box.get("y1", 0))],
                           "visible": item.get("visible", "unsure")})
+        raw = {"panicles": raw, "refine": []}
+        for item in found:
+            crop = self._panicle_crop(image.size, item)
+            try:
+                refined, refine_raw, crop_to_full = self._ask(
+                    image, PANICLE_REFINE_PROMPT, PANICLE_REFINE_SCHEMA, "panicle_ends", control, status,
+                    "Refining panicle ends", crop=crop)
+            except (ValueError, KeyError) as exc:   # keep the first answer if the second look fails
+                raw["refine"].append({"error": str(exc)})
+                continue
+            raw["refine"].append(refine_raw)
+            tip, base = refined.get("tip") or {}, refined.get("base") or {}
+            if {"x", "y"} <= tip.keys() and {"x", "y"} <= base.keys():
+                item["first_guess"] = {"tip": item["tip"], "base": item["base"]}
+                item["tip"], item["base"] = crop_to_full(tip["x"], tip["y"]), crop_to_full(base["x"], base["y"])
         return found, raw
+
+    @staticmethod
+    def _panicle_crop(size, item):
+        """The panicle box (and both points) with a margin, clipped to the image."""
+        w, h = size
+        xs = [item["box"][0], item["box"][2], item["tip"][0], item["base"][0]]
+        ys = [item["box"][1], item["box"][3], item["tip"][1], item["base"][1]]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        mx, my = max(x1 - x0, 0.05 * w) * CROP_MARGIN, max(y1 - y0, 0.05 * h) * CROP_MARGIN
+        return [max(0, x0 - mx), max(0, y0 - my), min(w, x1 + mx), min(h, y1 + my)]
 
     def voucher(self, image, control=None, status=None):
         sent, _ = self._prepare(image)
@@ -170,6 +211,14 @@ class Locator:
         voucher = parsed.get("voucher") if isinstance(parsed.get("voucher"), dict) else {}
         return {"voucher_text": str(parsed.get("voucher_text") or ""),
                 "voucher": {f: str(voucher.get(f) or "") for f in VOUCHER_FIELDS}}, raw
+
+
+PANICLE_REFINE_PROMPT = (
+    "This is a close-up of one panicle (the branched seed head) of a dried grass specimen. Follow the panicle's "
+    "main axis from its top down past every branch that carries spikelets.\n"
+    "- tip: the top end of the main axis;\n"
+    "- base: the lowest panicle node, where the LOWEST branch leaves the main stem. Below it the stem is bare "
+    "or wrapped in a leaf sheath. Panicles are often long, so check the lower part of the image too.")
 
 
 VOUCHER_FIELDS = ["catalogNumber", "recordedBy", "recordNumber", "eventDate", "country", "stateProvince",

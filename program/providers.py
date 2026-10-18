@@ -123,15 +123,22 @@ def parse_json(content):
         text = text.rsplit("</think>", 1)[1]
     if not text.strip():
         raise ValueError("Model returned an empty response")
+    # Keep the last complete top-level object; objects nested inside it are skipped, so a nested
+    # answer such as {"panicles": [{"tip": {...}}]} is not mistaken for its innermost point.
     decoder = json.JSONDecoder()
-    found = None
-    for match in re.finditer(r"\{", text):
+    found, position = None, 0
+    while True:
+        start = text.find("{", position)
+        if start < 0:
+            break
         try:
-            payload, _ = decoder.raw_decode(text, match.start())
+            payload, end = decoder.raw_decode(text, start)
         except json.JSONDecodeError:
+            position = start + 1
             continue
         if isinstance(payload, dict) and payload:
             found = payload
+        position = end
     if found is None:
         raise ValueError("No valid JSON object found in model response")
     return found

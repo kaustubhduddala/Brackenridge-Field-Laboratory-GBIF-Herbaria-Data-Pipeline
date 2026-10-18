@@ -186,7 +186,8 @@ def simplify(points, tolerance):
     start, end = pts[0], pts[-1]
     seg = end - start
     norm = math.hypot(*seg) or 1.0
-    d = np.abs(np.cross(seg, pts - start)) / norm
+    rel = pts - start
+    d = np.abs(seg[0] * rel[:, 1] - seg[1] * rel[:, 0]) / norm
     i = int(d.argmax())
     if d[i] <= tolerance:
         return np.array([start, end])

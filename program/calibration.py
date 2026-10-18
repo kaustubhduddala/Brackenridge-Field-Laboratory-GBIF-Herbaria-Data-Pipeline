@@ -6,6 +6,7 @@ with a Fourier transform of the intensity along the ruler, which is precise to w
 hard part is finding the ruler, so a reading is only accepted when its millimetre and centimetre
 spacings agree with each other and with the sheet, or when an AI hint says where the ruler is.
 """
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -23,6 +24,10 @@ LONG_RULER_AGREEMENT = 0.25
 TICK_UNITS_CM = {"1 mm": 0.1, "5 mm": 0.5, "1 cm": 1.0, "1/16 in": 0.15875, "1/8 in": 0.3175, "1/4 in": 0.635,
                  "1 in": 2.54}
 HINT_TOLERANCE = 0.20       # an AI ruler hint's rough scale may be off by this much
+# An AI-located ruler is often a colour chart or a scale on another label; when the sheet edges are
+# clear it must agree with the sheet width to within this share, or the sheet is used instead.
+HINT_SHEET_AGREEMENT = 0.08
+HINT_CUT_SHEET_AGREEMENT = 0.15   # the same when the sheet runs off the image (its width is then a lower bound)
 # Below these resolutions a trait cannot be measured to a useful precision (1 px is >3% of a
 # typical leaf width or >4% of a typical spikelet).
 MIN_PX_PER_CM = {"panicle_length": 10.0, "leaf_width": 30.0, "seed_length": 60.0}
@@ -330,23 +335,35 @@ def calibrate(rgb, ruler_hint=None, sheet_hint=None):
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     prior = sheet_px or max(rgb.shape[:2]) / SHEET_HEIGHT_CM
 
-    ruler = None
+    hinted = None
     if ruler_hint and ruler_hint.get("box") and ruler_hint.get("px_per_cm"):
-        ruler = ruler_from_hint(gray, ruler_hint["box"], float(ruler_hint["px_per_cm"]))
-        if ruler is None:
+        hinted = ruler_from_hint(gray, ruler_hint["box"], float(ruler_hint["px_per_cm"]))
+        if hinted is None:
             flags.append("AI-marked ruler could not be measured")
-    if ruler is None:
-        found = find_ruler(gray, prior)
-        if found:
-            ratio = found["px_per_cm"] / sheet_px if sheet_px else 1.0
-            agrees = bool(sheet_px) and abs(ratio - 1) <= RULER_AGREEMENT
-            clear = (found["span_cm"] >= LONG_RULER_CM and found["tick_prominence"] >= LONG_RULER_TICKS
-                     and abs(ratio - 1) <= LONG_RULER_AGREEMENT)
-            if agrees or clear:
-                ruler = found
-            else:
+        elif sheet_px:
+            off = hinted["px_per_cm"] / sheet_px - 1
+            if abs(off) > (HINT_SHEET_AGREEMENT if sheet_reliable else HINT_CUT_SHEET_AGREEMENT):
+                flags.append(f"AI-marked ruler ignored ({hinted['px_per_cm']:.1f} px/cm is {100 * off:+.0f}% "
+                             f"from the sheet width)")
+                hinted = None
+    found = find_ruler(gray, prior)
+    if found:
+        ratio = found["px_per_cm"] / sheet_px if sheet_px else 1.0
+        agrees = bool(sheet_px) and abs(ratio - 1) <= RULER_AGREEMENT
+        clear = (found["span_cm"] >= LONG_RULER_CM and found["tick_prominence"] >= LONG_RULER_TICKS
+                 and abs(ratio - 1) <= LONG_RULER_AGREEMENT)
+        if not (agrees or clear):
+            if not hinted:
                 flags.append(f"ruler-like pattern ignored ({found['px_per_cm']:.1f} px/cm, "
                              f"{found['span_cm']:.0f} cm long, does not match the sheet)")
+            found = None
+    ruler = hinted or found
+    if hinted and found and abs(hinted["px_per_cm"] / found["px_per_cm"] - 1) > RULER_AGREEMENT and sheet_px:
+        # The AI's tick numbers are often misread, which locks the hinted reading onto a wrong period;
+        # keep whichever reading is closer to the sheet width.
+        ruler = min((hinted, found), key=lambda r: abs(math.log(r["px_per_cm"] / sheet_px)))
+        other = found if ruler is hinted else hinted
+        flags.append(f"two ruler readings disagree ({other['px_per_cm']:.1f} px/cm not used)")
 
     result = Calibration(px_per_cm=None, source="none", sheet_px_per_cm=sheet_px,
                          sheet_box=sheet.get("box") if sheet.get("ok") else None, flags=flags)
