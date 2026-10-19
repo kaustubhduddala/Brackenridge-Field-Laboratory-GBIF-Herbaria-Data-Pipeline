@@ -49,8 +49,9 @@ build.py
 requirements.txt
 program/
     __init__.py
-    analysis.py  cli.py  gbif.py  geo.py  gui.py
-    media.py  power.py  processor.py  theme.py  utils.py
+    analysis.py  analysis_tab.py  cli.py  csv_source.py  gbif.py  geo.py
+    gui.py  media.py  modify.py  modify_tab.py  power.py  processor.py
+    stats.py  theme.py  utils.py  widgets.py  workspace.py
 .github/workflows/release.yml
 ```
 
@@ -127,12 +128,32 @@ between System, Light and Dark. Your theme, file paths and model settings are sa
 The tabs follow the order of the work. Each step fills in the file
 paths for the next one.
 
+Every download lives in its own folder, `data/<download id>_<Species>/`
+(for example `data/0012345-240101123456789_Megathyrsus_maximus/`). The
+extracted GBIF files, every cleaned CSV, the images, the measurements
+and the raw model answers for that download are all kept inside it, so
+two downloads never overwrite each other. The species name is added
+when it can be found; otherwise the folder is named by the download ID
+alone. The **Download** box at the top of the window selects the active
+download; choosing one fills in the file paths on every tab. A download
+or a cleaning run makes its folder the active one automatically.
+
+Every file and folder box in the app is a drop-down as well as having
+a Browse button. The drop-down lists the files of the active download
+first, then those of other downloads. Paths inside the active download
+are shown as just the file name (`master_cleaned.csv`); paths in other
+downloads are shown relative to `data/`, and anything else is shown in
+full. You can also type a name or a full path.
+
 ### Tab 1: Download
 
 Choose a preset and a species, or paste the DOI of an existing GBIF
 download. The app resolves the species to a GBIF taxon key, requests a
 Darwin Core Archive, waits for GBIF to prepare it (usually 5 to 30
-minutes), then downloads and extracts it into `data/`.
+minutes), then downloads it into its own folder under `data/` and
+extracts it into that folder's `raw/` subfolder. When you paste a DOI,
+the download ID is read from the link and the species is looked up
+from GBIF.
 
 "Run full workflow" does the download, phase 1 and phase 2 in one go,
 pausing for your manual review in between.
@@ -234,6 +255,122 @@ the matching voucher_ columns checked. It never overwrites a value
 that is already there, and the filled column names are recorded in
 `voucher_filled_columns` so you can review them.
 
+### Modify
+
+Works on any CSV, not only the pipeline's files. The drop-down at the
+top lists the CSV files of the active download, files used recently
+and the dataset; Browse picks any other file. The tools are:
+
+- **Columns**: tick the columns to keep, move them up or down,
+  rename them, and see how much of each column is filled in. "Uncheck
+  empty columns" drops the empty ones. The removed columns can be saved
+  to a separate file together with a match column, like phase 3 does.
+- **Join two files**: pick a second CSV (file B) and the column each
+  file is matched on, which can have different names. Choose the
+  columns to carry over from each file; whether to keep every row of A,
+  only matching rows, every row of B or everything; what to do when a
+  column is in both files (keep both, prefer A, prefer B); and what to
+  do when B has several rows for one key. Matching ignores capital
+  letters and extra spaces by default. The number of matching rows is
+  shown before you join.
+- **Rows**: filter rows by a condition (equals, contains, is blank,
+  greater than, matches a pattern and so on), remove duplicate rows by
+  any set of columns, find and replace, sort, and tidy up (trim spaces,
+  drop empty columns and rows). Filtering and de-duplicating can also
+  save the rows that were taken out.
+- **Combine files**: stack two or more CSVs, optionally adding a
+  `source_file` column and removing identical rows.
+- **Preview**: the first rows of file A, sortable and searchable.
+
+"Save the result" at the bottom of the tab decides where a change goes:
+a new file next to the original (named for the change, for example
+`master_cleaned_joined.csv`), a file name you choose, or the original
+itself. When the original is replaced the old version is kept in a
+`backups/` folder next to it and **Undo last change** brings it back.
+By default the result becomes the open file so changes can be chained.
+
+### Analysis
+
+Summaries of any CSV, with every table saveable as a CSV:
+
+- **Overview**: rows, columns, blank cells, duplicate rows and
+  duplicate or blank values of a key column (gbifID by default), and for
+  every column its type, how much is filled in, the number of different
+  values and the minimum, maximum, mean and median of numbers.
+- **Value counts**: how often each value of a column appears, with a
+  bar chart.
+- **Numbers**: summary figures and a histogram for a numeric column.
+- **Compare groups**: count, mean, median, minimum, maximum, standard
+  deviation and sum of a numeric column for each group of another
+  column, for example the measured leaf width per country.
+
+### Sites that refuse image downloads, CAPTCHAs and bot checks
+
+The app does not solve CAPTCHAs or disguise itself; a person passes the
+check once, in a real browser window, and the app reuses the result.
+When a site refuses a download (403 Forbidden, a "verify you are human"
+or sign-in page) the app works through these steps, as far as the
+**Method** preference allows:
+
+1. A plain request, with any saved cookies, retried once with
+   browser-like headers and a Referer.
+2. The same download through a visible Chrome window (Playwright's
+   Chromium if Chrome is not installed). If the site shows a check, the
+   window stays open and the app waits (3 minutes by default) for you to
+   pass it, then carries on by itself. Use **Skip this item** to give
+   up on one image. Once this works, the site is downloaded through the
+   browser from then on; the browser keeps its cookies in
+   `browser_profile/`, so a passed check usually lasts.
+3. If that is not possible (no browser, the check was not passed in
+   time), the images are listed under the site's name. After three
+   refusals in a row the rest of that site's images are skipped for the
+   run so the site is not hammered.
+
+When a run ends with refused sites, the **Site logins** window opens
+(also under Images, **Site logins…**). It lists every site that has ever
+refused access, with the number of images waiting:
+
+- **Sign in…** opens the browser on the site so you can sign in or pass
+  the check before downloading; click **Done, save my sign-in**. The
+  cookies go to `site_logins.json` (readable only by you, ignored by
+  git; the previous version is kept as `.bak`).
+- **Retry** downloads that site's waiting images again.
+- **Download through the browser** (per saved site) forces step 2 for
+  that site, **Sign in again** refreshes expired cookies and **Forget**
+  removes a site's sign-in.
+- **When a site refuses a download** chooses the method: *Automatic*
+  (the steps above), *Plain requests only* (never opens a browser),
+  *Always use the browser* for refused sites, or *Ask me* (stop and
+  list the site). It also sets how long to wait for you to pass a check
+  and the pause between browser downloads (2 seconds by default, to
+  stay polite). These are saved in `settings.json`.
+
+Browser features need Playwright, which is in `requirements.txt` and is
+bundled in the packaged app. Chromium itself is not bundled; if Chrome
+is not installed the app offers to download it (about 150 MB) into
+`browsers/` next to your data, so it survives app updates.
+
+Sites that need their own download method have a branch in
+`download_special()` in `program/sites.py`; return the saved file's path
+from a branch to take over the download for that site, or `None` to fall
+back to the general downloader. To add a site, add an `if` on the host
+and a handler next to the others (`_try_get()` makes one plain request,
+`_save_image()` saves an image response, `_stitch()` joins tiles). Built in:
+
+- **Meise Botanic Garden** (`oxalis.br.fgov.be`): the server answers 403
+  to most User-Agent strings, including Python's and Chrome's, and accepts
+  a bare `GBIF-HerbariaPipeline/1.0`, which every download now tries
+  after the usual one. The image is joined from full-resolution IIIF
+  regions when it is larger than the server's `maxArea`.
+- **CRIA / speciesLink** (`images.cria.org.br/viewer/...`): the viewer
+  page only wraps a Zoomify tile pyramid; the tiles of the largest level
+  are fetched and joined into one JPEG, with the speciesLink download
+  address as a fallback.
+- **Smithsonian NMNH** (`collections.nmnh.si.edu/media/...`): the page
+  redirects to the image on `ids.si.edu` but its firewall needs
+  browser-like headers.
+- **Google Drive** share links: the file's download address is used.
+
 ### Choosing specific records or images
 
 The checklist window lists each gbifID with its status (for example
@@ -330,7 +467,7 @@ Each answer is a JSON object like this, shortened:
 
 ### Raw responses
 
-Every answer is also saved unchanged as `data/responses/<gbifID>.json`,
+Every answer is also saved unchanged as `<download folder>/responses/<gbifID>.json`,
 including answers that could not be read. Each file holds the model
 name, why the model stopped, the raw answer text, the model's
 reasoning if it produced any, and the parsed values. Use these to check
@@ -419,7 +556,14 @@ To add a preset, add an entry to `PRESETS` in `config.py`:
 
 ## 7. Output files
 
-All files are written to `data/` unless you choose other paths.
+All files are written to the active download's folder,
+`data/<download id>_<Species>/`, unless you choose other paths.
+
+| File | Contents |
+|---|---|
+| `workspace.json` | The download ID, species and where the download came from |
+| `raw/` | The extracted GBIF download |
+
 
 | File | Contents |
 |---|---|
@@ -435,7 +579,9 @@ All files are written to `data/` unless you choose other paths.
 | `measurements.csv` | Image measurements, one row per gbifID |
 | `responses/` | The raw model answer for each image, as `<gbifID>.json` |
 | `master_cleaned_before_join.csv` | The dataset as it was before the last join into it |
-| `pipeline.log` | Everything shown in the app's log, with timestamps |
+| `backups/` | Earlier versions of CSVs replaced from the Modify tab |
+| `<name>_joined.csv` and similar | Results saved by the Modify tab |
+| `data/pipeline.log` | Everything shown in the app's log, with timestamps (one file for all downloads) |
 
 ## 8. Command line
 
@@ -473,7 +619,12 @@ For `join`, `--key` sets the dataset match column and
 default). `--columns` limits which measurement columns are added,
 `--output` writes a new file instead of updating the dataset, and
 `--matched-only` keeps only records with a measurement. The defaults are
-`data/media`, `data/measurements.csv` and `data/master_cleaned.csv`.
+`media`, `measurements.csv` and `master_cleaned.csv` of the newest download
+folder.
+
+Every command that reads or writes a download's files accepts
+`--download NAME`, the name of a folder in `data/`, and uses the newest
+download when it is left out. This includes `cleaner 2` and `cleaner 3`.
 
 ## 9. Configuration
 
@@ -481,7 +632,7 @@ Most settings are in `config.py`:
 
 | Setting | Purpose |
 |---|---|
-| `DATA_DIR`, `MEDIA_DIR` and the CSV paths | Where files are read and written |
+| `DATA_DIR` | Where the download folders are kept. The file names inside a download folder are defined in `program/workspace.py` |
 | `LMSTUDIO_URL` | Default model server address |
 | `DEFAULT_TOKEN_LIMIT` | Default token limit per image |
 | `MIN_CONTEXT_LENGTH` | Context length below which Test connection warns |
@@ -509,10 +660,18 @@ them in this list, so there are no circular imports.
 | `config.py` | Paths, GBIF account storage, presets, constants, saved settings |
 | `program/utils.py` | CSV, URL, HTTP and file helpers; skip and cancel control |
 | `program/geo.py` | Coordinate cleaning tests |
+| `program/workspace.py` | The per-download data folders |
 | `program/gbif.py` | GBIF species lookup and dataset downloads |
 | `program/processor.py` | Phase 1 and phase 2 |
 | `program/media.py` | Image downloading |
+| `program/sites.py` | Saved site sign-ins, browser-like retries, site-specific downloaders |
+| `program/site_login.py` | The browser window used to sign in to a site |
 | `program/analysis.py` | Model requests, measurements CSV and join |
+| `program/modify.py` | Editing any CSV: columns, joins, rows, combining, backups |
+| `program/stats.py` | Summaries used by the Analysis tab |
+| `program/widgets.py` | Shared widgets: scroll frame, column checklist, data table, bar chart |
+| `program/csv_source.py` | The CSV picker shared by the Modify and Analysis tabs |
+| `program/modify_tab.py`, `program/analysis_tab.py` | The Modify and Analysis tabs |
 | `program/power.py` | Keeping the computer awake |
 | `program/theme.py` | Light and dark themes |
 | `program/gui.py` | The graphical interface |

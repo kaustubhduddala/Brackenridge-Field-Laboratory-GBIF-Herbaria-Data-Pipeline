@@ -62,6 +62,7 @@ def build(version):
         "--collect-submodules", "pygbif",
         "--collect-data", "pygbif",
         "--collect-submodules", "keyring",
+        "--collect-all", "playwright",
     ]
     for module in HIDDEN_IMPORTS:
         args += ["--hidden-import", module]
@@ -81,6 +82,11 @@ def _is_macho(path):
         return False
 
 
+def _needs_entitlements(path):
+    # Playwright's bundled Node.js driver runs V8, which needs the same hardened-runtime exceptions as the app
+    return path.name in ("node", "node.exe")
+
+
 def _codesign(path, identity, entitlements=False):
     args = ["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", identity]
     if entitlements:
@@ -94,7 +100,7 @@ def sign_macos(app, identity):
     main_executable = app / "Contents" / "MacOS" / NAME
     for path in sorted(binaries, key=lambda p: len(p.parts), reverse=True):
         if path != main_executable:
-            _codesign(path, identity)
+            _codesign(path, identity, entitlements=_needs_entitlements(path))
     frameworks = [p for p in app.rglob("*.framework") if p.is_dir() and not p.is_symlink()]
     for path in sorted(frameworks, key=lambda p: len(p.parts), reverse=True):
         _codesign(path, identity)

@@ -13,7 +13,9 @@ import pandas as pd
 import requests
 import urllib3
 
-from config import DATA_DIR, HEADERS, IMAGE_EXTENSIONS, LINK_COLUMNS
+from config import IMAGE_EXTENSIONS, LINK_COLUMNS
+from . import sites
+from .sites import ItemSkipped  # noqa: F401  (re-exported)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -21,21 +23,26 @@ URL_RE = re.compile(r"https?://[^\s;,|]+")
 LINK_RE = re.compile(r"(?:https?://|ftp://|doi:)[^\s;,|]+")
 
 
-class ItemSkipped(Exception):
-    pass
-
-
 class TaskControl:
     def __init__(self):
         self.cancel_event = threading.Event()
         self.skip_event = threading.Event()
+        self.skip_site = False  # the pending skip covers the whole website, not just this item
+        self.skipped_hosts = set()
 
     def reset(self):
         self.cancel_event.clear()
         self.skip_event.clear()
+        self.skip_site = False
+        self.skipped_hosts = set()
 
     def new_item(self):
         self.skip_event.clear()
+        self.skip_site = False
+
+    def request_skip(self, site=False):
+        self.skip_site = site
+        self.skip_event.set()
 
     @property
     def cancelled(self):
@@ -147,7 +154,7 @@ def request_with_backoff(url, max_retries=3, log=print, control=None, stream=Fal
     for attempt in range(1, max_retries + 1):
         check(control)
         try:
-            resp = requests.get(url, timeout=30, verify=False, headers=HEADERS, stream=stream)
+            resp = sites.fetch(url, stream=stream, control=control, log=log)
         except requests.exceptions.RequestException as exc:
             error = str(exc)
         else:
@@ -187,17 +194,6 @@ def extract_archive(zip_path, extract_dir, log=print):
         archive.extractall(extract_dir)
     log(f"Extracted to {extract_dir}")
     return str(extract_dir)
-
-
-def prepare_folder(path, log=print):
-    if not str(path).strip():
-        raise ValueError("Select a data folder or ZIP file")
-    path = Path(path)
-    if path.is_file() and path.suffix.lower() == ".zip":
-        return extract_archive(path, DATA_DIR / path.stem, log)
-    if path.is_dir():
-        return str(path)
-    raise ValueError(f"Not a folder or ZIP file: {path}")
 
 
 def find_dwca_files(folder):

@@ -1,6 +1,5 @@
 import queue
 import re
-import sys
 import threading
 import time
 import tkinter as tk
@@ -12,67 +11,28 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA_DIR, DEFAULT_TOKEN_LIMIT,
-                    FULL_MASTER_CSV, GBIF_SIGNUP_URL, INSPECT_CSV, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, MASTER_CSV,
-                    MEASUREMENTS_CSV, MEDIA_DIR, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, PRESETS,
-                    THINKING_CHOICES, gbif_credentials, load_settings, password_store_name, remove_gbif_account,
-                    save_gbif_account, save_settings, saved_gbif_account, saved_gbif_password)
+                    GBIF_SIGNUP_URL, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, PRECISION_NONE, PRECISION_RELAXED,
+                    PRECISION_STRICT, PRESETS, THINKING_CHOICES, gbif_credentials, load_settings,
+                    password_store_name, remove_gbif_account, save_gbif_account, save_settings, saved_gbif_account,
+                    saved_gbif_password)
 
-from . import theme
+from . import site_login, sites, theme
 from .analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
                        measure_images, measurement_status)
+from .analysis_tab import AnalysisTab
+from .csv_source import CsvSource
 from .gbif import check_gbif_login, download_dataset
 from .media import download_media, media_status
 from .processor import REQUIRED_COLUMNS, available_columns, run_cleaning
 from .power import KeepAwake
-from .utils import TaskControl, find_dwca_files, open_path, prepare_folder, scan_issues
-
-CSV_TYPES = [("CSV files", "*.csv"), ("All files", "*.*")]
-CHECK_MARK = [(4, 8), (5, 9), (6, 10), (7, 11), (8, 10), (9, 9), (10, 8), (11, 7), (12, 6)]
-
-
-def _set_entry(entry, value):
-    entry.delete(0, "end")
-    entry.insert(0, str(value))
-
-
-def _set_text(widget, value):
-    widget.delete("1.0", "end")
-    widget.insert("1.0", value)
-
-
-def _check_image(master, p, checked):
-    image = tk.PhotoImage(master=master, width=16, height=16)
-    image.put(p["accent"] if checked else p["muted"], to=(1, 1, 15, 15))
-    image.put(p["accent"] if checked else p["surface"], to=(2, 2, 14, 14))
-    if checked:
-        for x, y in CHECK_MARK:
-            image.put(p["on_accent"], to=(x, y - 1, x + 1, y + 1))
-    return image
-
+from .modify_tab import ModifyTab
+from .utils import TaskControl, find_dwca_files, open_path, scan_issues
+from .widgets import CSV_TYPES, ColumnChecklist, PathCombo, ScrollFrame, _check_image, _set_entry, _set_text
+from .workspace import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_by_name,
+                        workspace_of)
 
 ISSUE_ACTIONS = ("Remove", "Inspect", "Nothing")
 DEFAULT_PRESET = "Default"
-
-
-class ScrollFrame(ttk.Frame):
-    def __init__(self, master, palette):
-        super().__init__(master)
-        self.canvas = tk.Canvas(self, background=palette["bg"], highlightthickness=0)
-        bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=bar.set)
-        bar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.inner = ttk.Frame(self.canvas)
-        window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.inner.columnconfigure(0, weight=1)
-        self.inner.bind("<Configure>", lambda _: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(window, width=e.width))
-        self.winfo_toplevel().bind("<MouseWheel>", self._wheel, add="+")
-
-    def _wheel(self, event):
-        step = -event.delta if sys.platform == "darwin" else -event.delta // 120
-        if step:
-            self.canvas.yview_scroll(step, "units")
 
 
 class PresetBar(ttk.Frame):
@@ -517,82 +477,6 @@ class ItemPicker(tk.Toplevel):
         self.destroy()
 
 
-class ColumnChecklist(ttk.LabelFrame):
-    def __init__(self, parent, app, title, columns, checked, key_default):
-        super().__init__(parent, text=title)
-        self.columns = list(columns)
-        self.checked = set(checked)
-        self.box_on = _check_image(self, app.palette, True)
-        self.box_off = _check_image(self, app.palette, False)
-        self.columnconfigure(1, weight=1)
-        self.rowconfigure(2, weight=1)
-
-        ttk.Label(self, text="Match on").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.key_var = tk.StringVar(value=key_default if key_default in self.columns else self.columns[0])
-        self.key_box = ttk.Combobox(self, textvariable=self.key_var, values=self.columns, state="readonly")
-        self.key_box.grid(row=0, column=1, sticky="ew")
-        self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *_: self._refresh())
-        search = ttk.Entry(self, textvariable=self.search_var)
-        search.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 6))
-        ttk.Label(self, text="Search", style="Muted.TLabel").grid(row=1, column=2, sticky="w", padx=(6, 0))
-
-        frame = ttk.Frame(self)
-        frame.grid(row=2, column=0, columnspan=3, sticky="nsew")
-        self.tree = ttk.Treeview(frame, show="tree", selectmode="extended")
-        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.bind("<Button-1>", self._on_click)
-        self.tree.bind("<space>", lambda _: self._toggle(self.tree.selection()) or "break")
-
-        buttons = ttk.Frame(self)
-        buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-        ttk.Button(buttons, text="Check shown", command=lambda: self._set_shown(True)).pack(side="left")
-        ttk.Button(buttons, text="Uncheck shown", command=lambda: self._set_shown(False)).pack(side="left", padx=6)
-        self.count_label = ttk.Label(buttons, style="Muted.TLabel")
-        self.count_label.pack(side="right")
-        self._refresh()
-
-    def selected(self):
-        return [c for c in self.columns if c in self.checked]
-
-    def _refresh(self):
-        term = self.search_var.get().strip().lower()
-        self.tree.delete(*self.tree.get_children())
-        for i, column in enumerate(self.columns):
-            if not term or term in column.lower():
-                self.tree.insert("", "end", iid=str(i), text=column,
-                                 image=self.box_on if column in self.checked else self.box_off)
-        self._update_count()
-
-    def _update_count(self):
-        self.count_label.configure(text=f"{len(self.checked)} of {len(self.columns)} checked")
-
-    def _toggle(self, iids):
-        names = [self.columns[int(i)] for i in iids]
-        target = any(n not in self.checked for n in names)
-        for iid, name in zip(iids, names):
-            (self.checked.add if target else self.checked.discard)(name)
-            self.tree.item(iid, image=self.box_on if target else self.box_off)
-        self._update_count()
-
-    def _on_click(self, event):
-        if self.tree.identify_region(event.x, event.y) == "tree":
-            iid = self.tree.identify_row(event.y)
-            if iid:
-                self._toggle([iid])
-                return "break"
-
-    def _set_shown(self, checked):
-        for iid in self.tree.get_children():
-            name = self.columns[int(iid)]
-            (self.checked.add if checked else self.checked.discard)(name)
-            self.tree.item(iid, image=self.box_on if checked else self.box_off)
-        self._update_count()
-
-
 class JoinDialog(tk.Toplevel):
     def __init__(self, app, dataset_csv, measurements_csv):
         super().__init__(app.root)
@@ -705,6 +589,213 @@ class JoinDialog(tk.Toplevel):
             "output_csv": output,
         }
         self.destroy()
+
+
+class SiteLoginDialog(tk.Toplevel):
+    """Sites that refused image downloads, and the sign-ins saved for them."""
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.title("Site logins")
+        self.geometry("700x640")
+        self.minsize(520, 380)
+        self.transient(app.root)
+        self.configure(background=app.palette["bg"])
+        theme.set_title_bar(self, app.theme_name == "dark")
+        self.app = app
+        self.retry_ids = None
+        self.done = None
+        self.signing_in = False
+
+        body = ttk.Frame(self, padding=14)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        ttk.Label(body, text="Some image sites only allow downloads from a signed-in or verified browser. Sign in to "
+                             "a site in the window that opens, then click Done. The app keeps the cookies and uses "
+                             "them for that site's downloads.", style="Muted.TLabel", wraplength=580,
+                  justify="left").grid(row=0, column=0, sticky="w")
+        self.list_frame = ttk.Frame(body)
+        self.list_frame.grid(row=1, column=0, sticky="nsew", pady=10)
+        self.list_frame.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        other = ttk.LabelFrame(body, text="Sign in to another site")
+        other.grid(row=2, column=0, sticky="ew")
+        other.columnconfigure(0, weight=1)
+        self.url_entry = ttk.Entry(other)
+        self.url_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(other, text="Open browser", command=lambda: self._start(self.url_entry.get())).grid(row=0, column=1)
+
+        prefs = ttk.LabelFrame(body, text="When a site refuses a download")
+        prefs.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        prefs.columnconfigure(1, weight=1)
+        current = sites.PREFS
+        labels = {v: k for k, v in sites.STRATEGIES.items()}
+        self.strategy_var = tk.StringVar(value=labels.get(current["strategy"], next(iter(sites.STRATEGIES))))
+        self.wait_var = tk.StringVar(value=str(int(current["challenge_wait"] // 60)))
+        self.delay_var = tk.StringVar(value=str(current["browser_delay"]))
+        ttk.Label(prefs, text="Method").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        box = ttk.Combobox(prefs, textvariable=self.strategy_var, values=list(sites.STRATEGIES), state="readonly")
+        box.grid(row=0, column=1, columnspan=3, sticky="ew", pady=2)
+        box.bind("<<ComboboxSelected>>", lambda _: self._save_prefs())
+        ttk.Label(prefs, text="Minutes to wait for you to pass a check").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        wait = ttk.Spinbox(prefs, textvariable=self.wait_var, from_=1, to=30, width=5, command=self._save_prefs)
+        wait.grid(row=1, column=1, sticky="w")
+        ttk.Label(prefs, text="Seconds between browser downloads").grid(row=1, column=2, sticky="e", padx=(12, 8))
+        delay = ttk.Spinbox(prefs, textvariable=self.delay_var, from_=0, to=60, increment=0.5, width=5,
+                            command=self._save_prefs)
+        delay.grid(row=1, column=3, sticky="w")
+        for widget in (wait, delay):
+            widget.bind("<FocusOut>", lambda _: self._save_prefs())
+
+        self.status = ttk.Label(body, style="Muted.TLabel", wraplength=580, justify="left")
+        self.status.grid(row=4, column=0, sticky="w", pady=(10, 0))
+        footer = ttk.Frame(body)
+        footer.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+        self.done_button = ttk.Button(footer, text="Done, save my sign-in", style="Accent.TButton",
+                                      command=self._finish, state="disabled")
+        self.done_button.pack(side="left")
+        ttk.Button(footer, text="Close", command=self.destroy).pack(side="right")
+        if not site_login.available():
+            self._say("Browser sign-in needs Playwright. " + site_login.INSTALL_HINT, "error")
+        self._render()
+        _finish_dialog(self)
+
+    def _save_prefs(self):
+        try:
+            wait = max(int(float(self.wait_var.get())), 1) * 60
+            delay = max(float(self.delay_var.get()), 0.0)
+        except ValueError:
+            return
+        self.app._set_site_prefs({"strategy": sites.STRATEGIES[self.strategy_var.get()],
+                                  "challenge_wait": wait, "browser_delay": delay})
+
+    def _say(self, text, kind="muted"):
+        self.status.configure(text=text, foreground=self.app.palette[kind])
+
+    def _render(self):
+        for child in self.list_frame.winfo_children():
+            child.destroy()
+        self.mode_vars = []
+        saved = sites.saved_hosts()
+        refused = sites.known_sites()
+        reasons = sites.site_reasons()
+        row = 0
+        if refused:
+            ttk.Label(self.list_frame, text="Sites that refused access, failed repeatedly, or were skipped", style="Heading.TLabel").grid(
+                row=row, column=0, columnspan=3, sticky="w")
+            row += 1
+            for host in sorted(refused):
+                ids = self.app._refused_ids(host)
+                signed_in = any(sites._domain_matches(host, h) or sites._domain_matches(h, host) for h in saved)
+                reason = reasons.get(host)
+                ttk.Label(self.list_frame, text=f"{host}   {len(ids)} images waiting"
+                          + (f"   ({reason})" if reason else "")
+                          + ("   (signed in)" if signed_in else "")).grid(row=row, column=0, sticky="w")
+                ttk.Button(self.list_frame, text="Sign in…", command=lambda h=host: self._start(h)).grid(
+                    row=row, column=1, padx=6, pady=2)
+                ttk.Button(self.list_frame, text=f"Retry {len(ids)}", command=lambda i=list(ids): self._retry(i),
+                           state="normal" if ids else "disabled").grid(row=row, column=2, pady=2)
+                row += 1
+        ttk.Label(self.list_frame, text="Saved sign-ins", style="Heading.TLabel").grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(8 if row else 0, 0))
+        row += 1
+        if not saved:
+            ttk.Label(self.list_frame, text="None yet", style="Muted.TLabel").grid(row=row, column=0, sticky="w")
+        for host, when in sorted(saved.items()):
+            ttk.Label(self.list_frame, text=f"{host}   saved {when.replace('T', ' ')}").grid(
+                row=row, column=0, sticky="w")
+            ttk.Button(self.list_frame, text="Sign in again", command=lambda h=host: self._start(h)).grid(
+                row=row, column=1, padx=6, pady=2)
+            ttk.Button(self.list_frame, text="Forget", command=lambda h=host: self._forget(h)).grid(
+                row=row, column=2, pady=2)
+            mode = tk.BooleanVar(value=sites.site_mode(host) == sites.MODE_BROWSER)
+            self.mode_vars.append(mode)
+            ttk.Checkbutton(self.list_frame, text="Download through the browser", variable=mode,
+                            command=lambda h=host, v=mode: sites.set_site_mode(
+                                h, sites.MODE_BROWSER if v.get() else sites.MODE_REQUESTS)).grid(
+                row=row, column=3, padx=(10, 0))
+            row += 1
+
+    def _forget(self, host):
+        sites.forget_login(host)
+        self._render()
+
+    def _retry(self, ids):
+        self.retry_ids = set(ids)
+        self.destroy()
+
+    def _start(self, url):
+        url = url.strip()
+        if not url:
+            self.bell()
+            return
+        if self.signing_in:
+            return
+        if not site_login.available():
+            self._say("Browser sign-in needs Playwright. " + site_login.INSTALL_HINT, "error")
+            return
+        self.signing_in = True
+        self.done = threading.Event()
+        self.done_button.configure(state="normal")
+        self._say("A browser window is opening. Sign in or pass the check, then click Done here.", "busy")
+        done = self.done
+
+        def work():
+            try:
+                host = site_login.sign_in(url, done, self.app._log)
+                result = (True, f"Saved the sign-in for {host}. You can retry its images now.")
+            except site_login.BrowserMissing as exc:
+                self.after(0, lambda: self._offer_browser(url, str(exc)))
+                return
+            except Exception as exc:
+                result = (False, str(exc))
+            self.after(0, lambda: self._finished(*result))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _offer_browser(self, url, message):
+        self.signing_in = False
+        self.done_button.configure(state="disabled")
+        if not self.winfo_exists():
+            return
+        if messagebox.askyesno("Browser needed", message + "\n\nDownload Chromium now?", parent=self):
+            self._say("Downloading Chromium…", "busy")
+            self.signing_in = True
+
+            def work():
+                try:
+                    site_login.install_chromium(self.app._log)
+                    error = None
+                except Exception as exc:
+                    error = str(exc)
+                self.after(0, lambda: self._installed(url, error))
+
+            threading.Thread(target=work, daemon=True).start()
+        else:
+            self._say(message, "error")
+
+    def _installed(self, url, error):
+        self.signing_in = False
+        if not self.winfo_exists():
+            return
+        if error:
+            self._say(error, "error")
+        else:
+            self._start(url)
+
+    def _finish(self):
+        if self.done:
+            self.done.set()
+            self._say("Saving…", "busy")
+
+    def _finished(self, ok, message):
+        self.signing_in = False
+        if not self.winfo_exists():
+            return
+        self.done_button.configure(state="disabled")
+        self._say(message, "ok" if ok else "error")
+        self._render()
 
 
 class AccountDialog(tk.Toplevel):
@@ -852,12 +943,18 @@ class PipelineApp:
         self.settings.setdefault("issue_presets", {})
         self.settings.setdefault("column_presets", {})
         self.progress_started = None
+        self.workspace = None
+        sites.configure(**self.settings.get("site_prefs", {}))
+        self.restyle_hooks = []
+        self.idle_callbacks = []
 
         get = self.settings.get
         self.theme_var = tk.StringVar(value=get("theme", "System"))
-        self.dataset_var = tk.StringVar(value=str(get("dataset_csv") or (MASTER_CSV if MASTER_CSV.exists() else "")))
-        self.media_dir_var = tk.StringVar(value=get("media_dir", str(MEDIA_DIR)))
-        self.measurements_var = tk.StringVar(value=get("measurements_csv", str(MEASUREMENTS_CSV)))
+        self.dataset_var = tk.StringVar(value=str(get("dataset_csv") or ""))
+        self.media_dir_var = tk.StringVar(value=get("media_dir", ""))
+        self.measurements_var = tk.StringVar(value=get("measurements_csv", ""))
+        self.workspace_var = tk.StringVar()
+        self.csv_source = CsvSource(self)
         self.server_var = tk.StringVar(value=get("server", LMSTUDIO_URL))
         self.token_var = tk.StringVar(value=str(get("token_limit", DEFAULT_TOKEN_LIMIT)))
         self.thinking_var = tk.StringVar(value=get("thinking", "Model default"))
@@ -866,7 +963,7 @@ class PipelineApp:
         self.awake = KeepAwake()
 
         root.title(f"GBIF Herbaria Data Pipeline {APP_VERSION}")
-        root.geometry("960x880")
+        root.geometry(f"{min(1040, root.winfo_screenwidth() - 40)}x{min(960, root.winfo_screenheight() - 110)}")
         root.minsize(800, 680)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._create_fonts()
@@ -874,6 +971,7 @@ class PipelineApp:
         self._build_ui()
         self._restyle_widgets()
         self._load_preset()
+        self._restore_workspace()
         if self.keep_awake_var.get():
             self._toggle_keep_awake()
 
@@ -904,6 +1002,8 @@ class PipelineApp:
         self.console.tag_configure("ok", foreground=self.palette["ok"])
         for label, kind in self.status_kinds.items():
             label.configure(foreground=self.palette[kind])
+        for hook in self.restyle_hooks:
+            hook(self.palette)
 
     def _text(self, parent, **options):
         widget = tk.Text(parent, wrap="word", font=self.fonts["mono"], padx=8, pady=6, **options)
@@ -923,6 +1023,7 @@ class PipelineApp:
         file_menu = tk.Menu(menubar, tearoff=False)
         file_menu.add_command(label="GBIF account…", command=self._open_account)
         file_menu.add_separator()
+        file_menu.add_command(label="Open this download's folder", command=self._open_workspace)
         file_menu.add_command(label="Open data folder", command=lambda: self._open(DATA_DIR))
         file_menu.add_command(label="Open log file", command=lambda: self._open(LOG_FILE))
         if not aqua:
@@ -972,6 +1073,14 @@ class PipelineApp:
         titles = ttk.Frame(header)
         titles.pack(side="left")
         ttk.Label(titles, text="GBIF Herbaria Data Pipeline", style="Title.TLabel").pack(anchor="w")
+        chooser = ttk.Frame(titles)
+        chooser.pack(anchor="w", pady=(6, 0))
+        ttk.Label(chooser, text="Download", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        self.workspace_box = ttk.Combobox(chooser, textvariable=self.workspace_var, state="readonly", width=46,
+                                          postcommand=self._refresh_workspaces)
+        self.workspace_box.pack(side="left")
+        self.workspace_box.bind("<<ComboboxSelected>>", self._choose_workspace)
+        ttk.Button(chooser, text="Open folder", command=self._open_workspace).pack(side="left", padx=(6, 0))
         picker = ttk.Frame(header)
         picker.pack(side="right", anchor="n")
         awake = ttk.Checkbutton(picker, text="Keep computer awake", variable=self.keep_awake_var,
@@ -994,20 +1103,30 @@ class PipelineApp:
         ttk.Label(status, textvariable=self.detail_var, style="Muted.TLabel").pack(side="left", padx=12)
         self.cancel_btn = ttk.Button(status, text="Cancel", command=self._cancel, state="disabled")
         self.cancel_btn.pack(side="right")
-        self.skip_btn = ttk.Button(status, text="Skip this item", command=self._skip, state="disabled")
+        self.skip_btn = ttk.Button(status, text="Skip", command=self._skip_menu, state="disabled")
         self.skip_btn.pack(side="right", padx=6)
+        self.skip_menu = tk.Menu(self.root, tearoff=False)
+        self.skip_menu.add_command(label="Skip this item", command=self._skip)
+        self.skip_menu.add_command(label="Skip this website", command=lambda: self._skip(site=True))
+        self.site_skip_ok = False
+        self.cancel_confirm_job = None
         self.progress = ttk.Progressbar(status, length=220, mode="determinate")
         self.progress.pack(side="right", padx=6)
 
         panes = ttk.PanedWindow(self.root, orient="vertical")
         panes.pack(fill="both", expand=True, padx=14)
         self.notebook = ttk.Notebook(panes)
-        self.notebook.add(self._build_download_tab(), text="1. Download")
-        self.notebook.add(self._build_clean_tab(), text="2. Clean")
-        self.notebook.add(self._build_images_tab(), text="3. Images")
-        self.notebook.add(self._build_measure_tab(), text="4. Measure")
-        panes.add(self.notebook, weight=3)
-        panes.add(self._build_console(panes), weight=2)
+        self.notebook.add(self._build_download_tab(), text="Download")
+        self.notebook.add(self._build_clean_tab(), text="Clean")
+        self.notebook.add(self._build_images_tab(), text="Images")
+        self.notebook.add(self._build_measure_tab(), text="Measure")
+        self.modify_tab = ModifyTab(self.notebook, self, self.csv_source)
+        self.analysis_tab = AnalysisTab(self.notebook, self, self.csv_source)
+        self.notebook.add(self.modify_tab, text="Modify")
+        self.notebook.add(self.analysis_tab, text="Analysis")
+        self.notebook.bind("<<NotebookTabChanged>>", self._tab_changed)
+        panes.add(self.notebook, weight=4)
+        panes.add(self._build_console(panes), weight=1)
 
     def _build_console(self, parent):
         frame = ttk.Frame(parent, padding=(0, 10, 0, 0))
@@ -1032,9 +1151,30 @@ class PipelineApp:
         frame.columnconfigure(1, weight=1)
         return frame
 
-    def _field(self, parent, row, label, value="", browse=None, variable=None, openable=False):
+    def _path_choices(self, kind):
+        """Full paths offered in a file or folder drop-down, the active download's first."""
+        spaces = list_workspaces()
+        spaces.sort(key=lambda ws: ws != self.workspace)
+        if kind == "csv":
+            paths = self.csv_source.choices()
+            for ws in spaces:
+                paths += [str(ws.master_csv), str(ws.measurements_csv)]
+        elif kind == "folder":
+            paths = [str(ws.media_dir) for ws in spaces]
+        else:
+            paths = []
+            for ws in spaces:
+                paths += [str(ws.raw_dir), *map(str, sorted(ws.root.glob("*.zip")))]
+        return [p for p in dict.fromkeys(paths) if Path(p).exists()]
+
+    def _field(self, parent, row, label, value="", browse=None, variable=None, openable=False, kind=None):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=3)
-        entry = ttk.Entry(parent, textvariable=variable) if variable is not None else ttk.Entry(parent)
+        if kind:
+            variable = variable if variable is not None else tk.StringVar(value=str(value))
+            entry = PathCombo(parent, self, variable, lambda: self._path_choices(kind))
+            entry.var = variable
+        else:
+            entry = ttk.Entry(parent, textvariable=variable) if variable is not None else ttk.Entry(parent)
         if variable is None:
             entry.insert(0, str(value))
         entry.grid(row=row, column=1, sticky="ew", pady=3)
@@ -1042,7 +1182,8 @@ class PipelineApp:
             ttk.Button(parent, text="Browse…", command=lambda: self._browse(entry, browse)).grid(
                 row=row, column=2, padx=(6, 0), pady=3)
         if openable:
-            ttk.Button(parent, text="Open", command=lambda: self._open(entry.get().strip())).grid(
+            ttk.Button(parent, text="Open", command=lambda: self._open(
+                (variable.get() if kind else entry.get()).strip())).grid(
                 row=row, column=3, padx=(6, 0), pady=3)
         return entry
 
@@ -1089,7 +1230,7 @@ class PipelineApp:
         tab.columnconfigure((0, 1), weight=1, uniform="half")
 
         data = self._section(tab, "Input data", 0, columnspan=2)
-        self.data_entry = self._field(data, 0, "Folder or ZIP")
+        self.data_entry = self._field(data, 0, "Folder or ZIP", kind="input")
         ttk.Button(data, text="Folder…", command=lambda: self._browse(
             self.data_entry, lambda: filedialog.askdirectory(title="Select data folder"))).grid(
             row=0, column=2, padx=(6, 0))
@@ -1097,7 +1238,9 @@ class PipelineApp:
             self.data_entry, lambda: filedialog.askopenfilename(
                 title="Select ZIP file", filetypes=[("ZIP files", "*.zip"), ("All files", "*.*")]))).grid(
             row=0, column=3, padx=(6, 0))
-        self._hint(data, 1, f"Phase 2 automatically reads {INSPECT_CSV.name}; phase 3 reads {FULL_MASTER_CSV.name}.", column=1, columnspan=3)
+        self._hint(data, 1, f"Each download is kept in its own folder under data/. Phase 2 reads {INSPECT_NAME} and "
+                            f"phase 3 reads {FULL_MASTER_NAME} from the folder shown in Download at the top.",
+                   column=1, columnspan=3)
 
         steps = self._section(tab, "Steps", 1, padx=(0, 6))
         self.phase_vars = []
@@ -1138,14 +1281,15 @@ class PipelineApp:
         tab = ttk.Frame(self.notebook, padding=16)
         tab.columnconfigure(0, weight=1)
         files = self._section(tab, "Files", 0)
-        self._field(files, 0, "Dataset CSV", variable=self.dataset_var, openable=True,
+        self._field(files, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
                     browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
-        self._field(files, 1, "Image folder", variable=self.media_dir_var, openable=True,
+        self._field(files, 1, "Image folder", variable=self.media_dir_var, openable=True, kind="folder",
                     browse=lambda: filedialog.askdirectory(title="Select image folder"))
 
         download = self._section(tab, "Download images", 1)
         self.media_status = self._action(download, 1, [("Download missing images", self._run_download_media),
-                                                       ("Choose records…", self._choose_downloads)])
+                                                       ("Choose records…", self._choose_downloads),
+                                                       ("Site logins…", self._open_site_logins)])
         return tab
 
     def _build_measure_tab(self):
@@ -1153,9 +1297,9 @@ class PipelineApp:
         tab.columnconfigure(0, weight=1)
 
         files = self._section(tab, "Files", 0)
-        self._field(files, 0, "Image folder", variable=self.media_dir_var, openable=True,
+        self._field(files, 0, "Image folder", variable=self.media_dir_var, openable=True, kind="folder",
                     browse=lambda: filedialog.askdirectory(title="Select image folder"))
-        self._field(files, 1, "Measurements CSV", variable=self.measurements_var, openable=True,
+        self._field(files, 1, "Measurements CSV", variable=self.measurements_var, openable=True, kind="csv",
                     browse=lambda: filedialog.asksaveasfilename(title="Measurements CSV", defaultextension=".csv",
                                                                 filetypes=CSV_TYPES, confirmoverwrite=False))
 
@@ -1176,15 +1320,61 @@ class PipelineApp:
                                                       ("Choose images…", self._choose_measurements)])
 
         join = self._section(tab, "Add results to the dataset", 2)
-        self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True,
+        self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
                     browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
         self.join_status = self._action(join, 2, [("Join into dataset…", self._run_join)])
         return tab
 
+    def _workspace_labels(self):
+        return {ws.title: ws for ws in list_workspaces()}
+
+    def _refresh_workspaces(self):
+        labels = self._workspace_labels()
+        self.workspace_box.configure(values=list(labels))
+        if self.workspace and self.workspace.root.is_dir():
+            self.workspace_var.set(self.workspace.title)
+
+    def _choose_workspace(self, _event=None):
+        ws = self._workspace_labels().get(self.workspace_var.get())
+        if ws:
+            self._set_workspace(ws)
+
+    def _restore_workspace(self):
+        ws = workspace_by_name(self.settings.get("workspace")) or (list_workspaces() or [None])[0]
+        self._refresh_workspaces()
+        if ws:
+            self._set_workspace(ws)
+        else:
+            self.workspace_var.set("No downloads yet")
+
+    def _set_workspace(self, ws):
+        """Make `ws` the active download and point the file boxes at its files."""
+        if ws is None:
+            return
+        self.workspace = ws
+        self._refresh_workspaces()
+        self.workspace_var.set(ws.title)
+        self.media_dir_var.set(str(ws.media_dir))
+        self.measurements_var.set(str(ws.measurements_csv))
+        self.dataset_var.set(str(next((p for p in (ws.master_csv, ws.full_master_csv, ws.inspect_csv)
+                                       if p.is_file()), ws.master_csv)))
+        if ws.raw_dir.is_dir():
+            self.data_entry.var.set(str(ws.raw_dir))
+        self.csv_source.select(self.dataset_var.get() if Path(self.dataset_var.get()).is_file() else "")
+        self._save_settings()
+
+    def _open_workspace(self):
+        self._open(self.workspace.root if self.workspace else DATA_DIR)
+
+    def _tab_changed(self, _event=None):
+        tab = self.root.nametowidget(self.notebook.select())
+        if tab in (self.modify_tab, self.analysis_tab):
+            tab.on_show()
+
     def _browse(self, entry, ask):
         path = ask()
         if path:
-            _set_entry(entry, path)
+            (entry.var.set if hasattr(entry, "var") else lambda p: _set_entry(entry, p))(path)
 
     def _open(self, path):
         try:
@@ -1203,11 +1393,11 @@ class PipelineApp:
         self._refresh_issue_summary()
 
     def _data_folder(self):
-        path = self.data_entry.get().strip()
+        path = self.data_entry.var.get().strip()
         if not path:
             return None
         try:
-            return prepare_folder(path, self._log)
+            return resolve_input(path, self._log, create=False)[0]
         except Exception as exc:
             messagebox.showerror("Input data", str(exc), parent=self.root)
             return False
@@ -1243,7 +1433,7 @@ class PipelineApp:
         if folder is False:
             return
         try:
-            columns, source = available_columns(folder)
+            columns, source = available_columns(self.workspace, folder)
         except Exception as exc:
             messagebox.showerror("Master columns", str(exc), parent=self.root)
             return
@@ -1361,8 +1551,10 @@ class PipelineApp:
         self.status_kinds[label] = kind
         label.configure(text=text, foreground=self.palette[kind])
 
-    def _set_running(self, running, cancellable=False):
+    def _set_running(self, running, cancellable=False, site_skip=False):
         self.running = running
+        self.site_skip_ok = running and site_skip
+        self._reset_cancel_button()
         for button in self.action_buttons:
             button.configure(state="disabled" if running else "normal")
         state = "normal" if running and cancellable else "disabled"
@@ -1379,11 +1571,13 @@ class PipelineApp:
             self.progress.stop()
             self.progress.configure(mode="determinate", value=0)
             self.status_var.set("Ready")
+            while self.idle_callbacks:
+                self.root.after(0, self.idle_callbacks.pop(0))
 
-    def _start(self, status_label, busy_text, work, cancellable=False):
+    def _start(self, status_label, busy_text, work, cancellable=False, site_skip=False):
         if self.running:
             return
-        self._set_running(True, cancellable)
+        self._set_running(True, cancellable, site_skip)
         self._set_status(status_label, busy_text, "busy")
 
         def runner():
@@ -1410,15 +1604,31 @@ class PipelineApp:
         return answer.get()
 
     def _confirm_phase_2(self):
-        return self._ask_yesno("Run phase 2?", f"Phase 1 is done. Review {INSPECT_CSV.name} now if needed "
+        return self._ask_yesno("Run phase 2?", f"Phase 1 is done. Review {INSPECT_NAME} now if needed "
                                                "(type Remove in the Action column to drop a record), "
                                                "then choose Yes to run phase 2.")
 
-    def _skip(self):
-        self.control.skip_event.set()
-        self.detail_var.set("Skipping…")
+    def _skip_menu(self):
+        self.skip_menu.entryconfigure("Skip this website", state="normal" if self.site_skip_ok else "disabled")
+        button = self.skip_btn
+        self.skip_menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+
+    def _skip(self, site=False):
+        self.control.request_skip(site)
+        self.detail_var.set("Skipping this website…" if site else "Skipping…")
+
+    def _reset_cancel_button(self):
+        if self.cancel_confirm_job:
+            self.root.after_cancel(self.cancel_confirm_job)
+            self.cancel_confirm_job = None
+        self.cancel_btn.configure(text="Cancel")
 
     def _cancel(self):
+        if not self.cancel_confirm_job:
+            self.cancel_btn.configure(text="Confirm")
+            self.cancel_confirm_job = self.root.after(4000, self._reset_cancel_button)
+            return
+        self._reset_cancel_button()
         self.control.cancel_event.set()
         self._log("Cancelling…")
         self.cancel_btn.configure(state="disabled")
@@ -1431,7 +1641,8 @@ class PipelineApp:
             thinking=self.thinking_var.get(), fill_blanks=self.fill_blanks_var.get(),
             dataset_csv=self.dataset_var.get().strip(), media_dir=self.media_dir_var.get().strip(),
             measurements_csv=self.measurements_var.get().strip(), keep_awake=self.keep_awake_var.get(),
-            master_columns=self.master_columns)
+            master_columns=self.master_columns, workspace=self.workspace.name if self.workspace else "",
+            recent_csvs=self.csv_source.recent)
         save_settings(self.settings)
 
     def _toggle_keep_awake(self):
@@ -1476,7 +1687,8 @@ class PipelineApp:
 
         def work():
             folder = download_dataset(*inputs, log=self._log)
-            self._ui(_set_entry, self.data_entry, folder)
+            self._ui(self._set_workspace, workspace_of(folder))
+            self._ui(self.data_entry.var.set, folder)
             return "Downloaded"
 
         self._start(self.download_status, "Downloading…", work)
@@ -1490,34 +1702,44 @@ class PipelineApp:
 
         def work():
             folder = download_dataset(*inputs, log=self._log)
-            self._ui(_set_entry, self.data_entry, folder)
-            master = run_cleaning(folder, (1, 2, 3), self._confirm_phase_2, self._log,
+            ws = workspace_of(folder)
+            self._ui(self._set_workspace, ws)
+            master = run_cleaning(ws, folder, (1, 2, 3), self._confirm_phase_2, self._log,
                                   master_columns=columns, **options)
             if not master:
                 return "Stopped after phase 1"
-            self._ui(self.dataset_var.set, master)
+            self._ui(self._set_workspace, ws)
             return "Workflow complete"
 
         self._start(self.full_status, "Running…", work)
 
     def _run_clean(self):
         phases = [n for n, var in enumerate(self.phase_vars, 1) if var.get()]
-        path = self.data_entry.get().strip()
+        path = self.data_entry.var.get().strip()
         if not phases:
             messagebox.showwarning("No steps", "Tick at least one phase to run.", parent=self.root)
             return
         if 1 in phases and not path:
             messagebox.showwarning("Missing input", "Select a data folder or ZIP file.", parent=self.root)
             return
+        if 1 not in phases and not self.workspace:
+            messagebox.showwarning("No download", "Choose a download at the top of the window first.",
+                                   parent=self.root)
+            return
         options = self._clean_options()
+        workspace = self.workspace
 
         def work():
-            folder = prepare_folder(path, self._log) if 1 in phases else None
-            master = run_cleaning(folder, phases, self._confirm_phase_2, self._log,
+            if 1 in phases:
+                folder, ws = resolve_input(path, self._log)
+                self._ui(self._set_workspace, ws)
+            else:
+                folder, ws = None, workspace
+            master = run_cleaning(ws, folder, phases, self._confirm_phase_2, self._log,
                                   column_chooser=self._choose_columns_blocking, **options)
             if not master:
                 return "Stopped after phase 1" if 1 in phases else "Done"
-            self._ui(self.dataset_var.set, master)
+            self._ui(self._set_workspace, ws)
             return "Finalized"
 
         self._start(self.clean_status, "Running…", work)
@@ -1530,7 +1752,18 @@ class PipelineApp:
         return csv_path
 
     def _media_dir(self):
-        return self.media_dir_var.get().strip() or str(MEDIA_DIR)
+        path = self.media_dir_var.get().strip()
+        if not path:
+            messagebox.showwarning("Missing folder", "Choose a download at the top of the window, or select an "
+                                                     "image folder.", parent=self.root)
+        return path
+
+    def _measurements_csv(self):
+        path = self.measurements_var.get().strip()
+        if not path:
+            messagebox.showwarning("Missing file", "Choose a download at the top of the window, or select a "
+                                                   "measurements CSV.", parent=self.root)
+        return path
 
     def _pick(self, title, items, action_text, redo_text):
         if not items:
@@ -1544,8 +1777,11 @@ class PipelineApp:
         csv_path = self._dataset_csv()
         if not csv_path or self.running:
             return
+        media_dir = self._media_dir()
+        if not media_dir:
+            return
         try:
-            items = media_status(csv_path, self._media_dir())
+            items = media_status(csv_path, media_dir)
         except Exception as exc:
             messagebox.showerror("Could not read the dataset", str(exc), parent=self.root)
             return
@@ -1553,27 +1789,56 @@ class PipelineApp:
         if choice:
             self._run_download_media(*choice)
 
+    def _set_site_prefs(self, prefs):
+        self.settings["site_prefs"] = prefs
+        sites.configure(**prefs)
+        save_settings(self.settings)
+
+    def _refused_ids(self, host):
+        """gbifIDs in the current dataset whose last image download was refused by `host`."""
+        csv_path, media_dir = self.dataset_var.get().strip(), self.media_dir_var.get().strip()
+        if not csv_path or not media_dir or not Path(csv_path).is_file():
+            return []
+        try:
+            items = media_status(csv_path, media_dir, lambda *_: None)
+        except Exception:
+            return []
+        return [i["id"] for i in items if i["status"] == "Failed" and host in str(i["detail"])]
+
+    def _open_site_logins(self):
+        dialog = SiteLoginDialog(self)
+        self.root.wait_window(dialog)
+        if dialog.retry_ids:
+            self._run_download_media(dialog.retry_ids)
+
     def _run_download_media(self, only_ids=None, force=False):
         csv_path = self._dataset_csv()
         if not csv_path:
             return
         media_dir = self._media_dir()
+        if not media_dir:
+            return
         self._save_settings()
 
         def work():
             r = download_media(csv_path, media_dir, self._log, self.control, self._progress, only_ids, force)
             if r["cancelled"]:
                 return "Cancelled"
+            if r["blocked"] or r["skipped_sites"] or r["failing"]:
+                self.idle_callbacks.append(self._open_site_logins)
             return (f"{r['downloaded']} downloaded, {r['skipped']} already present, "
                     f"{r['skipped_by_user']} skipped, {r['failed']} failed")
 
-        self._start(self.media_status, "Downloading…", work, cancellable=True)
+        self._start(self.media_status, "Downloading…", work, cancellable=True, site_skip=True)
 
     def _choose_measurements(self):
         if self.running:
             return
+        media_dir, measurements_csv = self._media_dir(), self._measurements_csv()
+        if not media_dir or not measurements_csv:
+            return
         try:
-            items = measurement_status(self._media_dir(), self.measurements_var.get().strip() or MEASUREMENTS_CSV)
+            items = measurement_status(media_dir, measurements_csv)
         except Exception as exc:
             messagebox.showerror("Could not read measurements", str(exc), parent=self.root)
             return
@@ -1582,8 +1847,9 @@ class PipelineApp:
             self._run_measurements(*choice)
 
     def _run_measurements(self, only_ids=None, force=False):
-        measurements_csv = self.measurements_var.get().strip() or str(MEASUREMENTS_CSV)
-        media_dir = self._media_dir()
+        media_dir, measurements_csv = self._media_dir(), self._measurements_csv()
+        if not media_dir or not measurements_csv:
+            return
         base_url = self.server_var.get().strip() or LMSTUDIO_URL
         token_limit = self._token_limit()
         thinking = THINKING_CHOICES.get(self.thinking_var.get())
@@ -1614,7 +1880,9 @@ class PipelineApp:
         csv_path = self._dataset_csv()
         if not csv_path or self.running:
             return
-        measurements_csv = self.measurements_var.get().strip() or str(MEASUREMENTS_CSV)
+        measurements_csv = self._measurements_csv()
+        if not measurements_csv:
+            return
         if not Path(measurements_csv).is_file():
             messagebox.showwarning("No measurements yet", f"{measurements_csv} does not exist yet. "
                                    "Measure some images first.", parent=self.root)

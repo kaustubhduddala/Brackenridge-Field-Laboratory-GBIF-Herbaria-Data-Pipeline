@@ -1,15 +1,18 @@
 import sys
 
-from config import APP_VERSION, DATA_DIR, MEDIA_DIR
+from config import APP_VERSION, DATA_DIR
 
 USAGE = """Usage:
   python main.py                 open the app
   python main.py --cli           interactive command-line menu
   python main.py --version       print the version
   python main.py cleaner ...     run phase 1 or 2 directly (run without arguments for details)
-  python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo]
+  python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo] [--download NAME]
   python main.py join [dataset_csv] [measurements_csv] [--fill-blanks] [--matched-only]
-                      [--key gbifID] [--measurement-key gbifID] [--columns a,b,c] [--output file.csv]"""
+                      [--key gbifID] [--measurement-key gbifID] [--columns a,b,c] [--output file.csv]
+                      [--download NAME]
+
+Each download is kept in data/<download id>_<Species>/. --download NAME picks the folder (newest by default)."""
 
 
 def run_gui():
@@ -26,9 +29,15 @@ def run_gui():
 
 def self_test():
     try:
-        from program import analysis, cli, gbif, geo, media, power, processor, theme, utils  # noqa: F401
+        from program import (analysis, cli, gbif, geo, media, modify, power, processor, stats, theme,  # noqa: F401
+                         utils, workspace)
         import bs4, keyring, numpy, openai, pandas, PIL.Image, pygbif, requests  # noqa: F401
         import tkinter  # noqa: F401
+        from program import site_login
+        if not site_login.available():
+            raise ImportError('playwright is not installed or was not bundled')
+        if not site_login.driver_ready():
+            raise RuntimeError("Playwright's browser driver cannot run")
         from program import gui  # noqa: F401
     except Exception as exc:
         print(f"Self-test failed: {exc!r}", file=sys.stderr)
@@ -44,7 +53,6 @@ def run_cli():
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
     command = args[0] if args else "--gui"
     if command in ("-h", "--help"):

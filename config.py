@@ -24,16 +24,14 @@ elif FROZEN:
 else:
     BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-MEDIA_DIR = DATA_DIR / "media"
-INSPECT_CSV = DATA_DIR / "GBIFdownload_inspectFlags.csv"
-MASTER_CSV = DATA_DIR / "master_cleaned.csv"
-FULL_MASTER_CSV = DATA_DIR / "master_cleaned_all_columns.csv"
-REMOVED_COLUMNS_CSV = DATA_DIR / "removed_columns.csv"
-DUPLICATES_CSV = DATA_DIR / "removed_duplicates.csv"
-MEASUREMENTS_CSV = DATA_DIR / "measurements.csv"
-RESPONSES_DIR = DATA_DIR / "responses"
+RESPONSES_DIR_NAME = "responses"
 LOG_FILE = DATA_DIR / "pipeline.log"
 SETTINGS_FILE = BASE_DIR / "settings.json"
+SITE_LOGINS_FILE = BASE_DIR / "site_logins.json"
+BROWSER_PROFILE_DIR = BASE_DIR / "browser_profile"
+BROWSERS_DIR = BASE_DIR / "browsers"  # Playwright's Chromium, downloaded on demand
+BROWSER_USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/126.0.0.0 Safari/537.36")
 
 LMSTUDIO_URL = os.environ.get("LMSTUDIO_URL", "http://localhost:1234/v1")
 LMSTUDIO_MODEL = os.environ.get("LMSTUDIO_MODEL", "")

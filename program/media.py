@@ -4,10 +4,14 @@ from urllib.parse import urljoin, urlparse
 
 import pandas as pd
 
-from config import IMAGE_EXTENSIONS, MEDIA_DIR
+from config import IMAGE_EXTENSIONS
+from program import site_login
+from program.sites import AccessDenied, download_special, host_of, looks_blocked, new_run, note_refused
 from program.utils import (ItemSkipped, check, find_media_url, gbif_ids, index_images, is_blank, read_csv,
                    request_with_backoff, save_csv)
 
+BLOCKED_AFTER = 3  # skip a site for the rest of the run after this many refusals in a row
+FAILING_AFTER = 5  # ...or after this many other failures in a row
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
 
 
@@ -96,6 +100,9 @@ def _detect_extension(content_type, url=""):
 
 
 def _fetch_image(url, stem, log=print, control=None):
+    special = download_special(url, stem, log, control)
+    if special:
+        return special
     resp = request_with_backoff(url, log=log, control=control, stream=True)
     content_type = resp.headers.get("Content-Type", "").lower()
     if "json" in content_type:
@@ -107,6 +114,8 @@ def _fetch_image(url, stem, log=print, control=None):
     elif "text/html" in content_type:
         image_url = _resolve_image_from_html(resp, url, log)
         if not image_url:
+            if looks_blocked(resp.text):
+                raise AccessDenied(url, reason="the site showed a sign-in or verification page")
             raise ValueError("HTML page has no recognizable image (it may need JavaScript)")
         log(f"    Image from page: {image_url[:80]}")
         resp = request_with_backoff(image_url, log=log, control=control, stream=True)
@@ -134,7 +143,7 @@ def _replace_old_versions(path):
             old.unlink(missing_ok=True)
 
 
-def media_status(csv_path, media_dir=MEDIA_DIR, log=print):
+def media_status(csv_path, media_dir, log=print):
     df = read_csv(csv_path, log)
     ids = gbif_ids(df)
     images = index_images(media_dir)
@@ -156,9 +165,17 @@ def media_status(csv_path, media_dir=MEDIA_DIR, log=print):
     return list(items.values())
 
 
-def download_media(csv_path, media_dir=None, log=print, control=None, progress=None, only_ids=None, force=False):
+def download_media(csv_path, media_dir, log=print, control=None, progress=None, only_ids=None, force=False):
+    new_run()
+    try:
+        return _download_media(csv_path, media_dir, log, control, progress, only_ids, force)
+    finally:
+        site_login.close_fetcher()
+
+
+def _download_media(csv_path, media_dir, log, control, progress, only_ids, force):
     csv_path = Path(csv_path)
-    media_dir = Path(media_dir or MEDIA_DIR)
+    media_dir = Path(media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)
     failed_csv = csv_path.with_name(csv_path.stem + "_failed_media.csv")
 
@@ -173,7 +190,9 @@ def download_media(csv_path, media_dir=None, log=print, control=None, progress=N
     images = index_images(media_dir)
 
     summary = {"total": len(rows), "downloaded": 0, "skipped": 0, "skipped_by_user": 0, "failed": 0,
-               "cancelled": False}
+               "cancelled": False, "blocked": {}, "skipped_sites": {}, "failing": {}}
+    denied_in_a_row = {}
+    failed_in_a_row = {}
     scope = f"{len(rows)} selected records" if only_ids is not None else f"{len(rows)} records"
     log(f"Downloading images for {scope} to {media_dir}")
 
@@ -201,6 +220,22 @@ def download_media(csv_path, media_dir=None, log=print, control=None, progress=N
             df.at[idx, "media_error"] = "No media link found in row"
             summary["failed"] += 1
             continue
+        host = host_of(url)
+        if denied_in_a_row.get(host, 0) >= BLOCKED_AFTER:
+            df.at[idx, "media_error"] = f"Access denied by {host}; skipped after repeated refusals"
+            summary["blocked"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
+        if control and host in control.skipped_hosts:
+            df.at[idx, "media_error"] = f"Site skipped by you: {host}"
+            summary["skipped_sites"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
+        if failed_in_a_row.get(host, 0) >= FAILING_AFTER:
+            df.at[idx, "media_error"] = f"Site {host} skipped after {FAILING_AFTER} failures in a row"
+            summary["failing"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
         log(f"[{number}/{len(rows)}] {label}: {url[:80]}")
         try:
             path = _fetch_image(url, media_dir / label, log, control)
@@ -208,16 +243,37 @@ def download_media(csv_path, media_dir=None, log=print, control=None, progress=N
             df.at[idx, "media_path"] = str(path)
             df.at[idx, "media_error"] = ""
             summary["downloaded"] += 1
+            denied_in_a_row.pop(host, None)
+            failed_in_a_row.pop(host, None)
         except ItemSkipped:
             if control and control.cancelled:
                 summary["cancelled"] = True
                 break
-            log(f"    Skipped {label}")
-            summary["skipped_by_user"] += 1
+            if control and control.skip_site:
+                control.skipped_hosts.add(host)
+                log(f"    Skipped {label} and the rest of {host}")
+                df.at[idx, "media_error"] = f"Site skipped by you: {host}"
+                summary["skipped_sites"].setdefault(host, []).append(ids[idx])
+                summary["failed"] += 1
+            else:
+                log(f"    Skipped {label}")
+                summary["skipped_by_user"] += 1
+        except AccessDenied as exc:
+            log(f"    Failed: {exc}")
+            df.at[idx, "media_error"] = str(exc)
+            if host not in denied_in_a_row:
+                note_refused(host)
+            denied_in_a_row[host] = denied_in_a_row.get(host, 0) + 1
+            summary["blocked"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
         except Exception as exc:
             log(f"    Failed: {exc}")
             df.at[idx, "media_error"] = str(exc)
             summary["failed"] += 1
+            failed_in_a_row[host] = failed_in_a_row.get(host, 0) + 1
+            if failed_in_a_row[host] == FAILING_AFTER:
+                log(f"    {host} failed {FAILING_AFTER} times in a row; skipping it for the rest of this run")
+                summary["failing"].setdefault(host, []).append(ids[idx])
 
     save_csv(df, csv_path)
     failed = df[df["media_error"].astype(str).str.strip() != ""]
@@ -231,6 +287,14 @@ def download_media(csv_path, media_dir=None, log=print, control=None, progress=N
         log("Image download cancelled")
     elif progress:
         progress(len(rows), len(rows))
+    for host, skipped_ids in summary["skipped_sites"].items():
+        note_refused(host, "skipped by you")
+        log(f"{host} was skipped by you for {len(skipped_ids)} images. It is listed under Images, Site logins.")
+    for host, failing_ids in summary["failing"].items():
+        note_refused(host, f"failed {FAILING_AFTER} times in a row")
+        log(f"{host} kept failing and was skipped ({len(failing_ids)} images). It is listed under Images, Site logins.")
+    for host, blocked_ids in summary["blocked"].items():
+        log(f"{host} refused access for {len(blocked_ids)} images. Use Images, Site logins to sign in, then retry.")
     log(f"Image download complete: {summary['downloaded']} downloaded, {summary['skipped']} already present, "
         f"{summary['skipped_by_user']} skipped by you, {summary['failed']} failed")
     return summary

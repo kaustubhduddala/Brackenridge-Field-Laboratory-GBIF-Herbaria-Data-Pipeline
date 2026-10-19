@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -9,14 +10,21 @@ import pandas as pd
 import requests
 from openai import APIConnectionError, BadRequestError, NotFoundError, OpenAI
 
-from config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MASTER_CSV, MAX_IMAGE_SIDE,
-                    MEASUREMENTS_CSV, MEDIA_DIR, MIN_CONTEXT_LENGTH, REQUEST_TIMEOUT_S, RESPONSES_DIR)
+from config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MAX_IMAGE_SIDE, MIN_CONTEXT_LENGTH,
+                    REQUEST_TIMEOUT_S, RESPONSES_DIR_NAME)
 from .utils import ItemSkipped, check, gbif_ids, index_images, is_blank, read_csv, save_csv
 
 TRAITS = ("panicle_length", "leaf_width", "seed_length")
 FIELDS = [f"{trait}_{n}_{kind}" for trait in TRAITS for n in (1, 2) for kind in ("cm", "confidence")]
+POINT_FIELDS = [f"{trait}_{n}_points" for trait in TRAITS for n in (1, 2)]
 VOUCHER_FIELDS = ["catalogNumber", "recordedBy", "recordNumber", "eventDate", "country", "stateProvince",
                   "county", "locality", "habitat", "verbatimElevation", "identifiedBy", "scientificName"]
+
+TRAIT_BOUNDS_CM = {
+    "panicle_length": (3.0, 75.0),
+    "leaf_width": (0.15, 5.0),
+    "seed_length": (0.15, 0.65),
+}
 
 RESULT_COLUMNS = (
     ["ai_image"]
@@ -28,12 +36,62 @@ RESULT_COLUMNS = (
 )
 MEASUREMENT_FILE_COLUMNS = ["gbifID", *RESULT_COLUMNS]
 
-RESPONSE_SCHEMA = {
+POINT_LIST_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "array",
+        "items": {"type": "number"},
+    },
+}
+
+# Pass 1A: Geometry ONLY (keeps schema small so LM Studio does not collapse into dummy numbers)
+GEOMETRY_SCHEMA = {
     "type": "object",
     "properties": {
-        "calibration": {"type": "string"},
-        **{field: {"type": ["number", "null"]} for field in FIELDS},
         "notes": {"type": "string"},
+        "calibration": {"type": "string"},
+        "ruler_points": POINT_LIST_SCHEMA,
+        "ruler_length_cm": {"type": ["number", "null"]},
+        "panicle_length_1_points": POINT_LIST_SCHEMA,
+        "panicle_length_1_confidence": {"type": ["number", "null"]},
+        "panicle_length_2_points": POINT_LIST_SCHEMA,
+        "panicle_length_2_confidence": {"type": ["number", "null"]},
+        "leaf_width_1_points": POINT_LIST_SCHEMA,
+        "leaf_width_1_confidence": {"type": ["number", "null"]},
+        "leaf_width_2_points": POINT_LIST_SCHEMA,
+        "leaf_width_2_confidence": {"type": ["number", "null"]},
+        "spikelet_cluster_center": {
+            "type": "array",
+            "items": {"type": "number"},
+        },
+    },
+    "required": [
+        "notes",
+        "calibration",
+        "ruler_points",
+        "ruler_length_cm",
+        "panicle_length_1_points",
+        "panicle_length_1_confidence",
+        "panicle_length_2_points",
+        "panicle_length_2_confidence",
+        "leaf_width_1_points",
+        "leaf_width_1_confidence",
+        "leaf_width_2_points",
+        "leaf_width_2_confidence",
+        "spikelet_cluster_center",
+    ],
+    "additionalProperties": False,
+}
+
+GEOMETRY_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "specimen_geometry", "strict": True, "schema": GEOMETRY_SCHEMA},
+}
+
+# Pass 1B: Voucher Label OCR ONLY
+VOUCHER_SCHEMA = {
+    "type": "object",
+    "properties": {
         "voucher_text": {"type": "string"},
         "voucher": {
             "type": "object",
@@ -42,78 +100,294 @@ RESPONSE_SCHEMA = {
             "additionalProperties": False,
         },
     },
-    "required": ["calibration", *FIELDS, "notes", "voucher_text", "voucher"],
+    "required": ["voucher_text", "voucher"],
     "additionalProperties": False,
 }
-RESPONSE_FORMAT = {
+
+VOUCHER_RESPONSE_FORMAT = {
     "type": "json_schema",
-    "json_schema": {"name": "specimen_measurements", "strict": True, "schema": RESPONSE_SCHEMA},
+    "json_schema": {"name": "specimen_voucher", "strict": True, "schema": VOUCHER_SCHEMA},
 }
 
-JSON_SHAPE = json.dumps({
-    "calibration": "string",
-    **{field: "number or null" for field in FIELDS},
-    "notes": "string",
-    "voucher_text": "string",
-    "voucher": {field: "string" for field in VOUCHER_FIELDS},
-}, indent=2)
+# Pass 2: High-res zoomed seed crop
+SEED_CROP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "notes": {"type": "string"},
+        "seed_length_1_points": POINT_LIST_SCHEMA,
+        "seed_length_1_confidence": {"type": ["number", "null"]},
+        "seed_length_2_points": POINT_LIST_SCHEMA,
+        "seed_length_2_confidence": {"type": ["number", "null"]},
+    },
+    "required": [
+        "notes",
+        "seed_length_1_points",
+        "seed_length_1_confidence",
+        "seed_length_2_points",
+        "seed_length_2_confidence",
+    ],
+    "additionalProperties": False,
+}
 
-SYSTEM_PROMPT = """You are a meticulous botanical measurement assistant analyzing one herbarium
-specimen image of Guinea grass (Megathyrsus maximus).
+SEED_CROP_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "seed_crop_measurements", "strict": True, "schema": SEED_CROP_SCHEMA},
+}
 
-Calibration
-- Use the ruler or scale bar if visible. It may not look like a standard ruler; any scale with
-  visible tick marks can be used.
-- If there is no usable scale but the full herbarium sheet is visible, use 29 cm as the sheet
-  width only as a fallback.
-- If neither is possible, return null measurements and explain why in notes. Never invent
-  measurements.
-- Say in one sentence how you calibrated in the calibration field.
+# Legacy alias preserved for external imports
+RESPONSE_SCHEMA = GEOMETRY_SCHEMA
+RESPONSE_FORMAT = GEOMETRY_RESPONSE_FORMAT
 
-Measurements
-Return two independent measurements per trait when possible, from different structures: two
-panicles, two leaves, two seeds. If only one valid structure is visible, fill measurement 1 and
-set measurement 2 to null.
-- panicle_length: from the lowest panicle node to the panicle tip.
-- leaf_width: the maximum margin-to-margin width of a leaf at its broadest point.
-- seed_length: from the branch point of an individual seed to its tip.
-Use centimetres rounded to two decimals. If a trait is absent, obscured or cannot be calibrated,
-use null for both its value and confidence. If the specimen has flowers but no visible seeds,
-seed length is null. Confidence (0 to 1) must reflect visibility, calibration quality and
-endpoint clarity, not certainty created by guessing.
+GEOMETRY_PROMPT = """
+Role: You are a botanical measurement assistant analyzing a Megathyrsus maximus (Guinea grass) herbarium sheet.
+IMPORTANT: A cyan/yellow coordinate grid from 0 to 1000 is drawn directly on the image.
+- X runs horizontally from 0 (left) to 1000 (right).
+- Y runs vertically from 0 (top) to 1000 (bottom).
+- Read the exact [x, y] coordinates using the visible grid lines and labels! NEVER invent round placeholder sequences like [100,300], [200,350], [300,400].
 
-Voucher label
-Transcribe any readable label or voucher text into voucher_text as one line, separating the
-label's lines with " | ". Copy details into the voucher fields (Darwin Core terms) only when the
-label states them; leave a field empty rather than guessing, and do not repeat one value in
-several fields (for example a collector's name is recordedBy, not locality). Write eventDate as
-YYYY-MM-DD, YYYY-MM or YYYY depending on what is readable; never use 00 for an unknown part.
-Use an empty string for anything you cannot read.
+1. Anatomical Identification Rules (Read Carefully!)
+- RULER (`ruler_points`): Look for the printed centimeter scale bar (often black-and-white alternating 1 cm blocks labeled 0..10 cm in the border or corner). Place 2 points `[[x_start, y_start], [x_end, y_end]]` at the exact `0 cm` tick and `10 cm` tick (or `5 cm` tick) and set `ruler_length_cm` to `10.0` (or `5.0`). If no printed ruler is present, set `ruler_points` to `[]` and `ruler_length_cm` to `null` (the software will automatically measure the white paper width).
+- PANICLE (`panicle_length_1_points`, `panicle_length_2_points`):
+  * What a panicle looks like: The wispy, feathery, multi-branched seed-head cluster bearing tiny oval spikelets (seeds).
+  * Do NOT confuse thick, smooth, folded grass stems (culms) or flat ribbon-like leaves with the panicle!
+  * Trace the central main axis (rachis) of the panicle from its lowest branch whorl (base of the inflorescence) to the very tip of the panicle using 3 to 6 waypoints `[[x0, y0], [x1, y1], ...]`.
+  * If there is only 1 panicle on the sheet, set `panicle_length_2_points` to `[]` and `panicle_length_2_confidence` to `null`.
+- LEAF BLADE WIDTH (`leaf_width_1_points`, `leaf_width_2_points`):
+  * What a leaf blade looks like: A flat, dark-green or brownish strap/ribbon-like leaf lamina.
+  * Do NOT measure across panicle branches or stems!
+  * Find the broadest flat part of a leaf blade and place 2 points `[[x1, y1], [x2, y2]]` directly across its width (perpendicular to the length of the leaf, from one margin to the other margin). Note: a leaf width is narrow (typically only 10 to 35 grid units wide!).
+- SPIKELET CLUSTER (`spikelet_cluster_center`):
+  * Provide a single `[x, y]` coordinate right in the middle of the densest group of individual oval seeds (spikelets) on the panicle so the camera can zoom in for Pass 2.
 
-Keep your reasoning brief: estimate each endpoint once against the scale and move on.
-Respond with only this JSON object:
-""" + JSON_SHAPE
+Respond ONLY with valid JSON.
+"""
+
+SEED_CROP_PROMPT = """
+Role: You are inspecting a zoomed-in close-up of Megathyrsus maximus panicle branches to measure 2 individual mature spikelets (seeds).
+A coordinate grid from 0 to 1000 is drawn on this cropped image ([0,0] = top-left, [1000,1000] = bottom-right).
+
+Instructions:
+1. A spikelet (seed) is a small, oval/elliptical grain (~2.5 to 3.5 mm long) attached to a thin panicle branch.
+2. Locate 2 distinct, clearly visible individual spikelets.
+3. For each spikelet, read the grid and place 2 exact endpoints `[[x_base, y_base], [x_tip, y_tip]]` from the base of the single grain to its apex tip.
+4. Do NOT measure an entire branch—only a single oval grain!
+5. Respond ONLY with valid JSON.
+"""
+
+VOUCHER_PROMPT = """
+Role: Transcribe the herbarium specimen voucher label (usually in the bottom corner) into Darwin Core fields.
+- voucher_text: Transcribe all readable printed and handwritten label text into a single line separated by " | ".
+- voucher: Populate catalogNumber, recordedBy, recordNumber, eventDate (strictly YYYY-MM-DD, YYYY-MM, or YYYY), country, stateProvince, county, locality, habitat, verbatimElevation, identifiedBy, scientificName. Use "" for any field not explicitly written on the label.
+Respond ONLY with valid JSON.
+"""
 
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 
 
-def _image_data_url(image_path):
+def _detect_white_sheet_span_px(image):
+    """
+    Deterministically finds the left and right pixel edges of the bright herbarium mounting
+    sheet (ignoring black scanner borders) using horizontal brightness profiling.
+    Returns (x_left_px, x_right_px, y_mid_px) or None.
+    """
+    gray = image.convert("L")
+    w, h = gray.size
+    # Sample the middle 50% of image height where the paper mount always spans full width
+    y0, y1 = int(h * 0.25), int(h * 0.75)
+    strip = gray.crop((0, y0, w, y1)).resize((w, 1))
+    col_means = list(strip.getdata())
+
+    # Paper sheet is bright (> 150 out of 255); black scanner background is dark (< 80)
+    threshold = 145
+    bright_cols = [x for x, val in enumerate(col_means) if val >= threshold]
+    if len(bright_cols) < w * 0.5:
+        return None
+    left_px, right_px = bright_cols[0], bright_cols[-1]
+    if (right_px - left_px) < w * 0.6:
+        return None
+    return left_px, right_px, int(h * 0.50)
+
+
+def _draw_vlm_grid(image):
+    """
+    Overlays a semi-transparent 0..1000 coordinate grid with numeric labels every 100 units
+    so local VLMs can visually read exact coordinates instead of guessing blind numbers.
+    """
+    from PIL import Image, ImageDraw
+
+    base = image.convert("RGBA")
+    w, h = base.size
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    for g in range(50, 1000, 50):
+        x = int(round(g * w / 1000.0))
+        y = int(round(g * h / 1000.0))
+        is_major = (g % 100 == 0)
+        line_color = (0, 210, 255, 85) if is_major else (0, 210, 255, 38)
+        width = 2 if is_major else 1
+        draw.line([(x, 0), (x, h)], fill=line_color, width=width)
+        draw.line([(0, y), (w, y)], fill=line_color, width=width)
+
+        if is_major:
+            # Top & bottom X labels
+            draw.rectangle((x - 14, 2, x + 16, 15), fill=(0, 0, 0, 170))
+            draw.text((x - 11, 3), str(g), fill=(255, 255, 0, 255))
+            draw.rectangle((x - 14, h - 16, x + 16, h - 3), fill=(0, 0, 0, 170))
+            draw.text((x - 11, h - 15), str(g), fill=(255, 255, 0, 255))
+
+            # Left & right Y labels
+            draw.rectangle((2, y - 7, 30, y + 7), fill=(0, 0, 0, 170))
+            draw.text((4, y - 6), str(g), fill=(0, 255, 200, 255))
+            draw.rectangle((w - 31, y - 7, w - 2, y + 7), fill=(0, 0, 0, 170))
+            draw.text((w - 29, y - 6), str(g), fill=(0, 255, 200, 255))
+
+    # Interior [x,y] intersections every 200 units for immediate local reference
+    for gx in (200, 400, 600, 800):
+        for gy in (200, 400, 600, 800):
+            x = int(round(gx * w / 1000.0))
+            y = int(round(gy * h / 1000.0))
+            lbl = f"{gx},{gy}"
+            draw.rectangle((x + 2, y + 2, x + 46, y + 14), fill=(0, 0, 0, 130))
+            draw.text((x + 4, y + 3), lbl, fill=(255, 255, 255, 220))
+
+    return Image.alpha_composite(base, overlay).convert("RGB")
+
+
+def _encode_pil_jpeg(pil_img, quality=92):
+    buffer = io.BytesIO()
+    pil_img.convert("RGB").save(buffer, "JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+
+def _prepare_images(image_path):
+    """
+    Returns (gridded_data_url, clean_data_url, (orig_w, orig_h), sheet_span_norm).
+    """
     path = Path(image_path)
-    suffix = path.suffix.lower()
-    try:
-        from PIL import Image
-    except ImportError:
-        if suffix in {".tif", ".tiff"}:
-            raise ValueError("TIFF images need Pillow to be converted (pip install pillow)")
-        mime = "jpeg" if suffix in {".jpg", ".jpeg"} else suffix[1:]
-        return f"data:image/{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"
+    from PIL import Image
 
     Image.MAX_IMAGE_PIXELS = None
     with Image.open(path) as image:
-        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
-        buffer = io.BytesIO()
-        image.convert("RGB").save(buffer, "JPEG", quality=92)
-    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
+        orig_w, orig_h = image.size
+        sheet_px = _detect_white_sheet_span_px(image)
+        sheet_span_norm = None
+        if sheet_px:
+            lx, rx, my = sheet_px
+            sheet_span_norm = [
+                [round(lx * 1000.0 / orig_w, 2), round(my * 1000.0 / orig_h, 2)],
+                [round(rx * 1000.0 / orig_w, 2), round(my * 1000.0 / orig_h, 2)],
+            ]
+
+        work = image.copy()
+        work.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+        clean_url = _encode_pil_jpeg(work, quality=92)
+        gridded_url = _encode_pil_jpeg(_draw_vlm_grid(work), quality=92)
+
+    return gridded_url, clean_url, (orig_w, orig_h), sheet_span_norm
+
+
+def _image_data_url(image_path):
+    _, clean_url, _, _ = _prepare_images(image_path)
+    return clean_url
+
+
+def _is_hallucinated_pattern(points):
+    """
+    Catches dummy arithmetic sequences like [[100, 300], [200, 350], [300, 400], [400, 450]]
+    or placeholder multiples of 50/100 emitted when a local VLM fails to ground visually.
+    """
+    if not points or len(points) < 2:
+        return True
+    # Check if all coordinates are exact multiples of 50
+    if all((p[0] % 50 == 0 and p[1] % 50 == 0) for p in points):
+        return True
+    # Check if 3+ points have identical constant step sizes in both X and Y
+    if len(points) >= 3:
+        dxs = [round(points[i + 1][0] - points[i][0], 1) for i in range(len(points) - 1)]
+        dys = [round(points[i + 1][1] - points[i][1], 1) for i in range(len(points) - 1)]
+        if len(set(dxs)) == 1 and len(set(dys)) == 1 and (abs(dxs[0]) >= 50 or abs(dys[0]) >= 50):
+            return True
+    return False
+
+
+def _clean_points(points):
+    if not isinstance(points, list):
+        return []
+    cleaned = []
+    for pt in points:
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            x, y = _to_number(pt[0]), _to_number(pt[1])
+            if x is not None and y is not None and 0.0 <= x <= 1000.0 and 0.0 <= y <= 1000.0:
+                if not cleaned or (abs(x - cleaned[-1][0]) > 1e-3 or abs(y - cleaned[-1][1]) > 1e-3):
+                    cleaned.append([round(x, 2), round(y, 2)])
+    if _is_hallucinated_pattern(cleaned):
+        return []
+    return cleaned
+
+
+def _polyline_px(points, width, height):
+    cleaned = _clean_points(points)
+    if len(cleaned) < 2 or not width or not height:
+        return None
+    px_pts = [(p[0] * width / 1000.0, p[1] * height / 1000.0) for p in cleaned]
+    total = sum(
+        math.hypot(px_pts[i + 1][0] - px_pts[i][0], px_pts[i + 1][1] - px_pts[i][1])
+        for i in range(len(px_pts) - 1)
+    )
+    return total if total > 1.0 else None
+
+
+def _within_bounds(trait, value_cm):
+    if value_cm is None:
+        return False
+    low, high = TRAIT_BOUNDS_CM.get(trait, (0.01, 200.0))
+    return low <= value_cm <= high
+
+
+def _crop_seed_roi_gridded(image_path, geom_parsed, orig_size):
+    """
+    Always extracts a zoomed crop around the panicle spikelets, upscales it to 1000x1000
+    if needed, and draws a fine coordinate grid so Pass 2 can resolve 3 mm seeds on ANY image size.
+    """
+    if not orig_size:
+        return None, None
+    orig_w, orig_h = orig_size
+    from PIL import Image
+
+    center = geom_parsed.get("spikelet_cluster_center")
+    cx_norm, cy_norm = None, None
+    if isinstance(center, (list, tuple)) and len(center) >= 2:
+        x, y = _to_number(center[0]), _to_number(center[1])
+        if x is not None and y is not None and 10 < x < 990 and 10 < y < 990 and not (x % 50 == 0 and y % 50 == 0):
+            cx_norm, cy_norm = x, y
+
+    if cx_norm is None:
+        p1 = _clean_points(geom_parsed.get("panicle_length_1_points"))
+        if len(p1) >= 2:
+            mid = p1[len(p1) // 2]
+            cx_norm, cy_norm = mid[0], mid[1]
+
+    if cx_norm is None:
+        return None, None
+
+    # Crop 22% of the image width/height around the spikelet cluster (~6 to 8 cm real-world window)
+    box_side = int(max(180, min(orig_w, orig_h) * 0.24))
+    cx_px = cx_norm * orig_w / 1000.0
+    cy_px = cy_norm * orig_h / 1000.0
+
+    x0 = int(max(0, min(orig_w - box_side, round(cx_px - box_side / 2))))
+    y0 = int(max(0, min(orig_h - box_side, round(cy_px - box_side / 2))))
+
+    Image.MAX_IMAGE_PIXELS = None
+    with Image.open(image_path) as image:
+        crop = image.crop((x0, y0, x0 + box_side, y0 + box_side)).convert("RGB")
+        # Upscale small crops to 1000x1000 so 3 mm seeds are large and easy for VLM patches to resolve
+        upscaled = crop.resize((1000, 1000), Image.Resampling.LANCZOS)
+        gridded_crop = _draw_vlm_grid(upscaled)
+        data_url = _encode_pil_jpeg(gridded_crop, quality=95)
+
+    return data_url, (x0, y0, box_side, box_side)
 
 
 def _parse_json(content):
@@ -130,7 +404,7 @@ def _parse_json(content):
             payload, _ = decoder.raw_decode(text, match.start())
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict) and any(field in payload for field in FIELDS):
+        if isinstance(payload, dict) and payload:
             found = payload
     if found is None:
         raise ValueError("No valid JSON object found in model response")
@@ -170,26 +444,152 @@ def _clean_date(value):
     return "-".join(parts)
 
 
-def _normalise_result(result):
+def _resolve_scale(geom_parsed, orig_size, sheet_span_norm):
+    """
+    Validates the VLM's ruler points against the deterministically detected 29 cm white sheet.
+    If the VLM missed the ruler or hallucinated a span across the whole sheet, falls back
+    to the exact white herbarium paper width = 29.0 cm.
+    """
+    orig_w, orig_h = orig_size if orig_size else (None, None)
+    sheet_px = _polyline_px(sheet_span_norm, orig_w, orig_h) if sheet_span_norm else None
+    sheet_px_per_cm = (sheet_px / 29.0) if sheet_px else None
+
+    ruler_pts = _clean_points(geom_parsed.get("ruler_points"))
+    ruler_cm = _to_number(geom_parsed.get("ruler_length_cm"))
+    ruler_px = _polyline_px(ruler_pts, orig_w, orig_h) if (orig_w and orig_h and len(ruler_pts) == 2) else None
+
+    if ruler_px and ruler_cm and 1.0 <= ruler_cm <= 20.0:
+        ruler_px_per_cm = ruler_px / ruler_cm
+        # Sanity check: a true 10 cm ruler on a 29 cm sheet must be roughly 1/2.9th of sheet width
+        if not sheet_px_per_cm or (0.65 * sheet_px_per_cm <= ruler_px_per_cm <= 1.45 * sheet_px_per_cm):
+            return ruler_pts, round(ruler_cm, 2), ruler_px_per_cm, f"Measured {ruler_cm:g} cm scale bar."
+
+    if sheet_span_norm and sheet_px_per_cm:
+        return (
+            sheet_span_norm,
+            29.0,
+            sheet_px_per_cm,
+            "Auto-calibrated from detected white herbarium sheet width (29.0 cm).",
+        )
+
+    return [], None, None, _as_text(geom_parsed.get("calibration"))
+
+
+def _normalise_result(result, orig_size=None, sheet_span_norm=None):
     output = {}
-    for field in FIELDS:
-        value = _to_number(result.get(field))
-        if value is not None and field.endswith("_confidence"):
-            value = min(max(value, 0.0), 1.0)
-        elif value is not None and value <= 0:
-            value = None
-        output[field] = None if value is None else round(value, 2)
+    orig_w, orig_h = orig_size if orig_size else (None, None)
+
+    cal_pts, cal_len_cm, px_per_cm, cal_desc = _resolve_scale(result, orig_size, sheet_span_norm)
+    output["calibration_points"] = cal_pts
+    output["calibration_length_cm"] = cal_len_cm
+    output["px_per_cm"] = round(px_per_cm, 2) if px_per_cm else None
+
     for trait in TRAITS:
         for n in (1, 2):
-            if output[f"{trait}_{n}_cm"] is None:
-                output[f"{trait}_{n}_confidence"] = None
-    output["calibration"] = _as_text(result.get("calibration"))
+            pts_key = f"{trait}_{n}_points"
+            cm_key = f"{trait}_{n}_cm"
+            conf_key = f"{trait}_{n}_confidence"
+
+            pts = _clean_points(result.get(pts_key))
+            output[pts_key] = pts
+
+            coord_cm = None
+            if px_per_cm and orig_w and orig_h and len(pts) >= 2:
+                trait_px = _polyline_px(pts, orig_w, orig_h)
+                if trait_px:
+                    candidate_cm = trait_px / px_per_cm
+                    if _within_bounds(trait, candidate_cm):
+                        coord_cm = candidate_cm
+
+            if coord_cm is None:
+                output[pts_key] = []
+            output[cm_key] = None if coord_cm is None else round(coord_cm, 2)
+
+            conf = _to_number(result.get(conf_key))
+            if conf is not None:
+                conf = round(min(max(conf, 0.0), 1.0), 2)
+            output[conf_key] = None if output[cm_key] is None else (conf if conf is not None else 0.75)
+
+    if px_per_cm and cal_len_cm:
+        cal_px = cal_len_cm * px_per_cm
+        output["calibration"] = f"{cal_desc} [{cal_len_cm:.1f} cm = {cal_px:.0f} px ({px_per_cm:.1f} px/cm)]".strip()
+    else:
+        output["calibration"] = cal_desc
+
     output["notes"] = _as_text(result.get("notes"))
     output["voucher_text"] = _as_text(result.get("voucher_text"), keep_lines=True)
+
     voucher = result.get("voucher") if isinstance(result.get("voucher"), dict) else {}
     output["voucher"] = {field: _as_text(voucher.get(field)) for field in VOUCHER_FIELDS}
     output["voucher"]["eventDate"] = _clean_date(output["voucher"]["eventDate"])
+    if "_seed_crop_box_px" in result:
+        output["_seed_crop_box_px"] = result["_seed_crop_box_px"]
     return output
+
+
+def save_debug_overlay(image_path, result, out_path, orig_size=None, max_side=1400):
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+
+    try:
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(image_path) as im:
+            orig_w, orig_h = im.size if not orig_size else orig_size
+            canvas = im.copy()
+            canvas.thumbnail((max_side, max_side))
+            canvas = canvas.convert("RGB")
+
+        w, h = canvas.size
+        draw = ImageDraw.Draw(canvas)
+
+        colors = {
+            "calibration": "#00E5FF",     # Cyan
+            "panicle_length": "#FF3D00",  # Red-Orange
+            "leaf_width": "#00E676",      # Bright Green
+            "seed_length": "#FFEA00",     # Yellow
+            "crop_box": "#D500F9",        # Magenta
+        }
+
+        crop_box = result.get("_seed_crop_box_px")
+        if isinstance(crop_box, (list, tuple)) and len(crop_box) == 4 and orig_w and orig_h:
+            x0, y0, cw, ch = crop_box
+            rx0, ry0 = x0 * w / orig_w, y0 * h / orig_h
+            rx1, ry1 = (x0 + cw) * w / orig_w, (y0 + ch) * h / orig_h
+            draw.rectangle((rx0, ry0, rx1, ry1), outline=colors["crop_box"], width=2)
+            draw.text((rx0 + 4, max(2, ry0 - 14)), "Pass 2 Seed Zoom", fill=colors["crop_box"])
+
+        cal_pts = result.get("calibration_points") or []
+        if len(cal_pts) >= 2:
+            px_pts = [(p[0] * w / 1000.0, p[1] * h / 1000.0) for p in cal_pts]
+            draw.line(px_pts, fill=colors["calibration"], width=4)
+            for x, y in px_pts:
+                draw.ellipse((x - 5, y - 5, x + 5, y + 5), fill=colors["calibration"])
+            cal_cm = result.get("calibration_length_cm")
+            draw.text((px_pts[0][0] + 6, max(4, px_pts[0][1] - 16)), f"Cal: {cal_cm} cm", fill=colors["calibration"])
+
+        short_names = {"panicle_length": "Panicle", "leaf_width": "Leaf", "seed_length": "Seed"}
+        for trait in TRAITS:
+            color = colors[trait]
+            for n in (1, 2):
+                pts = result.get(f"{trait}_{n}_points") or []
+                val_cm = result.get(f"{trait}_{n}_cm")
+                if len(pts) >= 2 and val_cm is not None:
+                    px_pts = [(p[0] * w / 1000.0, p[1] * h / 1000.0) for p in pts]
+                    draw.line(px_pts, fill=color, width=3)
+                    for x, y in px_pts:
+                        r = 3 if trait == "seed_length" else 4
+                        draw.ellipse((x - r, y - r, x + r, y + r), fill=color)
+                    lbl = f"{short_names[trait]} {n}: {val_cm:.2f} cm"
+                    draw.text((px_pts[0][0] + 5, px_pts[0][1] - 12), lbl, fill=color)
+
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(out_path, "JPEG", quality=90)
+        return out_path
+    except Exception:
+        return None
 
 
 def _format_number(value):
@@ -230,12 +630,19 @@ class ModelOutputError(ValueError):
         self.raw = raw
 
 
-def save_response(gbif_id, image, raw, error="", responses_dir=RESPONSES_DIR):
+def save_response(gbif_id, image, raw, error, responses_dir):
     responses_dir = Path(responses_dir)
     responses_dir.mkdir(parents=True, exist_ok=True)
     record = {"gbifID": gbif_id, "image": image.name, "saved_at": _now(), "error": error, **raw}
     path = responses_dir / f"{gbif_id}.json"
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    if not error and isinstance(raw.get("normalised"), dict):
+        save_debug_overlay(
+            image,
+            raw["normalised"],
+            responses_dir / f"{gbif_id}_overlay.jpg",
+            orig_size=raw.get("image_size_px"),
+        )
     return path
 
 
@@ -294,16 +701,16 @@ class VisionModel:
         for warning in model_warnings(self.model):
             log(f"Warning: {warning}")
 
-    def _request(self, image_path):
+    def _build_request(self, data_url, system_prompt, user_text, response_format):
         request = {
             "model": self.model["id"],
             "temperature": 0.1,
             "stream": True,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Measure this specimen."},
-                    {"type": "image_url", "image_url": {"url": _image_data_url(image_path)}},
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
                 ]},
             ],
         }
@@ -311,15 +718,14 @@ class VisionModel:
             request["max_tokens"] = int(self.token_limit)
         if self.reasoning_effort:
             request["reasoning_effort"] = self.reasoning_effort
-        if self.structured:
-            request["response_format"] = RESPONSE_FORMAT
+        if self.structured and response_format is not None:
+            request["response_format"] = response_format
         return request
 
-    def measure(self, image_path, control=None, status=None):
-        request = self._request(image_path)
+    def _run_with_fallback(self, request, control, status, stage_label="Thinking"):
         while True:
             try:
-                return self._stream(request, control, status)
+                return self._stream(request, control, status, stage_label=stage_label)
             except BadRequestError as exc:
                 if "reasoning_effort" in request:
                     request.pop("reasoning_effort")
@@ -332,7 +738,85 @@ class VisionModel:
                 else:
                     raise
 
-    def _stream(self, request, control, status):
+    def measure(self, image_path, control=None, status=None):
+        gridded_url, clean_url, orig_size, sheet_span_norm = _prepare_images(image_path)
+
+        # Pass 1A: Botanical Geometry on Gridded Image
+        geom_req = self._build_request(
+            gridded_url,
+            GEOMETRY_PROMPT,
+            "Read the 0..1000 coordinate grid on this image and locate the ruler, panicles, leaf blade widths, and spikelet cluster.",
+            GEOMETRY_RESPONSE_FORMAT,
+        )
+        geom_parsed, model, raw = self._run_with_fallback(
+            geom_req, control, status, stage_label="Pass 1/3 (gridded geometry)"
+        )
+        raw["image_size_px"] = list(orig_size) if orig_size else None
+        raw["detected_sheet_span_norm"] = sheet_span_norm
+
+        # Pass 1B: Voucher OCR on Clean Un-gridded Image
+        try:
+            voucher_req = self._build_request(
+                clean_url,
+                VOUCHER_PROMPT,
+                "Transcribe the specimen voucher label into Darwin Core fields.",
+                VOUCHER_RESPONSE_FORMAT,
+            )
+            voucher_parsed, _, _ = self._run_with_fallback(
+                voucher_req, control, status, stage_label="Pass 2/3 (voucher OCR)"
+            )
+            geom_parsed["voucher_text"] = voucher_parsed.get("voucher_text", "")
+            geom_parsed["voucher"] = voucher_parsed.get("voucher", {})
+        except ItemSkipped:
+            raise
+        except Exception as exc:
+            raw["voucher_ocr_error"] = str(exc)
+
+        # Pass 2: High-res Gridded Seed Zoom Crop (runs on ALL images regardless of size)
+        _, _, px_per_cm, _ = _resolve_scale(geom_parsed, orig_size, sheet_span_norm)
+        if px_per_cm and orig_size:
+            crop_url, crop_box = _crop_seed_roi_gridded(image_path, geom_parsed, orig_size)
+            if crop_url and crop_box:
+                x0, y0, cw, ch = crop_box
+                orig_w, orig_h = orig_size
+                try:
+                    seed_req = self._build_request(
+                        crop_url,
+                        SEED_CROP_PROMPT,
+                        "Read the 0..1000 grid on this zoomed panicle crop and place endpoints on 2 individual oval spikelets (seeds).",
+                        SEED_CROP_RESPONSE_FORMAT,
+                    )
+                    seed_parsed, _, seed_raw = self._run_with_fallback(
+                        seed_req, control, status, stage_label="Pass 3/3 (zoomed seed crop)"
+                    )
+                    raw["seed_crop_pass"] = {
+                        "crop_box_px": list(crop_box),
+                        "parsed": seed_parsed,
+                    }
+                    geom_parsed["_seed_crop_box_px"] = list(crop_box)
+
+                    for n in (1, 2):
+                        c_pts = _clean_points(seed_parsed.get(f"seed_length_{n}_points"))
+                        if len(c_pts) == 2:
+                            global_pts = [
+                                [
+                                    round(((x0 + (p[0] / 1000.0) * cw) / orig_w) * 1000.0, 2),
+                                    round(((y0 + (p[1] / 1000.0) * ch) / orig_h) * 1000.0, 2),
+                                ]
+                                for p in c_pts
+                            ]
+                            geom_parsed[f"seed_length_{n}_points"] = global_pts
+                            geom_parsed[f"seed_length_{n}_confidence"] = seed_parsed.get(f"seed_length_{n}_confidence")
+                except ItemSkipped:
+                    raise
+                except Exception as exc:
+                    raw["seed_crop_error"] = str(exc)
+
+        normalised = _normalise_result(geom_parsed, orig_size=orig_size, sheet_span_norm=sheet_span_norm)
+        raw["normalised"] = normalised
+        return normalised, model, raw
+
+    def _stream(self, request, control, status, stage_label="Thinking"):
         content, reasoning = [], []
         finish_reason, model, tokens, reported = None, self.model["id"], 0, 0
         stream = self.client.chat.completions.create(**request)
@@ -355,7 +839,8 @@ class VisionModel:
                 finish_reason = choice.finish_reason or finish_reason
                 if status and tokens - reported >= 20:
                     reported = tokens
-                    status(f"{'Writing answer' if content else 'Thinking'}, about {tokens} tokens")
+                    phase = "Writing answer" if content else stage_label
+                    status(f"{phase}, about {tokens} tokens")
         finally:
             stream.close()
 
@@ -371,10 +856,10 @@ class VisionModel:
                            "token limit, raise the context length for this model in LM Studio, or set Thinking to "
                            "Low or Off.")
             raise ModelOutputError(message, raw) from exc
-        return _normalise_result(raw["parsed"]), model, raw
+        return raw["parsed"], model, raw
 
 
-def load_measurements(csv_path=MEASUREMENTS_CSV):
+def load_measurements(csv_path):
     csv_path = Path(csv_path)
     if not csv_path.exists():
         return {}
@@ -402,9 +887,9 @@ def _describe(row):
     return ", ".join(parts)
 
 
-def measurement_status(media_dir=MEDIA_DIR, csv_path=MEASUREMENTS_CSV):
+def measurement_status(media_dir, csv_path):
     rows = load_measurements(csv_path)
-    responses_dir = Path(csv_path).parent / RESPONSES_DIR.name
+    responses_dir = Path(csv_path).parent / RESPONSES_DIR_NAME
     items = []
     for gbif_id, image in index_images(media_dir).items():
         row = rows.get(gbif_id)
@@ -430,12 +915,12 @@ def check_connection(base_url=LMSTUDIO_URL):
     return "\n".join(lines)
 
 
-def measure_images(media_dir=MEDIA_DIR, csv_path=MEASUREMENTS_CSV, log=print, control=None, progress=None,
+def measure_images(media_dir, csv_path, log=print, control=None, progress=None,
                    status=None, base_url=LMSTUDIO_URL, token_limit=DEFAULT_TOKEN_LIMIT, reasoning_effort=None,
                    only_ids=None, force=False):
     csv_path = Path(csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    responses_dir = csv_path.parent / RESPONSES_DIR.name
+    responses_dir = csv_path.parent / RESPONSES_DIR_NAME
     images = index_images(media_dir)
     rows = load_measurements(csv_path)
     targets = [(gbif_id, path) for gbif_id, path in images.items() if only_ids is None or gbif_id in only_ids]
@@ -465,7 +950,7 @@ def measure_images(media_dir=MEDIA_DIR, csv_path=MEASUREMENTS_CSV, log=print, co
         started = datetime.now()
         try:
             result, model, raw = vision.measure(image, control, status)
-            save_response(gbif_id, image, raw, responses_dir=responses_dir)
+            save_response(gbif_id, image, raw, "", responses_dir)
             rows[gbif_id] = {"gbifID": gbif_id, **_result_columns(result, model, image)}
             summary["measured"] += 1
             log(f"    Done in {(datetime.now() - started).seconds} s: {_describe(rows[gbif_id])}")
@@ -481,7 +966,7 @@ def measure_images(media_dir=MEDIA_DIR, csv_path=MEASUREMENTS_CSV, log=print, co
                                "Check that the server is running with a vision model loaded.") from exc
         except Exception as exc:
             if isinstance(exc, ModelOutputError):
-                save_response(gbif_id, image, exc.raw, error=str(exc), responses_dir=responses_dir)
+                save_response(gbif_id, image, exc.raw, str(exc), responses_dir)
             previous = rows.get(gbif_id, {})
             rows[gbif_id] = {**previous, "gbifID": gbif_id, "ai_image": image.name, "ai_error": str(exc),
                              "ai_measured_at": _now()}
@@ -513,7 +998,7 @@ def count_matches(master_csv, master_key, measurements_csv, measurement_key):
     return int(master_ids.isin(measured).sum()), len(master_ids), len(measured)
 
 
-def join_measurements(master_csv=MASTER_CSV, measurements_csv=MEASUREMENTS_CSV, log=print, fill_blanks=False,
+def join_measurements(master_csv, measurements_csv, log=print, fill_blanks=False,
                       master_key="gbifID", measurement_key="gbifID", master_columns=None,
                       measurement_columns=None, output_csv=None, matched_only=False):
     master_csv, measurements_csv = Path(master_csv), Path(measurements_csv)

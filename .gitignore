@@ -10,3 +10,11 @@
 /Data_original
 /program/__pycache__
 /program/data
+credentials.json
+settings.json
+site_logins.json
+/browser_profile
+/browsers
+site_logins.json.*
+gbif_account.json
+
