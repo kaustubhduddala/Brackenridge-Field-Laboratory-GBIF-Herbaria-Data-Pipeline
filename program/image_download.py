@@ -1,4 +1,7 @@
-"""Per-site handling for image downloads: saved sign-ins, browser-like retries and site-specific downloaders."""
+"""Download the specimen images listed in a dataset.
+
+Includes per-site handling: saved sign-ins, browser-like retries and site-specific downloaders.
+"""
 import json
 import os
 import re
@@ -8,9 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
+import pandas as pd
 import requests
 
-from config import BROWSER_USER_AGENT, HEADERS, SITE_LOGINS_FILE
+from config import BROWSER_USER_AGENT, HEADERS, IMAGE_EXTENSIONS, SITE_LOGINS_FILE
+from .utils import (ItemSkipped, check, find_media_url, gbif_ids, index_images, is_blank, read_csv,
+                   request_with_backoff, save_csv)
 
 DENIED_STATUSES = (401, 403)
 MODE_REQUESTS, MODE_BROWSER = "requests", "browser"
@@ -25,10 +31,6 @@ _last_request = {}
 _gave_up = set()  # sites the browser could not get past in this run
 BLOCK_MARKERS = re.compile(r"request rejected|just a moment|cf-challenge|captcha|access denied|attention required|"
                            r"verify you are (?:a )?human|please (?:log|sign) ?in", re.IGNORECASE)
-
-
-class ItemSkipped(Exception):
-    pass
 
 
 class AccessDenied(Exception):
@@ -191,8 +193,8 @@ def _has_login(host):
 
 
 def _browser_fetch(url, control, log):
-    from . import site_login  # imported here: site_login imports this module
-    return site_login.browser_fetch(url, control, log)
+    from . import browser_sign_in  # imported here: browser_sign_in imports this module
+    return browser_sign_in.browser_fetch(url, control, log)
 
 
 def fetch(url, stream=False, timeout=30, control=None, log=print):
@@ -218,16 +220,16 @@ def fetch(url, stream=False, timeout=30, control=None, log=print):
 
 
 def _through_browser(url, host, control, log, fallback=False):
-    from . import site_login
+    from . import browser_sign_in  # imported here: browser_sign_in imports this module
     if host in _gave_up:
         raise AccessDenied(url, reason="the browser could not get past this site earlier in the run")
-    if not site_login.available():
-        raise AccessDenied(url, reason="a browser is needed; " + site_login.INSTALL_HINT)
+    if not browser_sign_in.available():
+        raise AccessDenied(url, reason="a browser is needed; " + browser_sign_in.INSTALL_HINT)
     if fallback:
         log(f"    {host} refuses plain requests; trying through the browser")
     throttle(host, MODE_BROWSER, control)
     try:
-        return site_login.browser_fetch(url, control, log)
+        return browser_sign_in.browser_fetch(url, control, log)
     except (AccessDenied, ItemSkipped) as exc:
         if isinstance(exc, AccessDenied):
             _gave_up.add(host)
@@ -309,7 +311,6 @@ def _iiif_image_base(url, control, log):
     resp = _try_get(url, control)
     if resp is None:
         return None
-    from .media import _extract_image_from_json  # imported here: media imports this module
     image = _extract_image_from_json(resp.text, log)
     match = image and IIIF_IMAGE_URL.match(image)
     return match.group("base") if match else None
@@ -377,7 +378,6 @@ def _download_meise(url, stem, log, control):
 
 def _save_image(resp, stem, control=None):
     """Write an image response to <stem>.<extension>. Returns the Path, or None when it is not an image."""
-    from .media import _detect_extension  # imported here: media imports this module
     kind = resp.headers.get("Content-Type", "").lower()
     if not kind.startswith("image/"):
         resp.close()
@@ -537,3 +537,297 @@ def _download_cria(url, stem, log, control):
         resp = _try_get(address, control)
         return resp and _save_image(resp, stem, control)
     return None
+
+
+# --------------------------------------------------------------------------- downloading the images in a dataset
+
+BLOCKED_AFTER = 3  # skip a site for the rest of the run after this many refusals in a row
+FAILING_AFTER = 5  # ...or after this many other failures in a row
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
+
+
+def _has_image_suffix(url):
+    return urlparse(url).path.lower().endswith(IMAGE_SUFFIXES)
+
+
+def _extract_image_from_json(json_text, log=print):
+    try:
+        data = json.loads(json_text)
+    except (json.JSONDecodeError, TypeError) as exc:
+        log(f"    IIIF JSON parse failed: {exc}")
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    candidates = []
+    for canvas in data.get("items", []):
+        for page in canvas.get("items", []):
+            for annotation in page.get("items", []):
+                body = annotation.get("body", {})
+                body = body[0] if isinstance(body, list) and body else body
+                if isinstance(body, dict):
+                    candidates.append(body.get("id") or body.get("@id"))
+    for sequence in data.get("sequences", []):
+        for canvas in sequence.get("canvases", []):
+            for image in canvas.get("images", []):
+                resource = image.get("resource", {})
+                candidates.append(resource.get("@id") or resource.get("id"))
+    candidates += [data.get(key) for key in ("imageUri", "imageUrl", "identifier")]
+    return next((c for c in candidates if isinstance(c, str) and c.startswith("http")), None)
+
+
+def _resolve_image_from_html(resp, page_url, log=print):
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        raise ValueError("HTML page returned; install beautifulsoup4 to find images in web pages")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    meta = (soup.find("meta", property="og:image")
+            or soup.find("meta", attrs={"name": "twitter:image"})
+            or soup.find("link", rel="image_src"))
+    href = meta and (meta.get("content") or meta.get("href"))
+    if href and href.strip():
+        return urljoin(page_url, href.strip())
+
+    manifest = soup.find("link", rel="alternate", type="application/ld+json")
+    if manifest and manifest.get("href"):
+        try:
+            manifest_resp = request_with_backoff(urljoin(page_url, manifest["href"].strip()), log=log)
+            image = _extract_image_from_json(manifest_resp.text, log)
+            if image:
+                return image
+        except Exception as exc:
+            log(f"    IIIF manifest failed: {exc}")
+
+    for tag in soup.find_all("img", src=True):
+        src = urljoin(page_url, tag["src"].strip())
+        if not _has_image_suffix(src):
+            continue
+        try:
+            if int(tag.get("width", 999)) < 100 or int(tag.get("height", 999)) < 100:
+                continue
+        except (TypeError, ValueError):
+            pass
+        return src
+
+    for tag in soup.find_all("a", href=True):
+        link = urljoin(page_url, tag["href"].strip())
+        if _has_image_suffix(link):
+            return link
+    return None
+
+
+def _detect_extension(content_type, url=""):
+    content_type = content_type.lower()
+    for key, ext in (("jpeg", "jpg"), ("jpg", "jpg"), ("png", "png"), ("tif", "tif"), ("gif", "gif"), ("webp", "webp")):
+        if key in content_type:
+            return ext
+    path = urlparse(url).path.lower()
+    for ext in ("jpg", "jpeg", "png", "tif", "tiff", "gif", "webp"):
+        if path.endswith(f".{ext}"):
+            return {"jpeg": "jpg", "tiff": "tif"}.get(ext, ext)
+    return "jpg"
+
+
+def _fetch_image(url, stem, log=print, control=None):
+    special = download_special(url, stem, log, control)
+    if special:
+        return special
+    resp = request_with_backoff(url, log=log, control=control, stream=True)
+    content_type = resp.headers.get("Content-Type", "").lower()
+    if "json" in content_type:
+        image_url = _extract_image_from_json(resp.text, log)
+        if not image_url:
+            raise ValueError("JSON response: no image URL found")
+        log(f"    IIIF image: {image_url[:80]}")
+        resp = request_with_backoff(image_url, log=log, control=control, stream=True)
+    elif "text/html" in content_type:
+        image_url = _resolve_image_from_html(resp, url, log)
+        if not image_url:
+            if looks_blocked(resp.text):
+                raise AccessDenied(url, reason="the site showed a sign-in or verification page")
+            raise ValueError("HTML page has no recognizable image (it may need JavaScript)")
+        log(f"    Image from page: {image_url[:80]}")
+        resp = request_with_backoff(image_url, log=log, control=control, stream=True)
+
+    content_type = resp.headers.get("Content-Type", "").lower()
+    if "text/html" in content_type or "json" in content_type:
+        resp.close()
+        raise ValueError(f"Final response is not an image (Content-Type: {content_type})")
+    path = Path(f"{stem}.{_detect_extension(content_type, resp.url)}")
+    partial = path.with_name(path.name + ".part")
+    try:
+        with resp, open(partial, "wb") as out:
+            for chunk in resp.iter_content(1 << 16):
+                check(control)
+                out.write(chunk)
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
+    return path
+
+
+def _replace_old_versions(path):
+    for old in path.parent.glob(f"{path.stem}.*"):
+        if old != path and old.suffix.lower() in IMAGE_EXTENSIONS:
+            old.unlink(missing_ok=True)
+
+
+def media_status(csv_path, media_dir, log=print):
+    df = read_csv(csv_path, log)
+    ids = gbif_ids(df)
+    images = index_images(media_dir)
+    errors = df["media_error"] if "media_error" in df.columns else pd.Series("", index=df.index)
+    items = {}
+    for idx, gbif_id in ids.items():
+        if not gbif_id or gbif_id in items:
+            continue
+        url = find_media_url(df.loc[idx]) or ""
+        if gbif_id in images:
+            status, detail = "Downloaded", images[gbif_id].name
+        elif not url:
+            status, detail = "No link", ""
+        elif not is_blank(errors[idx]):
+            status, detail = "Failed", str(errors[idx])
+        else:
+            status, detail = "Not downloaded", url
+        items[gbif_id] = {"id": gbif_id, "status": status, "detail": detail, "image": images.get(gbif_id)}
+    return list(items.values())
+
+
+def download_media(csv_path, media_dir, log=print, control=None, progress=None, only_ids=None, force=False):
+    from . import browser_sign_in  # imported here: browser_sign_in imports this module
+
+    new_run()
+    try:
+        return _download_media(csv_path, media_dir, log, control, progress, only_ids, force)
+    finally:
+        browser_sign_in.close_fetcher()
+
+
+def _download_media(csv_path, media_dir, log, control, progress, only_ids, force):
+    csv_path = Path(csv_path)
+    media_dir = Path(media_dir)
+    media_dir.mkdir(parents=True, exist_ok=True)
+    failed_csv = csv_path.with_name(csv_path.stem + "_failed_media.csv")
+
+    df = read_csv(csv_path, log).reset_index(drop=True)
+    df.columns = df.columns.str.strip()
+    for column in ("media_path", "media_error"):
+        df[column] = df[column].astype("object").fillna("") if column in df.columns else ""
+        df[column] = df[column].astype("object")
+    ids = gbif_ids(df)
+    repeat = ids.groupby(ids).cumcount()
+    rows = [idx for idx in df.index if ids[idx] and (only_ids is None or ids[idx] in only_ids)]
+    images = index_images(media_dir)
+
+    summary = {"total": len(rows), "downloaded": 0, "skipped": 0, "skipped_by_user": 0, "failed": 0,
+               "cancelled": False, "blocked": {}, "skipped_sites": {}, "failing": {}}
+    denied_in_a_row = {}
+    failed_in_a_row = {}
+    scope = f"{len(rows)} selected records" if only_ids is not None else f"{len(rows)} records"
+    log(f"Downloading images for {scope} to {media_dir}")
+
+    for number, idx in enumerate(rows, start=1):
+        if control and control.cancelled:
+            summary["cancelled"] = True
+            break
+        if control:
+            control.new_item()
+        if progress:
+            progress(number - 1, len(rows))
+        if number % 25 == 0:
+            save_csv(df, csv_path)
+
+        label = ids[idx] if repeat[idx] == 0 else f"{ids[idx]}_{repeat[idx]}"
+        existing = images.get(label)
+        if existing and not force:
+            df.at[idx, "media_path"] = str(existing)
+            df.at[idx, "media_error"] = ""
+            summary["skipped"] += 1
+            continue
+
+        url = find_media_url(df.loc[idx])
+        if not url:
+            df.at[idx, "media_error"] = "No media link found in row"
+            summary["failed"] += 1
+            continue
+        host = host_of(url)
+        if denied_in_a_row.get(host, 0) >= BLOCKED_AFTER:
+            df.at[idx, "media_error"] = f"Access denied by {host}; skipped after repeated refusals"
+            summary["blocked"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
+        if control and host in control.skipped_hosts:
+            df.at[idx, "media_error"] = f"Site skipped by you: {host}"
+            summary["skipped_sites"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
+        if failed_in_a_row.get(host, 0) >= FAILING_AFTER:
+            df.at[idx, "media_error"] = f"Site {host} skipped after {FAILING_AFTER} failures in a row"
+            summary["failing"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+            continue
+        log(f"[{number}/{len(rows)}] {label}: {url[:80]}")
+        try:
+            path = _fetch_image(url, media_dir / label, log, control)
+            _replace_old_versions(path)
+            df.at[idx, "media_path"] = str(path)
+            df.at[idx, "media_error"] = ""
+            summary["downloaded"] += 1
+            denied_in_a_row.pop(host, None)
+            failed_in_a_row.pop(host, None)
+        except ItemSkipped:
+            if control and control.cancelled:
+                summary["cancelled"] = True
+                break
+            if control and control.skip_site:
+                control.skipped_hosts.add(host)
+                log(f"    Skipped {label} and the rest of {host}")
+                df.at[idx, "media_error"] = f"Site skipped by you: {host}"
+                summary["skipped_sites"].setdefault(host, []).append(ids[idx])
+                summary["failed"] += 1
+            else:
+                log(f"    Skipped {label}")
+                summary["skipped_by_user"] += 1
+        except AccessDenied as exc:
+            log(f"    Failed: {exc}")
+            df.at[idx, "media_error"] = str(exc)
+            if host not in denied_in_a_row:
+                note_refused(host)
+            denied_in_a_row[host] = denied_in_a_row.get(host, 0) + 1
+            summary["blocked"].setdefault(host, []).append(ids[idx])
+            summary["failed"] += 1
+        except Exception as exc:
+            log(f"    Failed: {exc}")
+            df.at[idx, "media_error"] = str(exc)
+            summary["failed"] += 1
+            failed_in_a_row[host] = failed_in_a_row.get(host, 0) + 1
+            if failed_in_a_row[host] == FAILING_AFTER:
+                log(f"    {host} failed {FAILING_AFTER} times in a row; skipping it for the rest of this run")
+                summary["failing"].setdefault(host, []).append(ids[idx])
+
+    save_csv(df, csv_path)
+    failed = df[df["media_error"].astype(str).str.strip() != ""]
+    if len(failed):
+        save_csv(failed, failed_csv)
+        log(f"{len(failed)} records without an image are listed in {failed_csv}")
+    elif failed_csv.exists():
+        failed_csv.unlink()
+
+    if summary["cancelled"]:
+        log("Image download cancelled")
+    elif progress:
+        progress(len(rows), len(rows))
+    for host, skipped_ids in summary["skipped_sites"].items():
+        note_refused(host, "skipped by you")
+        log(f"{host} was skipped by you for {len(skipped_ids)} images. It is listed under Images, Site logins.")
+    for host, failing_ids in summary["failing"].items():
+        note_refused(host, f"failed {FAILING_AFTER} times in a row")
+        log(f"{host} kept failing and was skipped ({len(failing_ids)} images). It is listed under Images, Site logins.")
+    for host, blocked_ids in summary["blocked"].items():
+        log(f"{host} refused access for {len(blocked_ids)} images. Use Images, Site logins to sign in, then retry.")
+    log(f"Image download complete: {summary['downloaded']} downloaded, {summary['skipped']} already present, "
+        f"{summary['skipped_by_user']} skipped by you, {summary['failed']} failed")
+    return summary

@@ -8,8 +8,8 @@ from pathlib import Path
 import pandas as pd
 
 from config import MEASUREMENT_COLUMNS
-from .analysis import TRAIT_BOUNDS_CM, TRAITS, load_measurements
-from .measure import measure_images
+from .measurements_csv import TRAIT_BOUNDS_CM, TRAITS, load_measurements
+from .sheet_measurement import measure_images
 from .utils import index_images, is_blank, save_csv
 
 REFERENCE_COLUMNS = dict(zip(TRAITS, MEASUREMENT_COLUMNS))

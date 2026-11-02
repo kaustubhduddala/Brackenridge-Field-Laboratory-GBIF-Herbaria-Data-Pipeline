@@ -1,13 +1,13 @@
 """The measurements CSV: its columns, reading and writing it, and joining it into the dataset.
 
-Measuring itself is done by measure.py (per-sheet pipeline in pipeline.py).
+Measuring itself is done by sheet_measurement.py.
 """
 from pathlib import Path
 
 import pandas as pd
 
 from config import RESPONSES_DIR_NAME
-from .providers import check_connection as provider_check_connection
+from .vision_providers import check_connection as provider_check_connection
 from .utils import index_images, is_blank, read_csv, save_csv
 
 TRAITS = ("panicle_length", "leaf_width", "seed_length")

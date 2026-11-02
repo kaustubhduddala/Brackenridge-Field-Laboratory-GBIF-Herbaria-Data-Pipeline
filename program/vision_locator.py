@@ -1,6 +1,6 @@
 """Ask a vision model WHERE things are on a herbarium sheet. It never measures anything.
 
-The model answers with points and boxes; plant.py and calibration.py then measure from the
+The model answers with points and boxes; plant_geometry.py and scale_calibration.py then measure from the
 pixels. Points use named x/y fields so models cannot mix up the axis order, and each provider's
 coordinate convention is converted back to full-resolution pixels here.
 """
@@ -159,7 +159,7 @@ class Locator:
     def __init__(self, client, use_references=False, seed_mode="points"):
         self.client = client
         self.use_references = use_references
-        self.seed_mode = seed_mode          # "points" (base/tip) or "boxes" (box, then axis found by plant.py)
+        self.seed_mode = seed_mode          # "points" (base/tip) or "boxes" (box, then axis found by plant_geometry.py)
         self.convention = COORDINATES.get(client.provider, "norm1000")
 
     def _prepare(self, image, crop=None):

@@ -16,22 +16,22 @@ from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA
                     password_store_name, remove_ai_api_key, remove_gbif_account, save_ai_api_key, save_gbif_account,
                     save_settings, saved_gbif_account, saved_gbif_password)
 
-from . import site_login, sites, theme
-from .analysis import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
-                       measurement_status)
+from . import browser_sign_in, image_download
 from .analysis_tab import AnalysisTab
-from .csv_source import CsvSource
-from .gbif import check_gbif_login, download_dataset
-from .measure import measure_images
-from .media import download_media, media_status
-from .processor import REQUIRED_COLUMNS, available_columns, run_cleaning
-from .power import KeepAwake
-from .providers import DEFAULT_PROVIDER, PROVIDERS, describe_key, list_models, settings_from_app
+from .dataset_cleaning import REQUIRED_COLUMNS, available_columns, run_cleaning
+from .download_folders import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_by_name,
+                               workspace_of)
+from .gbif_download import check_gbif_login, download_dataset
+from .gui_widgets import (CSV_TYPES, THEME_CHOICES, ColumnChecklist, CsvSource, PathCombo, ScrollFrame, _check_image,
+                          _set_entry, _set_text, apply_theme, resolve_theme, set_title_bar, style_text)
+from .image_download import download_media, media_status
+from .keep_awake import KeepAwake
+from .measurements_csv import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
+                               measurement_status)
 from .modify_tab import ModifyTab
+from .sheet_measurement import measure_images
 from .utils import TaskControl, find_dwca_files, open_path, scan_issues
-from .widgets import CSV_TYPES, ColumnChecklist, PathCombo, ScrollFrame, _check_image, _set_entry, _set_text
-from .workspace import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_by_name,
-                        workspace_of)
+from .vision_providers import DEFAULT_PROVIDER, PROVIDERS, describe_key, list_models, settings_from_app
 
 ISSUE_ACTIONS = ("Remove", "Inspect", "Nothing")
 DEFAULT_PRESET = "Default"
@@ -101,7 +101,7 @@ class IssueFilterDialog(tk.Toplevel):
         self.minsize(560, 400)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
-        theme.set_title_bar(self, app.theme_name == "dark")
+        set_title_bar(self, app.theme_name == "dark")
         self.result = None
         self.counts = counts
         self.default = default
@@ -195,7 +195,7 @@ class ColumnPickerDialog(tk.Toplevel):
         self.minsize(420, 400)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
-        theme.set_title_bar(self, app.theme_name == "dark")
+        set_title_bar(self, app.theme_name == "dark")
         self.result = None
         self.saved = False
         self.columns = columns
@@ -285,7 +285,7 @@ class ItemPicker(tk.Toplevel):
         self.minsize(720, 460)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
-        theme.set_title_bar(self, app.theme_name == "dark")
+        set_title_bar(self, app.theme_name == "dark")
         self.app = app
         self.items = {item["id"]: item for item in items}
         self.checked = set()
@@ -344,7 +344,7 @@ class ItemPicker(tk.Toplevel):
         ttk.Label(paste, text="Paste gbifIDs separated by commas, spaces or new lines").grid(
             row=0, column=0, sticky="w", pady=(0, 4))
         self.paste_text = tk.Text(paste, height=3, wrap="word", font=app.fonts["mono"], padx=8, pady=6)
-        theme.style_text(self.paste_text, app.palette)
+        style_text(self.paste_text, app.palette)
         self.paste_text.grid(row=1, column=0, sticky="ew")
         ttk.Button(paste, text="Check these", command=self._check_pasted).grid(row=1, column=1, sticky="n", padx=(8, 0))
 
@@ -487,7 +487,7 @@ class JoinDialog(tk.Toplevel):
         self.minsize(760, 520)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
-        theme.set_title_bar(self, app.theme_name == "dark")
+        set_title_bar(self, app.theme_name == "dark")
         self.app = app
         self.dataset_csv, self.measurements_csv = dataset_csv, measurements_csv
         self.result = None
@@ -603,7 +603,7 @@ class SiteLoginDialog(tk.Toplevel):
         self.minsize(520, 380)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
-        theme.set_title_bar(self, app.theme_name == "dark")
+        set_title_bar(self, app.theme_name == "dark")
         self.app = app
         self.retry_ids = None
         self.done = None
@@ -631,13 +631,13 @@ class SiteLoginDialog(tk.Toplevel):
         prefs = ttk.LabelFrame(body, text="When a site refuses a download")
         prefs.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         prefs.columnconfigure(1, weight=1)
-        current = sites.PREFS
-        labels = {v: k for k, v in sites.STRATEGIES.items()}
-        self.strategy_var = tk.StringVar(value=labels.get(current["strategy"], next(iter(sites.STRATEGIES))))
+        current = image_download.PREFS
+        labels = {v: k for k, v in image_download.STRATEGIES.items()}
+        self.strategy_var = tk.StringVar(value=labels.get(current["strategy"], next(iter(image_download.STRATEGIES))))
         self.wait_var = tk.StringVar(value=str(int(current["challenge_wait"] // 60)))
         self.delay_var = tk.StringVar(value=str(current["browser_delay"]))
         ttk.Label(prefs, text="Method").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        box = ttk.Combobox(prefs, textvariable=self.strategy_var, values=list(sites.STRATEGIES), state="readonly")
+        box = ttk.Combobox(prefs, textvariable=self.strategy_var, values=list(image_download.STRATEGIES), state="readonly")
         box.grid(row=0, column=1, columnspan=3, sticky="ew", pady=2)
         box.bind("<<ComboboxSelected>>", lambda _: self._save_prefs())
         ttk.Label(prefs, text="Minutes to wait for you to pass a check").grid(row=1, column=0, sticky="w", padx=(0, 8))
@@ -658,8 +658,8 @@ class SiteLoginDialog(tk.Toplevel):
                                       command=self._finish, state="disabled")
         self.done_button.pack(side="left")
         ttk.Button(footer, text="Close", command=self.destroy).pack(side="right")
-        if not site_login.available():
-            self._say("Browser sign-in needs Playwright. " + site_login.INSTALL_HINT, "error")
+        if not browser_sign_in.available():
+            self._say("Browser sign-in needs Playwright. " + browser_sign_in.INSTALL_HINT, "error")
         self._render()
         _finish_dialog(self)
 
@@ -669,7 +669,7 @@ class SiteLoginDialog(tk.Toplevel):
             delay = max(float(self.delay_var.get()), 0.0)
         except ValueError:
             return
-        self.app._set_site_prefs({"strategy": sites.STRATEGIES[self.strategy_var.get()],
+        self.app._set_site_prefs({"strategy": image_download.STRATEGIES[self.strategy_var.get()],
                                   "challenge_wait": wait, "browser_delay": delay})
 
     def _say(self, text, kind="muted"):
@@ -679,9 +679,9 @@ class SiteLoginDialog(tk.Toplevel):
         for child in self.list_frame.winfo_children():
             child.destroy()
         self.mode_vars = []
-        saved = sites.saved_hosts()
-        refused = sites.known_sites()
-        reasons = sites.site_reasons()
+        saved = image_download.saved_hosts()
+        refused = image_download.known_sites()
+        reasons = image_download.site_reasons()
         row = 0
         if refused:
             ttk.Label(self.list_frame, text="Sites that refused access, failed repeatedly, or were skipped", style="Heading.TLabel").grid(
@@ -689,7 +689,7 @@ class SiteLoginDialog(tk.Toplevel):
             row += 1
             for host in sorted(refused):
                 ids = self.app._refused_ids(host)
-                signed_in = any(sites._domain_matches(host, h) or sites._domain_matches(h, host) for h in saved)
+                signed_in = any(image_download._domain_matches(host, h) or image_download._domain_matches(h, host) for h in saved)
                 reason = reasons.get(host)
                 ttk.Label(self.list_frame, text=f"{host}   {len(ids)} images waiting"
                           + (f"   ({reason})" if reason else "")
@@ -711,16 +711,16 @@ class SiteLoginDialog(tk.Toplevel):
                 row=row, column=1, padx=6, pady=2)
             ttk.Button(self.list_frame, text="Forget", command=lambda h=host: self._forget(h)).grid(
                 row=row, column=2, pady=2)
-            mode = tk.BooleanVar(value=sites.site_mode(host) == sites.MODE_BROWSER)
+            mode = tk.BooleanVar(value=image_download.site_mode(host) == image_download.MODE_BROWSER)
             self.mode_vars.append(mode)
             ttk.Checkbutton(self.list_frame, text="Download through the browser", variable=mode,
-                            command=lambda h=host, v=mode: sites.set_site_mode(
-                                h, sites.MODE_BROWSER if v.get() else sites.MODE_REQUESTS)).grid(
+                            command=lambda h=host, v=mode: image_download.set_site_mode(
+                                h, image_download.MODE_BROWSER if v.get() else image_download.MODE_REQUESTS)).grid(
                 row=row, column=3, padx=(10, 0))
             row += 1
 
     def _forget(self, host):
-        sites.forget_login(host)
+        image_download.forget_login(host)
         self._render()
 
     def _retry(self, ids):
@@ -734,8 +734,8 @@ class SiteLoginDialog(tk.Toplevel):
             return
         if self.signing_in:
             return
-        if not site_login.available():
-            self._say("Browser sign-in needs Playwright. " + site_login.INSTALL_HINT, "error")
+        if not browser_sign_in.available():
+            self._say("Browser sign-in needs Playwright. " + browser_sign_in.INSTALL_HINT, "error")
             return
         self.signing_in = True
         self.done = threading.Event()
@@ -745,9 +745,9 @@ class SiteLoginDialog(tk.Toplevel):
 
         def work():
             try:
-                host = site_login.sign_in(url, done, self.app._log)
+                host = browser_sign_in.sign_in(url, done, self.app._log)
                 result = (True, f"Saved the sign-in for {host}. You can retry its images now.")
-            except site_login.BrowserMissing as exc:
+            except browser_sign_in.BrowserMissing as exc:
                 message = str(exc)
                 self.after(0, lambda: self._offer_browser(url, message))
                 return
@@ -768,7 +768,7 @@ class SiteLoginDialog(tk.Toplevel):
 
             def work():
                 try:
-                    site_login.install_chromium(self.app._log)
+                    browser_sign_in.install_chromium(self.app._log)
                     error = None
                 except Exception as exc:
                     error = str(exc)
@@ -808,7 +808,7 @@ class AccountDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
-        theme.set_title_bar(self, app.theme_name == "dark")
+        set_title_bar(self, app.theme_name == "dark")
         self.app = app
         self.saved = False
         account = saved_gbif_account()
@@ -940,7 +940,7 @@ class ApiKeyDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
-        theme.set_title_bar(self, app.theme_name == "dark")
+        set_title_bar(self, app.theme_name == "dark")
         self.app, self.provider = app, provider
 
         body = ttk.Frame(self, padding=18)
@@ -1051,7 +1051,7 @@ class PipelineApp:
         self.settings.setdefault("column_presets", {})
         self.progress_started = None
         self.workspace = None
-        sites.configure(**self.settings.get("site_prefs", {}))
+        image_download.configure(**self.settings.get("site_prefs", {}))
         self.restyle_hooks = []
         self.idle_callbacks = []
 
@@ -1100,8 +1100,8 @@ class PipelineApp:
         self.fonts["mono"].configure(size=9)
 
     def _apply_theme(self):
-        self.theme_name = theme.resolve(self.theme_var.get())
-        self.palette = theme.apply_theme(self.root, self.theme_name, self.fonts)
+        self.theme_name = resolve_theme(self.theme_var.get())
+        self.palette = apply_theme(self.root, self.theme_name, self.fonts)
 
     def _change_theme(self, _event=None):
         self._apply_theme()
@@ -1110,7 +1110,7 @@ class PipelineApp:
 
     def _restyle_widgets(self):
         for widget in self.text_widgets:
-            theme.style_text(widget, self.palette)
+            style_text(widget, self.palette)
         self.console.tag_configure("error", foreground=self.palette["error"])
         self.console.tag_configure("ok", foreground=self.palette["ok"])
         for label, kind in self.status_kinds.items():
@@ -1145,7 +1145,7 @@ class PipelineApp:
         menubar.add_cascade(label="File", menu=file_menu)
 
         view_menu = tk.Menu(menubar, tearoff=False)
-        for choice in theme.THEME_CHOICES:
+        for choice in THEME_CHOICES:
             view_menu.add_radiobutton(label=f"{choice} theme", value=choice, variable=self.theme_var,
                                       command=self._change_theme)
         view_menu.add_separator()
@@ -1203,7 +1203,7 @@ class PipelineApp:
             awake.configure(state="disabled")
             self.keep_awake_var.set(False)
         ttk.Label(picker, text="Theme", style="Muted.TLabel").pack(side="left", padx=(0, 6))
-        combo = ttk.Combobox(picker, textvariable=self.theme_var, values=theme.THEME_CHOICES,
+        combo = ttk.Combobox(picker, textvariable=self.theme_var, values=THEME_CHOICES,
                              state="readonly", width=8)
         combo.pack(side="left")
         combo.bind("<<ComboboxSelected>>", self._change_theme)
@@ -1920,7 +1920,7 @@ class PipelineApp:
 
     def _set_site_prefs(self, prefs):
         self.settings["site_prefs"] = prefs
-        sites.configure(**prefs)
+        image_download.configure(**prefs)
         save_settings(self.settings)
 
     def _refused_ids(self, host):

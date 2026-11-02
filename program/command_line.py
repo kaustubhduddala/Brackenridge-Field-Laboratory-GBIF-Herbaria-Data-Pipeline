@@ -2,13 +2,13 @@ import re
 import sys
 from pathlib import Path
 
-from .analysis import join_measurements
+from .measurements_csv import join_measurements
 from config import PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, load_settings
-from .gbif import download_dataset
-from .measure import measure_images
-from .media import download_media
-from .processor import phase_1_clean_and_merge, phase_2_finalize_dataset, phase_3_select_columns, run_cleaning
-from .workspace import list_workspaces, resolve_input, workspace_by_name, workspace_of
+from .gbif_download import download_dataset
+from .sheet_measurement import measure_images
+from .image_download import download_media
+from .dataset_cleaning import phase_1_clean_and_merge, phase_2_finalize_dataset, phase_3_select_columns, run_cleaning
+from .download_folders import list_workspaces, resolve_input, workspace_by_name, workspace_of
 
 
 def _ask(prompt, default=""):
@@ -182,7 +182,7 @@ def _positional(args, value_options=()):
 
 def _model_settings(args):
     """The provider and model saved in the app, overridden by --provider and --model."""
-    from .providers import settings_from_app
+    from .vision_providers import settings_from_app
 
     return settings_from_app(load_settings(), _option(args, "--provider"), _option(args, "--model"))
 
@@ -200,7 +200,7 @@ def measure_command(args):
 
 
 def benchmark_command(args):
-    from .benchmark import BENCHMARK_DIR_NAME, run_benchmark
+    from .accuracy_benchmark import BENCHMARK_DIR_NAME, run_benchmark
 
     positional = _positional(args, ("--measurements", "--ids", "--download", "--label", "--key", *MODEL_OPTIONS))
     if not positional:

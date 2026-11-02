@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from .modify import blank_mask
+from .csv_editing import blank_mask
 
 NUMERIC_SHARE = 0.9
 PROFILE_COLUMNS = ["column", "type", "filled", "filled %", "blank", "unique", "min", "max", "mean", "median"]

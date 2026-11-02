@@ -3,10 +3,10 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import modify
-from .csv_source import CsvPicker
+from . import csv_editing
+from .gui_widgets import CsvPicker
 from .utils import save_csv
-from .widgets import CSV_TYPES, ColumnChecklist, DataTable, ScrollFrame, _check_image, _set_entry
+from .gui_widgets import CSV_TYPES, ColumnChecklist, DataTable, ScrollFrame, _check_image, _set_entry
 
 ALL_COLUMNS = "(all columns)"
 
@@ -65,7 +65,7 @@ class OutputBar(ttk.LabelFrame):
             if not path:
                 raise ValueError("Enter a file name for the result.")
             return Path(path)
-        return modify.unique_output(source, suffix)
+        return csv_editing.unique_output(source, suffix)
 
 
 class ColumnEditor(ttk.Frame):
@@ -300,7 +300,7 @@ class ModifyTab(ttk.Frame):
             finally:
                 self.app.root.configure(cursor="")
         if self.df is not None:
-            backups = len(modify.list_backups(path))
+            backups = len(csv_editing.list_backups(path))
             self.picker.set_info(f"{len(self.df):,} rows, {len(self.df.columns)} columns"
                                  + (f"; {backups} earlier version{'s' if backups != 1 else ''} can be restored"
                                     if backups else ""))
@@ -311,7 +311,7 @@ class ModifyTab(ttk.Frame):
 
     def _fill_pages(self):
         columns = self._columns()
-        filled = modify.filled_counts(self.df) if self.df is not None else {}
+        filled = csv_editing.filled_counts(self.df) if self.df is not None else {}
         self.editor.load(columns, len(self.df) if self.df is not None else 0, filled)
         self.removed_key.configure(values=columns)
         self.removed_key.set("gbifID" if "gbifID" in columns else (columns[0] if columns else ""))
@@ -349,12 +349,12 @@ class ModifyTab(ttk.Frame):
 
         def work():
             table, summary, side_files = build()
-            out, note = modify.write_result(table, source_path, target)
+            out, note = csv_editing.write_result(table, source_path, target)
             self.app._log(f"{summary}\n  Saved {len(table):,} rows and {len(table.columns)} columns to {out}"
                           + (f" ({note})" if note else ""))
             for rows, name in side_files:
                 if len(rows):
-                    side = modify.default_output(out, name)
+                    side = csv_editing.default_output(out, name)
                     save_csv(rows, side)
                     self.app._log(f"  Saved {len(rows):,} rows to {side}")
             self.source.forget(out)
@@ -371,7 +371,7 @@ class ModifyTab(ttk.Frame):
             return
         if self.app.running:
             return
-        backups = modify.list_backups(path)
+        backups = csv_editing.list_backups(path)
         if not backups:
             messagebox.showinfo("Undo", f"{Path(path).name} has no earlier version. Versions are kept when a change "
                                         "replaces the original file.", parent=self.app.root)
@@ -381,7 +381,7 @@ class ModifyTab(ttk.Frame):
                                    parent=self.app.root):
             return
         try:
-            name = modify.restore_latest(path)
+            name = csv_editing.restore_latest(path)
         except Exception as exc:
             messagebox.showerror("Undo", str(exc), parent=self.app.root)
             return
@@ -418,7 +418,7 @@ class ModifyTab(ttk.Frame):
         df, key, save_removed = self.df, self.removed_key.get(), self.save_removed_var.get()
 
         def build():
-            table = modify.select_columns(df, kept, renames)
+            table = csv_editing.select_columns(df, kept, renames)
             side = []
             if save_removed and removed:
                 cols = ([key] if key and key not in removed and key in df.columns else []) + removed
@@ -455,12 +455,12 @@ class ModifyTab(ttk.Frame):
         options = ttk.Frame(body)
         options.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         options.columnconfigure(1, weight=1)
-        self.join_type = _combo(options, modify.JOIN_TYPES, width=46)
-        self.join_type.set(next(iter(modify.JOIN_TYPES)))
-        self.conflict = _combo(options, modify.CONFLICT_CHOICES, width=46)
-        self.conflict.set(next(iter(modify.CONFLICT_CHOICES)))
-        self.duplicates = _combo(options, modify.DUPLICATE_CHOICES, width=46)
-        self.duplicates.set(next(iter(modify.DUPLICATE_CHOICES)))
+        self.join_type = _combo(options, csv_editing.JOIN_TYPES, width=46)
+        self.join_type.set(next(iter(csv_editing.JOIN_TYPES)))
+        self.conflict = _combo(options, csv_editing.CONFLICT_CHOICES, width=46)
+        self.conflict.set(next(iter(csv_editing.CONFLICT_CHOICES)))
+        self.duplicates = _combo(options, csv_editing.DUPLICATE_CHOICES, width=46)
+        self.duplicates.set(next(iter(csv_editing.DUPLICATE_CHOICES)))
         for row, (text, box) in enumerate((("Rows to keep", self.join_type), ("A column is in both files", self.conflict),
                                            ("File B has several rows per match", self.duplicates))):
             ttk.Label(options, text=text).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=2)
@@ -517,7 +517,7 @@ class ModifyTab(ttk.Frame):
         if self.list_a is None:
             return
         try:
-            matched, total, keys = modify.count_matches(self.df, self.list_a.key_var.get(), self.df_b,
+            matched, total, keys = csv_editing.count_matches(self.df, self.list_a.key_var.get(), self.df_b,
                                                         self.list_b.key_var.get(), self.loose_var.get())
             self.match_label.configure(text=f"{matched:,} of {total:,} rows in A match one of {keys:,} keys in B")
         except Exception as exc:
@@ -531,13 +531,13 @@ class ModifyTab(ttk.Frame):
             return
         a, b = self.df, self.df_b
         lk, rk = self.list_a.key_var.get(), self.list_b.key_var.get()
-        params = dict(how=modify.JOIN_TYPES[self.join_type.get()], left_columns=self.list_a.selected(),
-                      right_columns=self.list_b.selected(), conflict=modify.CONFLICT_CHOICES[self.conflict.get()],
-                      duplicates=modify.DUPLICATE_CHOICES[self.duplicates.get()], loose=self.loose_var.get())
+        params = dict(how=csv_editing.JOIN_TYPES[self.join_type.get()], left_columns=self.list_a.selected(),
+                      right_columns=self.list_b.selected(), conflict=csv_editing.CONFLICT_CHOICES[self.conflict.get()],
+                      duplicates=csv_editing.DUPLICATE_CHOICES[self.duplicates.get()], loose=self.loose_var.get())
         names = (Path(self.source.path()).name, Path(self.b_var.get()).name)
 
         def build():
-            table, info = modify.join_tables(a, b, lk, rk, **params)
+            table, info = csv_editing.join_tables(a, b, lk, rk, **params)
             summary = (f"Joined {names[0]} with {names[1]} on {lk} = {rk}: {info['matched']:,} of "
                        f"{info['left_rows']:,} rows in A matched")
             if info["shared"] and params["conflict"] != "both":
@@ -560,8 +560,8 @@ class ModifyTab(ttk.Frame):
         box.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 8))
         box.columnconfigure(1, weight=1)
         self.filter_column = _combo(box, [], width=24)
-        self.filter_op = _combo(box, modify.FILTER_OPS, width=24)
-        self.filter_op.set(modify.FILTER_OPS[0])
+        self.filter_op = _combo(box, csv_editing.FILTER_OPS, width=24)
+        self.filter_op.set(csv_editing.FILTER_OPS[0])
         self.filter_value = ttk.Entry(box)
         for row, (text, widget) in enumerate((("Column", self.filter_column), ("Condition", self.filter_op),
                                               ("Value", self.filter_value))):
@@ -663,14 +663,14 @@ class ModifyTab(ttk.Frame):
         column, op, value = self.filter_column.get(), self.filter_op.get(), self.filter_value.get()
         keep, case, save_rest, df = self.filter_keep.get() == "keep", self.filter_case.get(), \
             self.filter_save.get(), self.df
-        if op not in modify.NO_VALUE_OPS and not value.strip():
+        if op not in csv_editing.NO_VALUE_OPS and not value.strip():
             messagebox.showwarning("Filter rows", "Enter a value to compare with.", parent=self.app.root)
             return
 
         def build():
-            kept, rest = modify.filter_rows(df, column, op, value, keep, case)
+            kept, rest = csv_editing.filter_rows(df, column, op, value, keep, case)
             summary = (f"Filter {'kept' if keep else 'removed'} rows where {column} {op}"
-                       f"{'' if op in modify.NO_VALUE_OPS else ' ' + value}: {len(kept):,} rows left, "
+                       f"{'' if op in csv_editing.NO_VALUE_OPS else ' ' + value}: {len(kept):,} rows left, "
                        f"{len(rest):,} left out")
             return kept, summary, [(rest, "left_out")] if save_rest else []
 
@@ -683,7 +683,7 @@ class ModifyTab(ttk.Frame):
         keep, save, df = self.dup_keep.get(), self.dup_save.get(), self.df
 
         def build():
-            unique, duplicates = modify.drop_duplicates(df, subset, keep)
+            unique, duplicates = csv_editing.drop_duplicates(df, subset, keep)
             on = ", ".join(subset) if subset else "all columns"
             return unique, f"Removed {len(duplicates):,} duplicate rows (compared on {on})", \
                 [(duplicates, "duplicates")] if save else []
@@ -702,7 +702,7 @@ class ModifyTab(ttk.Frame):
             return
 
         def build():
-            table, changed = modify.replace_values(df, columns, find, with_, **options)
+            table, changed = csv_editing.replace_values(df, columns, find, with_, **options)
             return table, f"Replaced {find!r} with {with_!r} in {changed:,} cells of {column}", []
 
         self._run(self.replace_status, "Replacing…", "replaced", build)
@@ -713,7 +713,7 @@ class ModifyTab(ttk.Frame):
         column, desc, numeric, df = self.sort_column.get(), self.sort_desc.get(), self.sort_numbers.get(), self.df
 
         def build():
-            return modify.sort_rows(df, column, desc, numeric), f"Sorted by {column}" + (
+            return csv_editing.sort_rows(df, column, desc, numeric), f"Sorted by {column}" + (
                 " (largest first)" if desc else ""), []
 
         self._run(self.sort_status, "Sorting…", "sorted", build)
@@ -725,7 +725,7 @@ class ModifyTab(ttk.Frame):
         df = self.df
 
         def build():
-            table, notes = modify.tidy(df, flags["empty_columns"], flags["empty_rows"], flags["trim"])
+            table, notes = csv_editing.tidy(df, flags["empty_columns"], flags["empty_rows"], flags["trim"])
             dropped = notes.get("columns_dropped", [])
             summary = f"Tidied up: {len(dropped)} empty columns and {notes.get('rows_dropped', 0):,} empty rows removed"
             if dropped:
@@ -795,10 +795,10 @@ class ModifyTab(ttk.Frame):
 
         def build():
             tables = [(Path(p).name, source.table(p)) for p in paths]
-            table = modify.combine(tables, "source_file" if add_source else None)
+            table = csv_editing.combine(tables, "source_file" if add_source else None)
             summary = f"Combined {len(paths)} files into {len(table):,} rows"
             if dedupe:
-                table, removed = modify.drop_duplicates(table)
+                table, removed = csv_editing.drop_duplicates(table)
                 summary += f"; removed {len(removed):,} identical rows"
             return table, summary, []
 

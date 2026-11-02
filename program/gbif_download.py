@@ -8,7 +8,7 @@ from pygbif import occurrences
 
 from config import BASE_FILTERS, HEADERS, PRESETS, gbif_credentials
 from .utils import extract_archive
-from .workspace import create_workspace, species_for_download, species_from_occurrences
+from .download_folders import create_workspace, species_for_download, species_from_occurrences
 
 
 def resolve_species(scientific_name, log=print):

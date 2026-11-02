@@ -49,9 +49,13 @@ build.py
 requirements.txt
 program/
     __init__.py
-    analysis.py  analysis_tab.py  cli.py  csv_source.py  gbif.py  geo.py
-    gui.py  media.py  modify.py  modify_tab.py  power.py  processor.py
-    stats.py  theme.py  utils.py  widgets.py  workspace.py
+    accuracy_benchmark.py  analysis_tab.py  app_window.py  browser_sign_in.py
+    command_line.py  csv_editing.py  csv_statistics.py  dataset_cleaning.py
+    download_folders.py  gbif_download.py  gui_widgets.py  image_download.py
+    keep_awake.py  measurements_csv.py  modify_tab.py  plant_geometry.py
+    scale_calibration.py  sheet_measurement.py  utils.py  vision_locator.py
+    vision_providers.py
+    reference/  (example figures from the lab protocol)
 .github/workflows/release.yml
 ```
 
@@ -351,7 +355,7 @@ is not installed the app offers to download it (about 150 MB) into
 `browsers/` next to your data, so it survives app updates.
 
 Sites that need their own download method have a branch in
-`download_special()` in `program/sites.py`; return the saved file's path
+`download_special()` in `program/image_download.py`; return the saved file's path
 from a branch to take over the download for that site, or `None` to fall
 back to the general downloader. To add a site, add an `if` on the host
 and a handler next to the others (`_try_get()` makes one plain request,
@@ -632,7 +636,7 @@ Most settings are in `config.py`:
 
 | Setting | Purpose |
 |---|---|
-| `DATA_DIR` | Where the download folders are kept. The file names inside a download folder are defined in `program/workspace.py` |
+| `DATA_DIR` | Where the download folders are kept. The file names inside a download folder are defined in `program/download_folders.py` |
 | `LMSTUDIO_URL` | Default model server address |
 | `DEFAULT_TOKEN_LIMIT` | Default token limit per image |
 | `MIN_CONTEXT_LENGTH` | Context length below which Test connection warns |
@@ -646,8 +650,8 @@ Environment variables: `GBIF_USER`, `GBIF_PASSWORD`, `GBIF_EMAIL`
 `LMSTUDIO_URL`, and `LMSTUDIO_MODEL`. Set `LMSTUDIO_MODEL` only to force
 a specific model, for example with a server other than LM Studio.
 
-The measurement prompt and the answer format are in `analysis.py`
-(`SYSTEM_PROMPT` and `RESPONSE_SCHEMA`).
+The prompts and answer formats for the vision model are in
+`program/vision_locator.py` (`SYSTEM` and the `*_SCHEMA` constants).
 
 ## 10. Project layout
 
@@ -659,23 +663,25 @@ them in this list, so there are no circular imports.
 |---|---|
 | `config.py` | Paths, GBIF account storage, presets, constants, saved settings |
 | `program/utils.py` | CSV, URL, HTTP and file helpers; skip and cancel control |
-| `program/geo.py` | Coordinate cleaning tests |
-| `program/workspace.py` | The per-download data folders |
-| `program/gbif.py` | GBIF species lookup and dataset downloads |
-| `program/processor.py` | Phase 1 and phase 2 |
-| `program/media.py` | Image downloading |
-| `program/sites.py` | Saved site sign-ins, browser-like retries, site-specific downloaders |
-| `program/site_login.py` | The browser window used to sign in to a site |
-| `program/analysis.py` | Model requests, measurements CSV and join |
-| `program/modify.py` | Editing any CSV: columns, joins, rows, combining, backups |
-| `program/stats.py` | Summaries used by the Analysis tab |
-| `program/widgets.py` | Shared widgets: scroll frame, column checklist, data table, bar chart |
-| `program/csv_source.py` | The CSV picker shared by the Modify and Analysis tabs |
+| `program/download_folders.py` | The per-download data folders |
+| `program/gbif_download.py` | GBIF species lookup and dataset downloads |
+| `program/dataset_cleaning.py` | Phases 1-3 and coordinate cleaning tests |
+| `program/image_download.py` | Image downloading: saved site sign-ins, browser-like retries, site-specific downloaders |
+| `program/browser_sign_in.py` | The browser window used to sign in to a site (needs Playwright) |
+| `program/vision_providers.py` | Vision-model providers: LM Studio, OpenAI, Gemini, Claude, custom servers |
+| `program/vision_locator.py` | Asks the model where the sheet, ruler and plant structures are |
+| `program/scale_calibration.py` | Pixels per centimetre from the ruler or the sheet width |
+| `program/plant_geometry.py` | Plant mask; traces lengths and measures widths on the pixels |
+| `program/measurements_csv.py` | The measurements CSV and joining it into the dataset |
+| `program/sheet_measurement.py` | Measures one sheet, or a folder of sheets into the measurements CSV |
+| `program/accuracy_benchmark.py` | Scores measurements against hand measurements |
+| `program/csv_editing.py` | Editing any CSV: columns, joins, rows, combining, backups |
+| `program/csv_statistics.py` | Summaries used by the Analysis tab |
+| `program/gui_widgets.py` | Shared widgets, the shared CSV picker, light and dark themes |
 | `program/modify_tab.py`, `program/analysis_tab.py` | The Modify and Analysis tabs |
-| `program/power.py` | Keeping the computer awake |
-| `program/theme.py` | Light and dark themes |
-| `program/gui.py` | The graphical interface |
-| `program/cli.py` | The command-line menu and commands |
+| `program/keep_awake.py` | Keeping the computer awake |
+| `program/app_window.py` | The graphical interface |
+| `program/command_line.py` | The command-line menu and commands |
 | `main.py` | Entry point |
 | `build.py` | Builds, signs and packages the app |
 | `assets/entitlements.plist` | macOS signing entitlements |
