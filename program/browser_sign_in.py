@@ -9,7 +9,7 @@ import time
 from urllib.parse import urlparse
 
 from config import BROWSER_PROFILE_DIR, BROWSERS_DIR
-from .sites import PREFS, AccessDenied, host_of, looks_blocked, save_login
+from .image_download import PREFS, AccessDenied, host_of, looks_blocked, save_login
 
 INSTALL_HINT = "Install it with:  pip install playwright"
 

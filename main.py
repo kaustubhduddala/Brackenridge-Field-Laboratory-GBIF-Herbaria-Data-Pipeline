@@ -8,9 +8,13 @@ USAGE = """Usage:
   python main.py --version       print the version
   python main.py cleaner ...     run phase 1 or 2 directly (run without arguments for details)
   python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo] [--download NAME]
+                      [--provider lmstudio|openai|gemini|anthropic|custom] [--model ID]
   python main.py join [dataset_csv] [measurements_csv] [--fill-blanks] [--matched-only]
                       [--key gbifID] [--measurement-key gbifID] [--columns a,b,c] [--output file.csv]
                       [--download NAME]
+  python main.py benchmark hand_measurements.csv [--measure | --measurements file.csv] [--ids 123,456]
+                      [--label NAME] [--key gbifID] [--provider NAME] [--model ID] [--download NAME]
+                                 score AI measurements against hand measurements
 
 Each download is kept in data/<download id>_<Species>/. --download NAME picks the folder (newest by default)."""
 
@@ -23,22 +27,24 @@ def run_gui():
     except Exception:
         print("GUI unavailable; starting the command-line menu.")
         return run_cli()
-    from program import gui
-    gui.launch()
+    from program import app_window
+    app_window.launch()
 
 
 def self_test():
     try:
-        from program import (analysis, cli, gbif, geo, media, modify, power, processor, stats, theme,  # noqa: F401
-                         utils, workspace)
+        from program import (accuracy_benchmark, command_line, csv_editing, csv_statistics,  # noqa: F401
+                             dataset_cleaning, download_folders, gbif_download, gui_widgets, image_download,
+                             keep_awake, measurements_csv, plant_geometry, scale_calibration, sheet_measurement,
+                             utils, vision_locator, vision_providers)
         import bs4, keyring, numpy, openai, pandas, PIL.Image, pygbif, requests  # noqa: F401
         import tkinter  # noqa: F401
-        from program import site_login
-        if not site_login.available():
+        from program import browser_sign_in
+        if not browser_sign_in.available():
             raise ImportError('playwright is not installed or was not bundled')
-        if not site_login.driver_ready():
+        if not browser_sign_in.driver_ready():
             raise RuntimeError("Playwright's browser driver cannot run")
-        from program import gui  # noqa: F401
+        from program import app_window  # noqa: F401
     except Exception as exc:
         print(f"Self-test failed: {exc!r}", file=sys.stderr)
         sys.exit(1)
@@ -46,8 +52,8 @@ def self_test():
 
 
 def run_cli():
-    from program import cli
-    cli.interactive()
+    from program import command_line
+    command_line.interactive()
 
 
 def main(argv=None):
@@ -66,14 +72,17 @@ def main(argv=None):
     elif command == "--cli":
         run_cli()
     elif command == "cleaner":
-        from program import cli
-        cli.cleaner_command(args[1:])
+        from program import command_line
+        command_line.cleaner_command(args[1:])
     elif command == "measure":
-        from program import cli
-        cli.measure_command(args[1:])
+        from program import command_line
+        command_line.measure_command(args[1:])
     elif command == "join":
-        from program import cli
-        cli.join_command(args[1:])
+        from program import command_line
+        command_line.join_command(args[1:])
+    elif command == "benchmark":
+        from program import command_line
+        command_line.benchmark_command(args[1:])
     else:
         print(USAGE)
         sys.exit(1)

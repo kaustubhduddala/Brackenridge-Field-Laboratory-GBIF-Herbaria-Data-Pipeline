@@ -3,9 +3,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from . import stats
-from .csv_source import CsvPicker
-from .widgets import BarChart, DataTable
+from . import csv_statistics
+from .gui_widgets import CsvPicker
+from .gui_widgets import BarChart, DataTable
 
 CHART_STATS = ("mean", "median", "count", "min", "max", "sum")
 
@@ -72,8 +72,8 @@ class AnalysisTab(ttk.Frame):
 
         def work():
             df = self.source.table(path)
-            profile = stats.column_profile(df)
-            info = stats.overview(df, key if key in df.columns else None)
+            profile = csv_statistics.column_profile(df)
+            info = csv_statistics.overview(df, key if key in df.columns else None)
             self.app._ui(self._show, path, df, profile, info)
             return f"{len(df):,} rows analyzed"
 
@@ -182,7 +182,7 @@ class AnalysisTab(ttk.Frame):
         if not self._need_table():
             return
         column = self.counts_column.get()
-        table = stats.value_counts(self.df, column, self._top(self.counts_top), self.counts_blank.get())
+        table = csv_statistics.value_counts(self.df, column, self._top(self.counts_top), self.counts_blank.get())
         distinct = self.df[column].fillna("").astype(str).str.strip().replace("", None).nunique()
         self.counts_table.show(table, note=f"{distinct:,} different values")
         head = table.head(40)
@@ -220,10 +220,10 @@ class AnalysisTab(ttk.Frame):
         if not column:
             messagebox.showinfo("Numbers", "This file has no numeric columns.", parent=self.app.root)
             return
-        summary = stats.number_summary(self.df[column])
+        summary = csv_statistics.number_summary(self.df[column])
         self.number_summary.configure(text="   ".join(
             f"{k}: {v:,}" if isinstance(v, int) else f"{k}: {v:.6g}" for k, v in summary.items()))
-        histogram = stats.histogram(self.df[column], self._top(self.bins, 15))
+        histogram = csv_statistics.histogram(self.df[column], self._top(self.bins, 15))
         self.numbers_table.show(histogram)
         self.numbers_chart.set(histogram["range"], histogram["count"], title=f"{column}: values per range")
 
@@ -265,7 +265,7 @@ class AnalysisTab(ttk.Frame):
             messagebox.showinfo("Compare groups", "This file has no numeric columns to compare.",
                                 parent=self.app.root)
             return
-        table = stats.group_summary(self.df, group, value)
+        table = csv_statistics.group_summary(self.df, group, value)
         self.groups_table.show(table, note=f"{len(table):,} groups")
         head = table.head(self._top(self.group_top)).dropna(subset=[chart_stat])
         self.groups_chart.set(head[group], head[chart_stat], title=f"{chart_stat} of {value} by {group}")

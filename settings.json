@@ -24,5 +24,13 @@
     "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/master_cleaned_joined_filtered.csv",
     "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/01-06-2025_GBIFdownload_CFmeasurements.csv",
     "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/GBIFdownload_inspectFlags.csv"
-  ]
+  ],
+  "provider": "lmstudio",
+  "servers": {
+    "lmstudio": "http://localhost:1234/v1"
+  },
+  "models": {
+    "anthropic": "claude-opus-5-5",
+    "lmstudio": "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive"
+  }
 }

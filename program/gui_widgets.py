@@ -1,4 +1,5 @@
-"""Widgets shared by the dialogs and the Modify and Analysis tabs."""
+"""Pieces of the window shared by the dialogs and tabs: widgets, the shared CSV file picker, and themes."""
+import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -7,7 +8,8 @@ from tkinter import filedialog, ttk
 import pandas as pd
 
 from config import DATA_DIR
-from .stats import numbers
+from .csv_editing import load_table
+from .csv_statistics import numbers
 from .utils import save_csv
 
 CSV_TYPES = [("CSV files", "*.csv"), ("All files", "*.*")]
@@ -331,3 +333,239 @@ class PathCombo(ttk.Combobox):
         self._sync()
         if self.on_select and (notify or changed):
             self.on_select(path)
+
+
+# --------------------------------------------------------------------------- shared CSV file
+
+# The CSV file shared by the Modify and Analysis tabs, and the file picker used by both.
+MAX_RECENT = 12
+MAX_CACHED = 3
+
+
+class CsvSource:
+    """Holds the selected path and loads each file once. Cached tables must not be modified."""
+
+    def __init__(self, app):
+        self.app = app
+        self.path_var = tk.StringVar(value="")
+        self.listeners = []
+        self.cache = {}
+        self.recent = [p for p in app.settings.get("recent_csvs", []) if Path(p).is_file()]
+
+    def path(self):
+        return self.path_var.get().strip()
+
+    def choices(self):
+        ws = self.app.workspace
+        paths = [str(p) for p in ws.csv_files()] if ws else []
+        dataset = self.app.dataset_var.get().strip()
+        paths += [dataset, *self.recent]
+        return list(dict.fromkeys(p for p in paths if p and Path(p).is_file()))
+
+    def table(self, path=None):
+        path = Path(path or self.path())
+        if not path.is_file():
+            raise FileNotFoundError(f"{path} does not exist")
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        hit = self.cache.get(str(path))
+        if hit and hit[0] == stamp:
+            return hit[1]
+        df = load_table(path, self.app._log)
+        while len(self.cache) >= MAX_CACHED:
+            self.cache.pop(next(iter(self.cache)))
+        self.cache[str(path)] = (stamp, df)
+        return df
+
+    def forget(self, path):
+        self.cache.pop(str(path), None)
+
+    def select(self, path):
+        path = str(path).strip()
+        self.path_var.set(path)
+        if path and Path(path).is_file():
+            self.recent = [path] + [p for p in self.recent if p != path]
+            del self.recent[MAX_RECENT:]
+        for listener in self.listeners:
+            listener()
+
+    def reload(self):
+        self.forget(self.path())
+        self.select(self.path())
+
+
+class CsvPicker(ttk.Frame):
+    """A path box with the files of the active download in its drop-down, Browse and Open."""
+
+    def __init__(self, parent, app, variable, choices, on_select, extras=()):
+        super().__init__(parent)
+        self.app, self.variable, self.choices, self.on_select = app, variable, choices, on_select
+        self.columnconfigure(1, weight=1)
+        self.combo = PathCombo(self, app, variable, choices, on_select)
+        self.combo.grid(row=0, column=1, sticky="ew", pady=3)
+        buttons = [("Browse…", self._browse), ("Open", lambda: app._open(variable.get().strip())), *extras]
+        for column, (text, command) in enumerate(buttons, start=2):
+            ttk.Button(self, text=text, command=command).grid(row=0, column=column, padx=(6, 0), pady=3)
+        self.info = ttk.Label(self, style="Muted.TLabel", wraplength=760, justify="left")
+        self.info.grid(row=1, column=1, columnspan=len(buttons) + 1, sticky="w")
+        self.refresh_choices()
+
+    def label(self, text):
+        ttk.Label(self, text=text).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        return self
+
+    def refresh_choices(self):
+        self.combo._fill()
+
+    def set_info(self, text):
+        self.info.configure(text=text)
+
+    def _browse(self):
+        current = Path(self.variable.get().strip() or ".")
+        ws = self.app.workspace
+        start = current.parent if current.parent.is_dir() and self.variable.get().strip() else (
+            ws.root if ws else DATA_DIR)
+        path = filedialog.askopenfilename(parent=self.winfo_toplevel(), title="Select a CSV file",
+                                          initialdir=str(start), filetypes=CSV_TYPES)
+        if path:
+            self.on_select(path)
+
+
+# --------------------------------------------------------------------------- light and dark themes
+
+PALETTES = {
+    "light": {
+        "bg": "#f3f5f2", "surface": "#ffffff", "raised": "#e6ebe5", "hover": "#dce4dc", "border": "#cad4cb",
+        "text": "#1b2420", "muted": "#5c6962", "accent": "#2d6a4f", "accent_hover": "#3b8061",
+        "on_accent": "#ffffff", "disabled": "#b3beb6", "select": "#cfe5d8",
+        "busy": "#1f5f8b", "ok": "#2d6a4f", "error": "#b42318",
+    },
+    "dark": {
+        "bg": "#141a17", "surface": "#1c2420", "raised": "#222b26", "hover": "#2b3630", "border": "#34423a",
+        "text": "#e2eae5", "muted": "#94a59b", "accent": "#5fb98c", "accent_hover": "#78c9a0",
+        "on_accent": "#0e1712", "disabled": "#3a4740", "select": "#2e4d3d",
+        "busy": "#86b8e3", "ok": "#6fcf9b", "error": "#f2786d",
+    },
+}
+THEME_CHOICES = ("System", "Light", "Dark")
+
+
+def system_theme():
+    try:
+        if sys.platform.startswith("win"):
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                 r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            return "light" if winreg.QueryValueEx(key, "AppsUseLightTheme")[0] else "dark"
+        if sys.platform == "darwin":
+            out = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
+                                 capture_output=True, text=True, timeout=2)
+            return "dark" if "dark" in out.stdout.lower() else "light"
+    except Exception:
+        pass
+    return "light"
+
+
+def resolve_theme(choice):
+    choice = (choice or "System").lower()
+    return system_theme() if choice == "system" else choice
+
+
+def set_title_bar(window, dark):
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1 if dark else 0)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), ctypes.sizeof(value))
+    except Exception:
+        pass
+
+
+def style_text(widget, p):
+    widget.configure(background=p["surface"], foreground=p["text"], insertbackground=p["text"],
+                     selectbackground=p["select"], selectforeground=p["text"], relief="flat", borderwidth=0,
+                     highlightthickness=1, highlightbackground=p["border"], highlightcolor=p["accent"])
+
+
+def apply_theme(root, name, fonts):
+    p = PALETTES[name]
+    root.configure(background=p["bg"])
+    for option, value in (("background", p["surface"]), ("foreground", p["text"]),
+                          ("selectBackground", p["select"]), ("selectForeground", p["text"])):
+        root.option_add(f"*TCombobox*Listbox.{option}", value)
+
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(".", background=p["bg"], foreground=p["text"], bordercolor=p["border"],
+                    lightcolor=p["bg"], darkcolor=p["bg"], troughcolor=p["raised"], focuscolor=p["accent"],
+                    selectbackground=p["select"], selectforeground=p["text"], insertcolor=p["text"],
+                    fieldbackground=p["surface"])
+    style.map(".", foreground=[("disabled", p["muted"])])
+
+    style.configure("TButton", background=p["raised"], foreground=p["text"], bordercolor=p["border"],
+                    lightcolor=p["raised"], darkcolor=p["raised"], padding=(10, 4))
+    style.map("TButton", background=[("disabled", p["bg"]), ("pressed", p["hover"]), ("active", p["hover"])],
+              lightcolor=[("active", p["hover"])], darkcolor=[("active", p["hover"])])
+    style.configure("Accent.TButton", background=p["accent"], foreground=p["on_accent"], bordercolor=p["accent"],
+                    lightcolor=p["accent"], darkcolor=p["accent"], font=fonts["bold"], padding=(14, 5))
+    style.map("Accent.TButton",
+              background=[("disabled", p["disabled"]), ("pressed", p["accent_hover"]), ("active", p["accent_hover"])],
+              lightcolor=[("disabled", p["disabled"]), ("active", p["accent_hover"])],
+              darkcolor=[("disabled", p["disabled"]), ("active", p["accent_hover"])],
+              bordercolor=[("disabled", p["disabled"])],
+              foreground=[("disabled", p["muted"])])
+
+    style.configure("TEntry", fieldbackground=p["surface"], foreground=p["text"], bordercolor=p["border"],
+                    lightcolor=p["surface"], darkcolor=p["surface"], insertcolor=p["text"], padding=4)
+    style.map("TEntry", bordercolor=[("focus", p["accent"])], lightcolor=[("focus", p["accent"])])
+    style.configure("TCombobox", fieldbackground=p["surface"], background=p["raised"], foreground=p["text"],
+                    arrowcolor=p["text"], bordercolor=p["border"], lightcolor=p["surface"],
+                    darkcolor=p["surface"], padding=3)
+    style.map("TCombobox", fieldbackground=[("readonly", p["surface"])], foreground=[("readonly", p["text"])],
+              selectbackground=[("readonly", p["surface"])], selectforeground=[("readonly", p["text"])],
+              background=[("active", p["hover"])], bordercolor=[("focus", p["accent"])])
+
+    for widget in ("TRadiobutton", "TCheckbutton"):
+        style.configure(widget, background=p["bg"], foreground=p["text"], indicatorbackground=p["surface"],
+                        indicatorforeground=p["accent"], upperbordercolor=p["border"],
+                        lowerbordercolor=p["border"], padding=(0, 2))
+        style.map(widget, background=[("active", p["bg"])],
+                  indicatorbackground=[("pressed", p["hover"]), ("selected", p["surface"])])
+
+    style.configure("TNotebook", background=p["bg"], bordercolor=p["border"], tabmargins=(0, 4, 0, 0))
+    style.configure("TNotebook.Tab", background=p["raised"], foreground=p["muted"], bordercolor=p["border"],
+                    lightcolor=p["raised"], padding=(18, 7))
+    style.map("TNotebook.Tab", background=[("selected", p["bg"]), ("active", p["hover"])],
+              foreground=[("selected", p["accent"]), ("active", p["text"])],
+              lightcolor=[("selected", p["bg"])])
+
+    style.configure("TLabelframe", background=p["bg"], bordercolor=p["border"], lightcolor=p["bg"],
+                    darkcolor=p["bg"], padding=12)
+    style.configure("TLabelframe.Label", background=p["bg"], foreground=p["accent"], font=fonts["bold"])
+    style.configure("Horizontal.TProgressbar", background=p["accent"], troughcolor=p["raised"],
+                    bordercolor=p["border"], lightcolor=p["accent"], darkcolor=p["accent"])
+    style.configure("TScrollbar", background=p["raised"], troughcolor=p["bg"], bordercolor=p["bg"],
+                    arrowcolor=p["muted"], lightcolor=p["raised"], darkcolor=p["raised"])
+    style.map("TScrollbar", background=[("active", p["hover"])])
+    style.configure("TSpinbox", fieldbackground=p["surface"], foreground=p["text"], background=p["raised"],
+                    arrowcolor=p["text"], bordercolor=p["border"], lightcolor=p["surface"],
+                    darkcolor=p["surface"], insertcolor=p["text"], padding=3)
+    style.map("TSpinbox", bordercolor=[("focus", p["accent"])])
+    style.configure("Treeview", background=p["surface"], fieldbackground=p["surface"], foreground=p["text"],
+                    bordercolor=p["border"], lightcolor=p["surface"], darkcolor=p["surface"], rowheight=24)
+    style.map("Treeview", background=[("selected", p["select"])], foreground=[("selected", p["text"])])
+    style.configure("Treeview.Heading", background=p["raised"], foreground=p["text"], bordercolor=p["border"],
+                    lightcolor=p["raised"], darkcolor=p["raised"], font=fonts["bold"], padding=(6, 4))
+    style.map("Treeview.Heading", background=[("active", p["hover"])])
+    style.configure("TPanedwindow", background=p["bg"])
+    style.configure("Sash", sashthickness=8, gripcount=0, background=p["bg"])
+
+    style.configure("Title.TLabel", font=fonts["title"], foreground=p["text"])
+    style.configure("Muted.TLabel", foreground=p["muted"], font=fonts["small"])
+    style.configure("Link.TLabel", foreground=p["accent"], font=fonts["small"])
+    style.configure("Heading.TLabel", foreground=p["text"], font=fonts["bold"])
+    set_title_bar(root, name == "dark")
+    return p

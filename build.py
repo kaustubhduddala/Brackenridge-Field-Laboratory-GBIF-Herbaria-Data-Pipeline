@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent
 NAME = "GBIF Herbaria Pipeline"
 SLUG = "GBIF-Herbaria-Pipeline"
 BUNDLE_ID = "edu.utexas.gbif-herbaria-pipeline"
-HIDDEN_IMPORTS = ["program.gui", "program.cli", "bs4", "PIL._tkinter_finder"]
+HIDDEN_IMPORTS = ["program.app_window", "program.command_line", "bs4", "PIL._tkinter_finder"]
 ENTITLEMENTS = ROOT / "assets" / "entitlements.plist"
 MACHO_MAGIC = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
