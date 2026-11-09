@@ -57,6 +57,9 @@ jobs:
           # GitHub's last Intel Mac runner, available until August 2027.
           - os: macos-15-intel
             label: macOS Intel
+          # The oldest Ubuntu runner, so the build runs on distributions with an older glibc too.
+          - os: ubuntu-22.04
+            label: Linux x64
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.tag }}
@@ -74,6 +77,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Install Linux system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # tkinter's Tcl/Tk libraries: PyInstaller copies them into the app
+          sudo apt-get install -y python3-tk libtk8.6 libtcl8.6
 
       - name: Install dependencies
         run: |
@@ -126,7 +136,7 @@ jobs:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
-          files-folder: ${{ github.workspace }}\dist\GBIF Herbaria Pipeline
+          files-folder: ${{ github.workspace }}\dist\Graas
           files-folder-filter: exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
@@ -136,21 +146,26 @@ jobs:
         if: runner.os == 'Windows' && env.SIGN_WINDOWS == 'true'
         shell: pwsh
         run: |
-          $signature = Get-AuthenticodeSignature "dist\GBIF Herbaria Pipeline\GBIF Herbaria Pipeline.exe"
+          $signature = Get-AuthenticodeSignature "dist\Graas\Graas.exe"
           Write-Output "Signed by: $($signature.SignerCertificate.Subject)"
           if ($signature.Status -ne "Valid") { throw "Signature status is $($signature.Status)" }
 
       - name: Check the packaged app runs (macOS)
         if: runner.os == 'macOS'
         timeout-minutes: 5
-        run: '"dist/GBIF Herbaria Pipeline.app/Contents/MacOS/GBIF Herbaria Pipeline" --self-test'
+        run: '"dist/Graas.app/Contents/MacOS/Graas" --self-test'
+
+      - name: Check the packaged app runs (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: dist/Graas/Graas --self-test
 
       - name: Check the packaged app runs (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 5
         shell: pwsh
         run: |
-          $exe = "dist\GBIF Herbaria Pipeline\GBIF Herbaria Pipeline.exe"
+          $exe = "dist\Graas\Graas.exe"
           $p = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
 
@@ -160,7 +175,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.os }}
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
           if-no-files-found: error
 
   release:
@@ -174,12 +191,20 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Write checksums
+        # The app checks its downloaded update against this file before installing it.
+        working-directory: dist
+        run: sha256sum Graas-* > SHA256SUMS.txt
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.tag }}
           name: ${{ needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
           generate_release_notes: true
           prerelease: ${{ contains(needs.version.outputs.tag, '-') }}
           make_latest: ${{ !contains(needs.version.outputs.tag, '-') }}

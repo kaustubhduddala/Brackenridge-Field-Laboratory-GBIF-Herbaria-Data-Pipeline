@@ -3,7 +3,9 @@ import os
 import sys
 from pathlib import Path
 
-APP_NAME = "GBIF Herbaria Pipeline"
+APP_NAME = "Graas"      # short name: used for folders, keychain entries and records, so no spaces or punctuation
+APP_TITLE = "Graas: Grass Research & Analysis Automation System"   # shown in the window title and About box
+LEGACY_APP_NAME = "GBIF Herbaria Pipeline"                          # what earlier versions were called
 FROZEN = getattr(sys, "frozen", False)
 CODE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
@@ -16,11 +18,22 @@ def _read_version():
 
 
 APP_VERSION = _read_version()
+UPDATE_REPO = "kaustubhduddala/GRAAS"     # GitHub repository whose releases the app updates itself from
 
-if os.environ.get("GBIF_PIPELINE_HOME"):
-    BASE_DIR = Path(os.environ["GBIF_PIPELINE_HOME"]).expanduser()
+
+
+def _packaged_home():
+    """Documents/Graas, or the folder an earlier version used when that exists and this one has none yet, so
+    renaming the app does not hide anyone's data and settings."""
+    documents = Path.home() / "Documents"
+    legacy = documents / LEGACY_APP_NAME
+    return legacy if legacy.is_dir() and not (documents / APP_NAME).exists() else documents / APP_NAME
+
+
+if os.environ.get("GRAAS_HOME") or os.environ.get("GBIF_PIPELINE_HOME"):    # the old variable keeps working
+    BASE_DIR = Path(os.environ.get("GRAAS_HOME") or os.environ["GBIF_PIPELINE_HOME"]).expanduser()
 elif FROZEN:
-    BASE_DIR = Path.home() / "Documents" / APP_NAME
+    BASE_DIR = _packaged_home()
 else:
     BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -47,6 +60,7 @@ HEADERS = {"User-Agent": "GBIF-HerbariaPipeline/1.0 (research use; Python reques
 LEGACY_CREDENTIALS_FILE = Path.home() / "credentials.json"
 ACCOUNT_FILE = BASE_DIR / "gbif_account.json"
 KEYRING_SERVICE = APP_NAME + " (GBIF)"
+LEGACY_KEYRING_SERVICE = LEGACY_APP_NAME + " (GBIF)"
 GBIF_SIGNUP_URL = "https://www.gbif.org/user/profile"
 
 
@@ -79,11 +93,26 @@ def password_store_name():
     return "the system keyring"
 
 
+def _stored_secret(store, service, legacy_service, name):
+    """A secret from the keychain: under this app's name, else under the name an earlier version used (and then
+    copied across, so the next lookup finds it under the new name)."""
+    secret = store.get_password(service, name)
+    if secret:
+        return secret
+    secret = store.get_password(legacy_service, name)
+    if secret:
+        try:
+            store.set_password(service, name, secret)
+        except Exception:
+            pass
+    return secret
+
+
 def _saved_password(user, account):
     store = _keyring()
     if store and user:
         try:
-            password = store.get_password(KEYRING_SERVICE, user)
+            password = _stored_secret(store, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE, user)
             if password:
                 return password
         except Exception:
@@ -160,6 +189,10 @@ def _forget_password(user):
             store.delete_password(KEYRING_SERVICE, user)
         except Exception:
             pass
+        try:
+            store.delete_password(LEGACY_KEYRING_SERVICE, user)
+        except Exception:
+            pass
 
 
 def remove_gbif_account():
@@ -168,6 +201,7 @@ def remove_gbif_account():
 
 
 AI_KEYRING_SERVICE = APP_NAME + " (AI)"
+LEGACY_AI_KEYRING_SERVICE = LEGACY_APP_NAME + " (AI)"
 AI_KEYS_FILE = BASE_DIR / "ai_keys.json"
 
 
@@ -179,7 +213,7 @@ def ai_api_key(provider, env_names=()):
     store = _keyring()
     if store:
         try:
-            key = store.get_password(AI_KEYRING_SERVICE, provider)
+            key = _stored_secret(store, AI_KEYRING_SERVICE, LEGACY_AI_KEYRING_SERVICE, provider)
             if key:
                 return key, password_store_name()
         except Exception:
@@ -213,6 +247,10 @@ def remove_ai_api_key(provider):
     if store:
         try:
             store.delete_password(AI_KEYRING_SERVICE, provider)
+        except Exception:
+            pass
+        try:
+            store.delete_password(LEGACY_AI_KEYRING_SERVICE, provider)
         except Exception:
             pass
     keys = _read_json(AI_KEYS_FILE)

@@ -14,7 +14,7 @@ import pandas as pd
 from tksheet import Sheet
 
 from . import csv_editing
-from .gui_widgets import CSV_TYPES, CsvPicker
+from .gui_widgets import CSV_TYPES, CsvPicker, HelpTip, menu_button, placeholder, tip
 
 ENCODINGS = ("utf-8-sig", "cp1252")
 
@@ -73,24 +73,38 @@ class EditTab(ttk.Frame):
         file_box.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         file_box.columnconfigure(0, weight=1)
         self.picker = CsvPicker(file_box, app, source.path_var, source.choices, source.select,
-                                extras=[("Reload", self._reload)])
+                                extras=[("Reload", self._reload,
+                                         "Read the file again from disk, dropping unsaved changes")])
         self.picker.grid(row=0, column=0, sticky="ew")
 
         bar = ttk.Frame(self)
         bar.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        self.save_button = ttk.Button(bar, text="Save", style="Accent.TButton", command=self.save)
+        self.save_button = tip(ttk.Button(bar, text="Save", style="Accent.TButton", command=self.save),
+                               "Save over the file. The previous version is kept in backups/, and Undo last change "
+                               "on the Modify tab brings it back.")
         self.save_button.pack(side="left")
-        ttk.Button(bar, text="Save as…", command=self.save_as).pack(side="left", padx=(6, 14))
-        for text, command in (("Add row", self._add_row), ("Delete rows", self._delete_rows),
-                              ("Add column…", self._add_column), ("Delete columns", self._delete_columns),
-                              ("Rename…", self._rename_column)):
-            ttk.Button(bar, text=text, command=command).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="Clear", command=self._clear_filter).pack(side="right")
+        tip(ttk.Button(bar, text="Save as…", command=self.save_as),
+            "Save to a new file and carry on editing that one").pack(side="left", padx=(6, 10))
+        HelpTip(bar, "Type in a cell to change it, or double-click to edit what is there. Copy, paste, undo and "
+                     "find use the usual keys.\n\nRight-click for sorting and for inserting or deleting rows and "
+                     "columns. Double-click a heading to rename a column.\n\nEvery cell is kept as text exactly "
+                     "as it is in the file, so an NA stays NA and an ID keeps its leading zeros.").pack(side="right")
+        tip(ttk.Button(bar, text="Clear", width=6, command=self._clear_filter),
+            "Show every row again").pack(side="right", padx=(0, 10))
         self.filter_var = tk.StringVar()
-        entry = ttk.Entry(bar, textvariable=self.filter_var, width=16)
+        entry = placeholder(ttk.Entry(bar, textvariable=self.filter_var, width=20), "Filter rows, then Enter",
+                            self.filter_var)
         entry.pack(side="right", padx=6)
         entry.bind("<Return>", lambda _: self._apply_filter())
-        ttk.Label(bar, text="Filter rows").pack(side="right")
+        tip(entry, "Show only the rows containing this text. Edits still apply to the whole file.", delay=900)
+        tools = menu_button(bar, "Rows and columns", [
+            ("Add a row", self._add_row), ("Delete the selected rows", self._delete_rows), None,
+            ("Add a column…", self._add_column), ("Delete the selected columns", self._delete_columns),
+            ("Rename the selected column…", self._rename_column)])
+        tip(tools, "Add, delete and rename rows and columns. The same tools, with sorting, are on the right-click "
+                   "menu of the sheet.", delay=900).pack(side="left")
+        self.state = ttk.Label(bar, style="Heading.TLabel")
+        self.state.pack(side="left", padx=(12, 0))
 
         self.sheet = Sheet(self, data=[[]], headers=[], show_row_index=True, default_column_width=130,
                            max_undos=50, font=("TkDefaultFont", 10, "normal"),
@@ -98,14 +112,6 @@ class EditTab(ttk.Frame):
         self.sheet.enable_bindings("all", "edit_header", "ctrl_select")
         self.sheet.grid(row=2, column=0, sticky="nsew")
         self.sheet.bind("<<SheetModified>>", self._on_modified)
-        foot = ttk.Frame(self)
-        foot.grid(row=3, column=0, sticky="ew", pady=(6, 0))
-        self.state = ttk.Label(foot, style="Heading.TLabel")
-        self.state.pack(side="right", padx=(12, 0))
-        ttk.Label(foot, style="Muted.TLabel", wraplength=820, justify="left",
-                  text="Double-click a cell to edit it, or just type. Right-click for sorting and row and column "
-                       "tools; double-click a heading to rename it. Copy, paste, undo and find use the usual keys. "
-                       "Type in Filter rows and press Enter to show only matching rows.").pack(side="left")
         self.restyle(app.palette)
         app.restyle_hooks.append(self.restyle)
         source.listeners.append(self._file_changed)

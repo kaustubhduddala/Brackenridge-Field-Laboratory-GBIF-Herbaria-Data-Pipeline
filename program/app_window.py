@@ -10,32 +10,34 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA_DIR, DEFAULT_TOKEN_LIMIT,
+from config import (APP_NAME, APP_TITLE, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA_DIR, DEFAULT_TOKEN_LIMIT,
                     GBIF_SIGNUP_URL, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, PRECISION_NONE, PRECISION_RELAXED,
                     PRECISION_STRICT, PRESETS, THINKING_CHOICES, ai_api_key, gbif_credentials, load_settings,
                     password_store_name, remove_ai_api_key, remove_gbif_account, save_ai_api_key, save_gbif_account,
                     save_settings, saved_gbif_account, saved_gbif_password)
 
-from . import browser_sign_in, image_download
+from . import browser_sign_in, image_download, updater
 from .analysis_tab import AnalysisTab
 from .csv_editor_tab import EditTab
 from .dataset_cleaning import REQUIRED_COLUMNS, available_columns, run_cleaning
 from .download_folders import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_by_name,
                                workspace_of)
 from .gbif_download import check_gbif_login, download_dataset
-from .gui_widgets import (CSV_TYPES, THEME_CHOICES, ColumnChecklist, CsvSource, PathCombo, ScrollFrame, _check_image,
-                          _set_entry, _set_text, apply_theme, resolve_theme, set_title_bar, style_text)
+from .gui_widgets import (CSV_TYPES, THEME_CHOICES, ColumnChecklist, CsvSource, HelpTip, PathCombo, ScrollFrame,
+                          _check_image, _set_entry, _set_text, apply_theme, help_label, placeholder, resolve_theme,
+                          search_entry, set_title_bar, style_text, tip, titled_frame)
 from .image_download import download_media, media_status
 from .keep_awake import KeepAwake
 from .measure import ocr, trained
 from .measure.detectors import DETECTOR_CHOICES, LABEL_CHOICES, DetectorOptions
-from .measure.model_setup import ModelSetupDialog
+from .measure.model_setup import READY, ModelSetupDialog, components
 from .measure.pipeline import measure_images
 from .measure.providers import DEFAULT_PROVIDER, PROVIDERS, describe_key, list_models, settings_from_app
 from .measure.records import (RESULT_COLUMNS, check_connection, count_matches, csv_columns,
                               export_measurement_or_fact, join_measurements, measurement_status)
 from .measure.review_tab import ReviewTab
 from .modify_tab import ModifyTab
+from .update_dialog import UpdateDialog
 from .utils import TaskControl, find_dwca_files, open_path, scan_issues
 
 ISSUE_ACTIONS = ("Remove", "Inspect", "Nothing")
@@ -53,9 +55,11 @@ class PresetBar(ttk.Frame):
         self.combo = ttk.Combobox(self, textvariable=self.var, state="readonly", width=22)
         self.combo.pack(side="left", padx=6)
         self.combo.bind("<<ComboboxSelected>>", lambda _: self.apply(self.var.get()))
-        ttk.Button(self, text="Save as…", command=self._save).pack(side="left")
-        ttk.Button(self, text="Delete", command=self._delete).pack(side="left", padx=6)
-        ttk.Button(self, text="Reset to default", command=self.reset).pack(side="left")
+        tip(ttk.Button(self, text="Save as…", command=self._save),
+            "Save the current choices as a named preset").pack(side="left")
+        tip(ttk.Button(self, text="Delete", command=self._delete), "Delete the selected preset").pack(side="left",
+                                                                                                    padx=6)
+        tip(ttk.Button(self, text="Reset", command=self.reset), "Go back to the default choices").pack(side="left")
         self._refresh()
 
     def _refresh(self):
@@ -118,23 +122,24 @@ class IssueFilterDialog(tk.Toplevel):
 
         body = ttk.Frame(self, padding=14)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="Issues found in the occurrence file. Remove drops the records in phase 1, Inspect "
-                             "sets inspect_flag, Nothing leaves them alone.", style="Muted.TLabel",
-                  wraplength=660, justify="left").pack(anchor="w")
-        PresetBar(body, presets, self._apply_preset, self._current, persist).pack(anchor="w", pady=(8, 0))
+        top = ttk.Frame(body)
+        top.pack(fill="x")
+        PresetBar(top, presets, self._apply_preset, self._current, persist).pack(side="left")
+        HelpTip(top, "These are the issue codes GBIF attached to records in the occurrence file, with the number "
+                     "of records carrying each.\n\nRemove: drop those records in phase 1.\nInspect: keep them "
+                     "but set inspect_flag, so you can review them before phase 2.\nNothing: leave them alone."
+                ).pack(side="right")
         search = ttk.Frame(body)
-        search.pack(fill="x", pady=(8, 4))
-        ttk.Label(search, text="Search").pack(side="left")
+        search.pack(fill="x", pady=(10, 6))
         self.query = tk.StringVar()
         self.query.trace_add("write", lambda *_: self._filter())
-        ttk.Entry(search, textvariable=self.query).pack(side="left", fill="x", expand=True, padx=6)
+        search_entry(search, self.query, prompt="Search issue codes").pack(side="left", fill="x", expand=True)
         self.shown_label = ttk.Label(search, style="Muted.TLabel")
-        self.shown_label.pack(side="left")
-        bulk = ttk.Frame(body)
-        bulk.pack(fill="x", pady=(0, 4))
-        ttk.Label(bulk, text="Set all shown to").pack(side="left")
+        self.shown_label.pack(side="left", padx=(8, 14))
+        ttk.Label(search, text="Set all shown to").pack(side="left")
         for action in ISSUE_ACTIONS:
-            ttk.Button(bulk, text=action, command=lambda a=action: self._set_shown(a)).pack(side="left", padx=(6, 0))
+            ttk.Button(search, text=action, command=lambda a=action: self._set_shown(a)).pack(side="left",
+                                                                                              padx=(6, 0))
 
         self.scroll = ScrollFrame(body, app.palette)
         self.scroll.pack(fill="both", expand=True)
@@ -212,22 +217,23 @@ class ColumnPickerDialog(tk.Toplevel):
 
         body = ttk.Frame(self, padding=14)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text=f"Columns found in {source}. Ticked columns stay in master_cleaned.csv; the rest move "
-                             "to removed_columns.csv. gbifID, media and the measurement columns are always kept.",
-                  style="Muted.TLabel", wraplength=500, justify="left").pack(anchor="w")
-        PresetBar(body, presets, self._apply_preset, self._current, persist).pack(anchor="w", pady=(8, 0))
+        top = ttk.Frame(body)
+        top.pack(fill="x")
+        PresetBar(top, presets, self._apply_preset, self._current, persist).pack(side="left")
+        HelpTip(top, f"These are the columns found in {source}.\n\nTicked columns stay in master_cleaned.csv; "
+                     "the rest move to removed_columns.csv, so you can bring them back by running phase 3 again. "
+                     "gbifID, media and the measurement columns are always kept.").pack(side="right")
         search = ttk.Frame(body)
-        search.pack(fill="x", pady=(8, 4))
-        ttk.Label(search, text="Search").pack(side="left")
+        search.pack(fill="x", pady=(10, 6))
         self.query = tk.StringVar()
         self.query.trace_add("write", lambda *_: self._filter())
-        ttk.Entry(search, textvariable=self.query).pack(side="left", fill="x", expand=True, padx=6)
-        bulk = ttk.Frame(body)
-        bulk.pack(fill="x", pady=(0, 4))
-        ttk.Button(bulk, text="Tick all shown", command=lambda: self._set_shown(True)).pack(side="left")
-        ttk.Button(bulk, text="Untick all shown", command=lambda: self._set_shown(False)).pack(side="left", padx=6)
-        self.count_label = ttk.Label(bulk, style="Muted.TLabel")
-        self.count_label.pack(side="right")
+        search_entry(search, self.query, prompt="Search columns").pack(side="left", fill="x", expand=True)
+        tip(ttk.Button(search, text="Tick all", command=lambda: self._set_shown(True)),
+            "Tick every column the search shows").pack(side="left", padx=(8, 0))
+        tip(ttk.Button(search, text="Untick all", command=lambda: self._set_shown(False)),
+            "Untick every column the search shows").pack(side="left", padx=6)
+        self.count_label = ttk.Label(search, style="Muted.TLabel")
+        self.count_label.pack(side="left")
 
         self.scroll = ScrollFrame(body, app.palette)
         self.scroll.pack(fill="both", expand=True)
@@ -306,19 +312,20 @@ class ItemPicker(tk.Toplevel):
 
         top = ttk.Frame(body)
         top.pack(fill="x")
-        ttk.Label(top, text="Search").pack(side="left")
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self._refresh())
-        search = ttk.Entry(top, textvariable=self.search_var, width=26)
-        search.pack(side="left", padx=(6, 14))
+        search = search_entry(top, self.search_var, width=28, prompt="Search gbifID, status or details")
+        search.pack(side="left", padx=(0, 14))
         ttk.Label(top, text="Status").pack(side="left")
         self.status_var = tk.StringVar(value="All")
         statuses = ["All"] + sorted({item["status"] for item in items})
         status_box = ttk.Combobox(top, textvariable=self.status_var, values=statuses, state="readonly", width=16)
         status_box.pack(side="left", padx=6)
         status_box.bind("<<ComboboxSelected>>", lambda _: self._refresh())
+        HelpTip(top, "Click a box, or select rows and press Space, to check them. Shift-click selects a range. "
+                     "Click a heading to sort. Selecting a row previews it on the right.").pack(side="right")
         self.count_label = ttk.Label(top, style="Muted.TLabel")
-        self.count_label.pack(side="right")
+        self.count_label.pack(side="right", padx=(0, 10))
 
         middle = ttk.PanedWindow(body, orient="horizontal")
         middle.pack(fill="both", expand=True, pady=10)
@@ -338,7 +345,7 @@ class ItemPicker(tk.Toplevel):
         self.preview_image = ttk.Label(preview)
         self.preview_image.pack(anchor="n")
         self.preview_text = ttk.Label(preview, style="Muted.TLabel", wraplength=270, justify="left",
-                                      text="Select a row to preview it. Click the box, or press Space, to check it.")
+                                      text="Select a row to preview it.")
         self.preview_text.pack(anchor="w", pady=(8, 0))
         self.response_button = ttk.Button(preview, text="Open raw model response", command=self._open_response)
         middle.add(preview, weight=1)
@@ -346,19 +353,20 @@ class ItemPicker(tk.Toplevel):
         paste = ttk.Frame(body)
         paste.pack(fill="x")
         paste.columnconfigure(0, weight=1)
-        ttk.Label(paste, text="Paste gbifIDs separated by commas, spaces or new lines").grid(
-            row=0, column=0, sticky="w", pady=(0, 4))
-        self.paste_text = tk.Text(paste, height=3, wrap="word", font=app.fonts["mono"], padx=8, pady=6)
+        help_label(paste, "Check by gbifID", "Paste gbifIDs separated by commas, spaces or new lines, then press "
+                   "Check these.").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.paste_text = tk.Text(paste, height=2, wrap="word", font=app.fonts["mono"], padx=8, pady=6)
         style_text(self.paste_text, app.palette)
         self.paste_text.grid(row=1, column=0, sticky="ew")
         ttk.Button(paste, text="Check these", command=self._check_pasted).grid(row=1, column=1, sticky="n", padx=(8, 0))
 
         buttons = ttk.Frame(body)
         buttons.pack(fill="x", pady=(12, 0))
-        for text, command in (("Check shown", lambda: self._set_shown(True)),
-                              ("Uncheck shown", lambda: self._set_shown(False)),
-                              ("Check highlighted", self._check_highlighted)):
-            ttk.Button(buttons, text=text, command=command).pack(side="left", padx=(0, 6))
+        for text, command, hint in (
+                ("Check all", lambda: self._set_shown(True), "Check every row in the list (only the rows shown)"),
+                ("Uncheck all", lambda: self._set_shown(False), "Uncheck every row in the list (only the rows shown)"),
+                ("Check selected", self._check_highlighted, "Check the rows that are highlighted")):
+            tip(ttk.Button(buttons, text=text, command=command), hint).pack(side="left", padx=(0, 6))
         self.redo_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(buttons, text=redo_text, variable=self.redo_var).pack(side="left", padx=12)
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
@@ -505,12 +513,8 @@ class JoinDialog(tk.Toplevel):
 
         body = ttk.Frame(self, padding=14)
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="Check the columns to include from each file and the column each file is matched on. "
-                             "Where a column is in both files, the measurement value is used.",
-                  style="Muted.TLabel", wraplength=900, justify="left").pack(anchor="w")
-
         lists = ttk.Frame(body)
-        lists.pack(fill="both", expand=True, pady=10)
+        lists.pack(fill="both", expand=True, pady=(0, 10))
         lists.columnconfigure((0, 1), weight=1, uniform="lists")
         lists.rowconfigure(0, weight=1)
         self.dataset_list = ColumnChecklist(lists, app, f"Dataset: {Path(dataset_csv).name}", dataset_columns,
@@ -522,23 +526,30 @@ class JoinDialog(tk.Toplevel):
         for checklist in (self.dataset_list, self.measurement_list):
             checklist.key_box.bind("<<ComboboxSelected>>", lambda _: self._update_matches())
 
-        self.match_label = ttk.Label(body, style="Heading.TLabel")
-        self.match_label.pack(anchor="w")
+        matches = ttk.Frame(body)
+        matches.pack(fill="x")
+        self.match_label = ttk.Label(matches, style="Heading.TLabel")
+        self.match_label.pack(side="left")
+        HelpTip(matches, "Check the columns to include from each file, and pick the column each file is matched "
+                         "on (gbifID unless you renamed it).\n\nWhere a column is in both files the measurement "
+                         "value is used, so joining again after measuring more images replaces the earlier "
+                         "results instead of duplicating them.").pack(side="left", padx=(8, 0))
 
         options = ttk.Frame(body)
         options.pack(fill="x", pady=(8, 0))
         options.columnconfigure(1, weight=1)
         self.fill_var = tk.BooleanVar(value=app.fill_blanks_var.get())
-        ttk.Checkbutton(options, text="Fill empty dataset fields with details read from the voucher label "
-                                      "(needs the voucher_ columns checked)",
-                        variable=self.fill_var).grid(row=0, column=0, columnspan=3, sticky="w")
+        tip(ttk.Checkbutton(options, text="Fill empty dataset fields from the voucher label", variable=self.fill_var),
+            "Copies details read from the voucher label (locality, recordedBy, eventDate…) into dataset cells that "
+            "are empty. It needs the matching voucher_ columns checked, never overwrites a value, and lists what it "
+            "filled in voucher_filled_columns.").grid(row=0, column=0, columnspan=3, sticky="w")
         self.matched_only_var = tk.BooleanVar(value=saved.get("matched_only", False))
         ttk.Checkbutton(options, text="Keep only records that have a measurement",
                         variable=self.matched_only_var).grid(row=1, column=0, columnspan=3, sticky="w")
         self.output_mode = tk.StringVar(value="update")
-        ttk.Radiobutton(options, text="Update the dataset CSV (the previous version is kept as a backup)",
-                        variable=self.output_mode, value="update").grid(row=2, column=0, columnspan=3, sticky="w",
-                                                                        pady=(8, 0))
+        tip(ttk.Radiobutton(options, text="Update the dataset CSV", variable=self.output_mode, value="update"),
+            "The previous version is kept as a backup next to it.").grid(row=2, column=0, columnspan=3, sticky="w",
+                                                                         pady=(8, 0))
         ttk.Radiobutton(options, text="Save as a new file", variable=self.output_mode,
                         value="new").grid(row=3, column=0, sticky="w")
         default_output = Path(dataset_csv).with_name(Path(dataset_csv).stem + "_joined.csv")
@@ -617,23 +628,23 @@ class SiteLoginDialog(tk.Toplevel):
         body = ttk.Frame(self, padding=14)
         body.pack(fill="both", expand=True)
         body.columnconfigure(0, weight=1)
-        ttk.Label(body, text="Some image sites only allow downloads from a signed-in or verified browser. Sign in to "
-                             "a site in the window that opens, then click Done. The app keeps the cookies and uses "
-                             "them for that site's downloads.", style="Muted.TLabel", wraplength=580,
-                  justify="left").grid(row=0, column=0, sticky="w")
         self.list_frame = ttk.Frame(body)
-        self.list_frame.grid(row=1, column=0, sticky="nsew", pady=10)
+        self.list_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
         self.list_frame.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
 
         other = ttk.LabelFrame(body, text="Sign in to another site")
         other.grid(row=2, column=0, sticky="ew")
         other.columnconfigure(0, weight=1)
-        self.url_entry = ttk.Entry(other)
+        self.url_entry = placeholder(ttk.Entry(other), "Web address of the site, for example herbarium.example.org")
         self.url_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(other, text="Open browser", command=lambda: self._start(self.url_entry.get())).grid(row=0, column=1)
 
-        prefs = ttk.LabelFrame(body, text="When a site refuses a download")
+        prefs = titled_frame(body, "When a site refuses a download",
+                             "Method: what the app tries when a plain download is refused.\n\nWait: how long a "
+                             "browser window stays open for you to pass a CAPTCHA or bot check before the app "
+                             "moves on.\n\nDelay: the pause between downloads made through the browser, so the "
+                             "site is not flooded.")
         prefs.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         prefs.columnconfigure(1, weight=1)
         current = image_download.PREFS
@@ -645,10 +656,11 @@ class SiteLoginDialog(tk.Toplevel):
         box = ttk.Combobox(prefs, textvariable=self.strategy_var, values=list(image_download.STRATEGIES), state="readonly")
         box.grid(row=0, column=1, columnspan=3, sticky="ew", pady=2)
         box.bind("<<ComboboxSelected>>", lambda _: self._save_prefs())
-        ttk.Label(prefs, text="Minutes to wait for you to pass a check").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(prefs, text="Wait for a check (min)").grid(row=1, column=0, sticky="w", padx=(0, 8))
         wait = ttk.Spinbox(prefs, textvariable=self.wait_var, from_=1, to=30, width=5, command=self._save_prefs)
         wait.grid(row=1, column=1, sticky="w")
-        ttk.Label(prefs, text="Seconds between browser downloads").grid(row=1, column=2, sticky="e", padx=(12, 8))
+        ttk.Label(prefs, text="Delay between browser downloads (s)").grid(row=1, column=2, sticky="e",
+                                                                          padx=(12, 8))
         delay = ttk.Spinbox(prefs, textvariable=self.delay_var, from_=0, to=60, increment=0.5, width=5,
                             command=self._save_prefs)
         delay.grid(row=1, column=3, sticky="w")
@@ -662,6 +674,11 @@ class SiteLoginDialog(tk.Toplevel):
         self.done_button = ttk.Button(footer, text="Done, save my sign-in", style="Accent.TButton",
                                       command=self._finish, state="disabled")
         self.done_button.pack(side="left")
+        HelpTip(footer, "Some image sites only allow downloads from a signed-in or verified browser.\n\n1. Press "
+                        "Sign in… beside a site (or enter another site and press Open browser).\n2. Sign in, or "
+                        "pass the check, in the browser window that opens.\n3. Come back here and press Done.\n\n"
+                        "The app keeps that site's cookies and uses them for its downloads. It never solves "
+                        "CAPTCHAs itself.").pack(side="left", padx=(8, 0))
         ttk.Button(footer, text="Close", command=self.destroy).pack(side="right")
         if not browser_sign_in.available():
             self._say("Browser sign-in needs Playwright. " + browser_sign_in.INSTALL_HINT, "error")
@@ -689,8 +706,9 @@ class SiteLoginDialog(tk.Toplevel):
         reasons = image_download.site_reasons()
         row = 0
         if refused:
-            ttk.Label(self.list_frame, text="Sites that refused access, failed repeatedly, or were skipped", style="Heading.TLabel").grid(
-                row=row, column=0, columnspan=3, sticky="w")
+            help_label(self.list_frame, "Sites that need attention", "Sites that refused access, failed "
+                       "repeatedly, or that you skipped. Sign in, then retry their images.",
+                       style="Heading.TLabel").grid(row=row, column=0, columnspan=3, sticky="w")
             row += 1
             for host in sorted(refused):
                 ids = self.app._refused_ids(host)
@@ -718,10 +736,11 @@ class SiteLoginDialog(tk.Toplevel):
                 row=row, column=2, pady=2)
             mode = tk.BooleanVar(value=image_download.site_mode(host) == image_download.MODE_BROWSER)
             self.mode_vars.append(mode)
-            ttk.Checkbutton(self.list_frame, text="Download through the browser", variable=mode,
-                            command=lambda h=host, v=mode: image_download.set_site_mode(
-                                h, image_download.MODE_BROWSER if v.get() else image_download.MODE_REQUESTS)).grid(
-                row=row, column=3, padx=(10, 0))
+            tip(ttk.Checkbutton(self.list_frame, text="Use the browser", variable=mode,
+                                command=lambda h=host, v=mode: image_download.set_site_mode(
+                                    h, image_download.MODE_BROWSER if v.get() else image_download.MODE_REQUESTS)),
+                "Download this site's images through the signed-in browser instead of plain requests. Slower, but "
+                "it gets past sites that check for a real browser.").grid(row=row, column=3, padx=(10, 0))
             row += 1
 
     def _forget(self, host):
@@ -822,10 +841,6 @@ class AccountDialog(tk.Toplevel):
         body = ttk.Frame(self, padding=18)
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text="New GBIF downloads are requested with your GBIF account. Downloading by DOI "
-                             "does not need one.", style="Muted.TLabel", wraplength=440,
-                  justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
-
         self.user_var = tk.StringVar(value=account["user"])
         self.email_var = tk.StringVar(value=account["email"])
         self.password_var = tk.StringVar()
@@ -836,6 +851,8 @@ class AccountDialog(tk.Toplevel):
             entry.grid(row=row, column=1, columnspan=2, sticky="ew", pady=3)
             if label == "Password":
                 self.password_entry = entry
+                if self.had_password:
+                    placeholder(entry, "Saved. Leave empty to keep it", variable)
             if row == 1:
                 entry.focus_set()
         self.show_var = tk.BooleanVar(value=False)
@@ -844,28 +861,25 @@ class AccountDialog(tk.Toplevel):
                         ).grid(row=4, column=1, sticky="w")
 
         store = password_store_name()
-        notes = []
-        if self.had_password:
-            notes.append("A password is saved. Leave the field empty to keep it.")
-        notes.append(f"The password is kept in {store}." if store else
-                     "No system keychain was found, so the password is kept in a file readable only by your user.")
-        source = gbif_credentials()[3]
-        if source == "environment variables":
-            notes.append("GBIF_ environment variables are set and are used instead of the account saved here.")
-        ttk.Label(body, text=" ".join(notes), style="Muted.TLabel", wraplength=440, justify="left").grid(
-            row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        HelpTip(body, "New GBIF downloads are requested with your GBIF account. Downloading by DOI does not need "
+                      "one.\n\n" + (f"The password is kept in {store}, not in a plain file." if store else
+                                    "No system keychain was found, so the password is kept in a file readable only "
+                                    "by your user.")).grid(row=4, column=2, sticky="e")
         link = ttk.Label(body, text="Create a free GBIF account", style="Link.TLabel", cursor="hand2")
         link.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
         link.bind("<Button-1>", lambda _: webbrowser.open(GBIF_SIGNUP_URL))
 
         self.status = ttk.Label(body, style="Muted.TLabel", wraplength=440, justify="left")
         self.status.grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        if gbif_credentials()[3] == "environment variables":
+            self._set_status("GBIF_ environment variables are set and are used instead of the account saved here.",
+                             "busy")
 
         footer = ttk.Frame(body)
         footer.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(14, 0))
         self.test_button = ttk.Button(footer, text="Test sign-in", command=self._test)
         self.test_button.pack(side="left")
-        ttk.Button(footer, text="Remove saved account", command=self._remove).pack(side="left", padx=6)
+        ttk.Button(footer, text="Remove account", command=self._remove).pack(side="left", padx=6)
         ttk.Button(footer, text="Save", style="Accent.TButton", command=self._save).pack(side="right")
         ttk.Button(footer, text="Cancel", command=self.destroy).pack(side="right", padx=6)
         self.bind("<Return>", lambda _: self._save())
@@ -951,10 +965,6 @@ class ApiKeyDialog(tk.Toplevel):
         body = ttk.Frame(self, padding=18)
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text=f"Measurements can use {info['label']} instead of LM Studio. Images of the sheets are "
-                             "sent to the provider and usage is billed to the key's account.",
-                  style="Muted.TLabel", wraplength=440, justify="left").grid(row=0, column=0, columnspan=3,
-                                                                               sticky="w", pady=(0, 10))
         self.key_var = tk.StringVar()
         ttk.Label(body, text="API key").grid(row=1, column=0, sticky="w", padx=(0, 10))
         self.entry = ttk.Entry(body, textvariable=self.key_var, width=44, show="•")
@@ -965,18 +975,19 @@ class ApiKeyDialog(tk.Toplevel):
                         command=lambda: self.entry.configure(show="" if self.show_var.get() else "•")
                         ).grid(row=2, column=1, sticky="w", pady=(4, 0))
         store = password_store_name()
-        notes = [describe_key(provider)]
-        notes.append(f"Saved keys are kept in {store}." if store else
-                     "No system keychain was found, so keys are kept in a file readable only by your user.")
+        notes = [f"Measurements can use {info['label']} instead of LM Studio. Images of the sheets are sent to the "
+                 "provider and usage is billed to the key's account.",
+                 f"Saved keys are kept in {store}." if store else
+                 "No system keychain was found, so keys are kept in a file readable only by your user."]
         if info["env"]:
-            notes.append(f"The {' or '.join(info['env'])} environment variable is used instead when set.")
-        ttk.Label(body, text=" ".join(notes), style="Muted.TLabel", wraplength=440, justify="left").grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+            notes.append(f"The {' or '.join(info['env'])} environment variable is used instead when it is set.")
+        HelpTip(body, "\n\n".join(notes)).grid(row=2, column=2, sticky="e", pady=(4, 0))
         if info["key_url"]:
             link = ttk.Label(body, text="Get an API key", style="Link.TLabel", cursor="hand2")
             link.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
             link.bind("<Button-1>", lambda _: webbrowser.open(info["key_url"]))
-        self.status = ttk.Label(body, style="Muted.TLabel", wraplength=440, justify="left")
+        self.status = ttk.Label(body, style="Muted.TLabel", wraplength=440, justify="left",
+                                text=describe_key(provider))
         self.status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
         footer = ttk.Frame(body)
         footer.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(14, 0))
@@ -1045,6 +1056,7 @@ class PipelineApp:
         self.settings = load_settings()
         self.control = TaskControl()
         self.running = False
+        self.checking_updates = False
         self.action_buttons = []
         self.text_widgets = []
         self.status_kinds = {}
@@ -1087,9 +1099,12 @@ class PipelineApp:
             if mode == (detector.label_reader if detector.read_labels else "off")))
         self.fill_blanks_var = tk.BooleanVar(value=get("fill_blanks", False))
         self.keep_awake_var = tk.BooleanVar(value=get("keep_awake", False))
+        self.check_updates_var = tk.BooleanVar(value=get("check_updates", True))
+        self.auto_update_var = tk.BooleanVar(value=get("auto_install_updates", False))
+        self.show_log_var = tk.BooleanVar(value=get("show_log", True))
         self.awake = KeepAwake()
 
-        root.title(f"GBIF Herbaria Data Pipeline {APP_VERSION}")
+        root.title(f"{APP_TITLE} {APP_VERSION}")
         root.geometry(f"{min(1180, root.winfo_screenwidth() - 40)}x{min(960, root.winfo_screenheight() - 110)}")
         root.minsize(800, 680)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1121,6 +1136,16 @@ class PipelineApp:
         self._apply_theme()
         self._restyle_widgets()
         self._save_settings()
+        self._repaint()
+
+    def _repaint(self):
+        """Lay the window out again after a theme change. On macOS some widgets on tabs that have not been
+        shown yet are otherwise left unpainted until the window is resized."""
+        self.root.update_idletasks()
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        self.root.geometry(f"{width + 1}x{height}")
+        self.root.update_idletasks()
+        self.root.geometry(f"{width}x{height}")
 
     def _restyle_widgets(self):
         for widget in self.text_widgets:
@@ -1143,6 +1168,7 @@ class PipelineApp:
         if aqua:
             app_menu = tk.Menu(menubar, name="apple")
             app_menu.add_command(label=f"About {APP_NAME}", command=self._show_about)
+            app_menu.add_command(label="Check for Updates…", command=lambda: self.check_for_updates(manual=True))
             menubar.add_cascade(menu=app_menu)
             self.root.createcommand("tk::mac::ShowPreferences", self._open_account)
             self.root.createcommand("tk::mac::Quit", self._on_close)
@@ -1151,9 +1177,17 @@ class PipelineApp:
         file_menu.add_command(label="GBIF account…", command=self._open_account)
         file_menu.add_command(label="Model setup…", command=self.open_model_setup)
         file_menu.add_separator()
+        file_menu.add_command(label="Site logins…", command=self._open_site_logins)
+        file_menu.add_separator()
         file_menu.add_command(label="Open this download's folder", command=self._open_workspace)
         file_menu.add_command(label="Open data folder", command=lambda: self._open(DATA_DIR))
         file_menu.add_command(label="Open log file", command=lambda: self._open(LOG_FILE))
+        file_menu.add_separator()
+        file_menu.add_command(label="Check for updates…", command=lambda: self.check_for_updates(manual=True))
+        file_menu.add_checkbutton(label="Check for updates on launch", variable=self.check_updates_var,
+                                  command=self._save_settings)
+        file_menu.add_checkbutton(label="Install updates without asking", variable=self.auto_update_var,
+                                  command=self._save_settings)
         if not aqua:
             file_menu.add_separator()
             file_menu.add_command(label="Quit", command=self._on_close)
@@ -1164,6 +1198,7 @@ class PipelineApp:
             view_menu.add_radiobutton(label=f"{choice} theme", value=choice, variable=self.theme_var,
                                       command=self._change_theme)
         view_menu.add_separator()
+        view_menu.add_checkbutton(label="Show log", variable=self.show_log_var, command=self._toggle_log)
         view_menu.add_checkbutton(label="Keep computer awake", variable=self.keep_awake_var,
                                   command=self._toggle_keep_awake,
                                   state="normal" if KeepAwake.supported() else "disabled")
@@ -1177,7 +1212,7 @@ class PipelineApp:
 
     def _show_about(self):
         messagebox.showinfo(f"About {APP_NAME}",
-                            f"{APP_NAME}\nVersion {APP_VERSION}\n\nBy Kaustubh Duddala\n\n"
+                            f"{APP_TITLE}\nVersion {APP_VERSION}\n\nBy Kaustubh Duddala\n\nFor use at the Brackenridge Field Lab, University of Texas at Austin\n\nHook 'em\n\n"
                             f"Your data and settings are kept in:\n{BASE_DIR}", parent=self.root)
 
     def _open_account(self):
@@ -1188,50 +1223,40 @@ class PipelineApp:
 
     def _refresh_account(self):
         user, password, email, source = gbif_credentials()
-        if user and password and email:
-            text = f"Logged into {user} (saved in {source})."
-        else:
-            text = "No GBIF account set. You can download via DOI but cannot request new downloads."
-        self.account_label.configure(text=text)
+        signed_in = bool(user and password and email)
+        self.account_label.configure(text=f"Signed in as {user}" if signed_in else "Not signed in")
+        self.account_button.configure(text="Change…" if signed_in else "Sign in…")
+        self.account_help = ("New GBIF downloads are requested with your GBIF account. Downloading by DOI works "
+                             "without one." + (f"\n\nThe account in use comes from {source}." if signed_in else ""))
 
     def _build_ui(self):
         self._build_menu()
-        header = ttk.Frame(self.root, padding=(18, 14, 18, 8))
+        header = ttk.Frame(self.root, padding=(18, 12, 18, 6))
         header.pack(fill="x")
-        titles = ttk.Frame(header)
-        titles.pack(side="left")
-        ttk.Label(titles, text="GBIF Herbaria Data Pipeline", style="Title.TLabel").pack(anchor="w")
-        chooser = ttk.Frame(titles)
-        chooser.pack(anchor="w", pady=(6, 0))
-        ttk.Label(chooser, text="Download", style="Muted.TLabel").pack(side="left", padx=(0, 6))
-        self.workspace_box = ttk.Combobox(chooser, textvariable=self.workspace_var, state="readonly", width=46,
+        ttk.Label(header, text="Active download", style="Heading.TLabel").pack(side="left", padx=(0, 8))
+        self.workspace_box = ttk.Combobox(header, textvariable=self.workspace_var, state="readonly", width=46,
                                           postcommand=self._refresh_workspaces)
         self.workspace_box.pack(side="left")
         self.workspace_box.bind("<<ComboboxSelected>>", self._choose_workspace)
-        ttk.Button(chooser, text="Open folder", command=self._open_workspace).pack(side="left", padx=(6, 0))
-        picker = ttk.Frame(header)
-        picker.pack(side="right", anchor="n")
-        awake = ttk.Checkbutton(picker, text="Keep computer awake", variable=self.keep_awake_var,
-                                command=self._toggle_keep_awake)
-        awake.pack(side="left", padx=(0, 18))
-        if not KeepAwake.supported():
-            awake.configure(state="disabled")
-            self.keep_awake_var.set(False)
-        ttk.Label(picker, text="Theme", style="Muted.TLabel").pack(side="left", padx=(0, 6))
-        combo = ttk.Combobox(picker, textvariable=self.theme_var, values=THEME_CHOICES,
-                             state="readonly", width=8)
-        combo.pack(side="left")
-        combo.bind("<<ComboboxSelected>>", self._change_theme)
+        tip(ttk.Button(header, text="Open folder", command=self._open_workspace),
+            "Show this download's folder, with its CSV files, images and measurements").pack(side="left",
+                                                                                              padx=(6, 0))
+        HelpTip(header, "Each GBIF download is kept in its own folder under data/, together with its cleaned CSV "
+                        "files, images and measurements.\n\nEvery tab works on the download chosen here, and "
+                        "choosing one fills in the file boxes on each tab. A new download or cleaning run becomes "
+                        "the active one automatically.").pack(side="left", padx=(10, 0))
 
         status = ttk.Frame(self.root, padding=(18, 6, 18, 12))
         status.pack(side="bottom", fill="x")
-        self.status_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="Ready")
         self.detail_var = tk.StringVar()
-        ttk.Label(status, textvariable=self.status_var, style="Muted.TLabel").pack(side="left")
+        ttk.Label(status, textvariable=self.status_var).pack(side="left")
         ttk.Label(status, textvariable=self.detail_var, style="Muted.TLabel").pack(side="left", padx=12)
-        self.cancel_btn = ttk.Button(status, text="Cancel", command=self._cancel, state="disabled")
+        self.cancel_btn = tip(ttk.Button(status, text="Cancel", command=self._cancel, state="disabled"),
+                              "Stop the running task. Press twice: the second press confirms.")
         self.cancel_btn.pack(side="right")
-        self.skip_btn = ttk.Button(status, text="Skip", command=self._skip_menu, state="disabled")
+        self.skip_btn = tip(ttk.Button(status, text="Skip", command=self._skip_menu, state="disabled"),
+                            "Skip the item being worked on, or everything from its website")
         self.skip_btn.pack(side="right", padx=6)
         self.skip_menu = tk.Menu(self.root, tearoff=False)
         self.skip_menu.add_command(label="Skip this item", command=self._skip)
@@ -1240,10 +1265,21 @@ class PipelineApp:
         self.cancel_confirm_job = None
         self.progress = ttk.Progressbar(status, length=220, mode="determinate")
         self.progress.pack(side="right", padx=6)
+        tip(ttk.Checkbutton(status, text="Log", variable=self.show_log_var, command=self._toggle_log),
+            "Show or hide the log at the bottom of the window").pack(side="right", padx=(0, 12))
+        awake = tip(ttk.Checkbutton(status, text="Keep awake", variable=self.keep_awake_var,
+                                    command=self._toggle_keep_awake),
+                    "Stop the computer from going to sleep while the app is open, so long downloads and measuring "
+                    "runs can finish. The screen may still turn off.")
+        awake.pack(side="right", padx=(0, 12))
+        if not KeepAwake.supported():
+            awake.configure(state="disabled")
+            self.keep_awake_var.set(False)
 
-        panes = ttk.PanedWindow(self.root, orient="vertical")
-        panes.pack(fill="both", expand=True, padx=14)
-        self.notebook = ttk.Notebook(panes)
+        self.panes = ttk.PanedWindow(self.root, orient="vertical")
+        self.panes.pack(fill="both", expand=True, padx=14)
+        self.notebook = ttk.Notebook(self.panes)
+        # The numbered tabs are the pipeline, in order; the rest are tools for any CSV file.
         self.notebook.add(self._build_download_tab(), text="Download")
         self.notebook.add(self._build_clean_tab(), text="Clean")
         self.notebook.add(self._build_images_tab(), text="Images")
@@ -1257,28 +1293,39 @@ class PipelineApp:
         self.notebook.add(self.modify_tab, text="Modify")
         self.notebook.add(self.analysis_tab, text="Analysis")
         self.notebook.bind("<<NotebookTabChanged>>", self._tab_changed)
-        panes.add(self.notebook, weight=4)
-        panes.add(self._build_console(panes), weight=1)
+        self.panes.add(self.notebook, weight=4)
+        self.console_frame = self._build_console(self.panes)
+        if self.show_log_var.get():
+            self.panes.add(self.console_frame, weight=1)
 
     def _build_console(self, parent):
         frame = ttk.Frame(parent, padding=(0, 10, 0, 0))
         bar = ttk.Frame(frame)
         bar.pack(fill="x", pady=(0, 6))
         ttk.Label(bar, text="Log", style="Heading.TLabel").pack(side="left")
-        ttk.Button(bar, text="Clear", command=self._clear_console).pack(side="right")
-        ttk.Button(bar, text="Open log file", command=lambda: self._open(LOG_FILE)).pack(side="right", padx=6)
-        ttk.Button(bar, text="Open data folder", command=lambda: self._open(DATA_DIR)).pack(side="right")
+        tip(ttk.Button(bar, text="Clear", command=self._clear_console),
+            "Empty this view. The log file keeps everything.").pack(side="right")
+        tip(ttk.Button(bar, text="Open log file", command=lambda: self._open(LOG_FILE)),
+            "Open the full log, with the time of every line").pack(side="right", padx=6)
         body = ttk.Frame(frame)
         body.pack(fill="both", expand=True)
-        self.console = self._text(body, height=9, state="disabled")
+        self.console = self._text(body, height=7, state="disabled")
         scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.console.yview)
         self.console.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.console.pack(side="left", fill="both", expand=True)
         return frame
 
-    def _section(self, parent, text, row, column=0, columnspan=1, padx=0):
-        frame = ttk.LabelFrame(parent, text=text)
+    def _toggle_log(self):
+        shown = str(self.console_frame) in self.panes.panes()
+        if self.show_log_var.get() and not shown:
+            self.panes.add(self.console_frame, weight=1)
+        elif not self.show_log_var.get() and shown:
+            self.panes.forget(self.console_frame)
+        self._save_settings()
+
+    def _section(self, parent, text, row, column=0, columnspan=1, padx=0, help=None):
+        frame = titled_frame(parent, text, help)
         frame.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", pady=(0, 12), padx=padx)
         frame.columnconfigure(1, weight=1)
         return frame
@@ -1299,36 +1346,38 @@ class PipelineApp:
                 paths += [str(ws.raw_dir), *map(str, sorted(ws.root.glob("*.zip")))]
         return [p for p in dict.fromkeys(paths) if Path(p).exists()]
 
-    def _field(self, parent, row, label, value="", browse=None, variable=None, openable=False, kind=None):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=3)
+    def _field(self, parent, row, label, value="", browse=None, variable=None, openable=False, kind=None,
+               help=None, prompt=None):
+        """A labelled row: a text box (or a drop-down of paths when `kind` is given), with optional Browse and
+        Open buttons, a "?" hint after the label and grey prompt text while the box is empty."""
+        help_label(parent, label, help).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=3)
+        variable = variable if variable is not None else tk.StringVar(value=str(value))
         if kind:
-            variable = variable if variable is not None else tk.StringVar(value=str(value))
             entry = PathCombo(parent, self, variable, lambda: self._path_choices(kind))
-            entry.var = variable
         else:
-            entry = ttk.Entry(parent, textvariable=variable) if variable is not None else ttk.Entry(parent)
-        if variable is None:
-            entry.insert(0, str(value))
+            entry = ttk.Entry(parent, textvariable=variable)
+            if prompt:
+                placeholder(entry, prompt, variable)
+        entry.var = variable
         entry.grid(row=row, column=1, sticky="ew", pady=3)
         if browse:
             ttk.Button(parent, text="Browse…", command=lambda: self._browse(entry, browse)).grid(
                 row=row, column=2, padx=(6, 0), pady=3)
         if openable:
-            ttk.Button(parent, text="Open", command=lambda: self._open(
-                (variable.get() if kind else entry.get()).strip())).grid(
-                row=row, column=3, padx=(6, 0), pady=3)
+            tip(ttk.Button(parent, text="Open", command=lambda: self._open(variable.get().strip())),
+                "Open it in Finder or its usual app").grid(row=row, column=3, padx=(6, 0), pady=3)
         return entry
 
-    def _hint(self, parent, row, text, column=0, columnspan=4):
-        ttk.Label(parent, text=text, style="Muted.TLabel", wraplength=660, justify="left").grid(
-            row=row, column=column, columnspan=columnspan, sticky="w", pady=(2, 4))
-
     def _action(self, parent, row, buttons, columnspan=4):
+        """A row of buttons, the first one the main action, followed by a status text which is returned.
+        Each button is (text, command) or (text, command, hint)."""
         frame = ttk.Frame(parent)
         frame.grid(row=row, column=0, columnspan=columnspan, sticky="w", pady=(8, 0))
-        for i, (text, command) in enumerate(buttons):
+        for i, (text, command, *hint) in enumerate(buttons):
             button = ttk.Button(frame, text=text, command=command, style="Accent.TButton" if i == 0 else "TButton")
             button.pack(side="left", padx=(0, 6))
+            if hint:
+                tip(button, hint[0])
             self.action_buttons.append(button)
         status = ttk.Label(frame, style="Muted.TLabel")
         status.pack(side="left", padx=8)
@@ -1338,23 +1387,36 @@ class PipelineApp:
         tab = ttk.Frame(self.notebook, padding=16)
         tab.columnconfigure(0, weight=1)
 
-        source = self._section(tab, "Data source", 0)
-        ttk.Label(source, text="Preset*").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=3)
+        source = self._section(tab, "Get data from GBIF", 0)
+        help_label(source, "Preset", "A preset fills in the species here and the cleaning settings on the Clean tab "
+                   "(coordinate precision, excluded taxa and issue filters), and sets which records are requested "
+                   "from GBIF.").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=3)
         self.preset_var = tk.StringVar(value=next(iter(PRESETS)))
         combo = ttk.Combobox(source, textvariable=self.preset_var, values=list(PRESETS), state="readonly", width=24)
         combo.grid(row=0, column=1, sticky="w", pady=3)
         combo.bind("<<ComboboxSelected>>", lambda _: self._load_preset())
-        self.species_entry = self._field(source, 1, "Species")
-        self.doi_entry = self._field(source, 2, "DOI")
+        self.species_entry = self._field(
+            source, 1, "Species", prompt="Scientific name, for example Megathyrsus maximus",
+            help="Requests a new download of this species from GBIF. It needs a GBIF account, and GBIF usually "
+                 "takes 5 to 30 minutes to prepare the file.")
+        self.doi_entry = self._field(
+            source, 2, "or DOI", prompt="DOI or link of an existing GBIF download, for example 10.15468/dl.abc123",
+            help="Paste the DOI or link of a download GBIF has already prepared. No account is needed. When a DOI "
+                 "is given it is used instead of the species.")
+        self.account_help = ""
+        help_label(source, "GBIF account", lambda: self.account_help).grid(row=3, column=0, sticky="w",
+                                                                          padx=(0, 10), pady=3)
         account_row = ttk.Frame(source)
-        account_row.grid(row=4, column=1, columnspan=3, sticky="w", pady=(2, 4))
-        self.account_label = ttk.Label(account_row, style="Muted.TLabel", wraplength=520, justify="left")
-        ttk.Button(account_row, text="Set GBIF Credentials", command=self._open_account).pack(side="left", padx=(0, 10))
+        account_row.grid(row=3, column=1, columnspan=3, sticky="w", pady=3)
+        self.account_label = ttk.Label(account_row)
         self.account_label.pack(side="left")
+        self.account_button = ttk.Button(account_row, text="Sign in…", command=self._open_account)
+        self.account_button.pack(side="left", padx=(10, 0))
         self._refresh_account()
-        self.download_status = self._action(source, 5, [("Download only", self._run_download)])
-        self.full_status = self._action(source, 6, [("Download + clean", self._run_full)])
-
+        self.download_status = self.full_status = self._action(source, 4, [
+            ("Download", self._run_download, "Download the data and extract it into its own folder under data/"),
+            ("Download + clean", self._run_full,
+             "Download, then run cleaning phases 1 to 3 with the settings on the Clean tab")])
         return tab
 
     def _build_clean_tab(self):
@@ -1362,7 +1424,11 @@ class PipelineApp:
         tab.columnconfigure((0, 1), weight=1, uniform="half")
 
         data = self._section(tab, "Input data", 0, columnspan=2)
-        self.data_entry = self._field(data, 0, "Folder or ZIP", kind="input")
+        self.data_entry = self._field(
+            data, 0, "Folder or ZIP", kind="input",
+            help="The GBIF download to clean: its extracted folder (with occurrence.txt and multimedia.txt) or "
+                 f"the ZIP itself. Phase 1 reads it.\n\nPhase 2 reads {INSPECT_NAME} and phase 3 reads "
+                 f"{FULL_MASTER_NAME} from the active download's folder, so they need no input here.")
         ttk.Button(data, text="Folder…", command=lambda: self._browse(
             self.data_entry, lambda: filedialog.askdirectory(title="Select data folder"))).grid(
             row=0, column=2, padx=(6, 0))
@@ -1370,11 +1436,14 @@ class PipelineApp:
             self.data_entry, lambda: filedialog.askopenfilename(
                 title="Select ZIP file", filetypes=[("ZIP files", "*.zip"), ("All files", "*.*")]))).grid(
             row=0, column=3, padx=(6, 0))
-        self._hint(data, 1, f"Each download is kept in its own folder under data/. Phase 2 reads {INSPECT_NAME} and "
-                            f"phase 3 reads {FULL_MASTER_NAME} from the folder shown in Download at the top.",
-                   column=1, columnspan=3)
 
-        steps = self._section(tab, "Steps", 1, padx=(0, 6))
+        steps = self._section(
+            tab, "Steps", 1, padx=(0, 6),
+            help=f"Phase 1 merges the occurrence and media files, applies the filters below and writes "
+                 f"{INSPECT_NAME} with the doubtful records flagged.\n\nPhase 2 drops the rows you marked Remove, "
+                 "merges duplicates and writes master_cleaned.csv.\n\nPhase 3 keeps only the master columns you "
+                 "choose.\n\nTo review the flagged records first: run phase 1 alone, press Edit flagged records…, "
+                 "type Remove in the Action column of the ones to drop, then run phases 2 and 3.")
         self.phase_vars = []
         for i, label in enumerate(("Phase 1: clean and merge", "Phase 2: review, deduplicate and finalize",
                                    "Phase 3: choose master columns")):
@@ -1382,7 +1451,10 @@ class PipelineApp:
             self.phase_vars.append(var)
             ttk.Checkbutton(steps, text=label, variable=var).grid(row=i, column=0, sticky="w")
 
-        precision = self._section(tab, "Coordinate precision", 1, column=1, padx=(6, 0))
+        precision = self._section(
+            tab, "Coordinate precision", 1, column=1, padx=(6, 0),
+            help="Phase 1 removes records whose latitude or longitude has fewer decimal places than this. One "
+                 "decimal place is roughly 11 km, three are roughly 110 m.")
         self.precision_var = tk.StringVar(value=PRECISION_RELAXED)
         for i, (label, value) in enumerate((("Keep all coordinates", PRECISION_NONE),
                                             ("At least 1 decimal place", PRECISION_RELAXED),
@@ -1390,117 +1462,175 @@ class PipelineApp:
             ttk.Radiobutton(precision, text=label, variable=self.precision_var, value=value).grid(
                 row=i, column=0, sticky="w")
 
-        filters = self._section(tab, "Filters", 2, columnspan=2)
-        ttk.Button(filters, text="Edit issue filters…", command=self._open_issue_dialog).grid(
-            row=0, column=0, sticky="w")
+        filters = self._section(tab, "Filters and columns", 2, padx=(0, 6))
+        filters.columnconfigure(1, weight=0)
+        filters.columnconfigure(2, weight=1)
+        help_label(filters, "Issue codes", "GBIF tags records with issue codes (for example a rounded coordinate "
+                   "or a country mismatch). Choose which codes remove a record in phase 1 and which only flag it "
+                   "for you to inspect.").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=3)
+        ttk.Button(filters, text="Edit filters…", command=self._open_issue_dialog).grid(row=0, column=1, sticky="ew",
+                                                                                        pady=3)
         self.issue_summary = ttk.Label(filters, style="Muted.TLabel")
-        self.issue_summary.grid(row=0, column=1, sticky="w", padx=12)
-        ttk.Label(filters, text="Excluded taxa, one name per line").grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(10, 4))
-        self.taxa_text = self._text(filters, height=4)
-        self.taxa_text.grid(row=2, column=0, columnspan=2, sticky="ew")
-
-        columns = self._section(tab, "Master columns (phase 3)", 3, columnspan=2)
-        ttk.Button(columns, text="Choose columns…", command=self._open_column_dialog).grid(row=0, column=0, sticky="w")
-        self.column_summary = ttk.Label(columns, style="Muted.TLabel")
-        self.column_summary.grid(row=0, column=1, sticky="w", padx=12)
+        self.issue_summary.grid(row=0, column=2, sticky="w", padx=10)
+        help_label(filters, "Master columns", "The columns phase 3 keeps in master_cleaned.csv. The rest are saved "
+                   "to removed_columns.csv, so running phase 3 again can bring them back.").grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=3)
+        ttk.Button(filters, text="Choose columns…", command=self._open_column_dialog).grid(row=1, column=1,
+                                                                                           sticky="ew", pady=3)
+        self.column_summary = ttk.Label(filters, style="Muted.TLabel")
+        self.column_summary.grid(row=1, column=2, sticky="w", padx=10)
         self._refresh_column_summary()
 
-        self.clean_status = self._action(tab, 4, [("Run", self._run_clean),
-                                                   ("Edit flagged records…", self._edit_flagged)], columnspan=2)
+        taxa = self._section(tab, "Excluded taxa", 2, column=1, padx=(6, 0),
+                             help="One name per line. Phase 1 removes records whose scientific name, infraspecific "
+                                  "epithet or verbatim name contains one of them.")
+        taxa.columnconfigure(0, weight=1)
+        taxa.rowconfigure(0, weight=1)
+        self.taxa_text = self._text(taxa, height=3, width=20)
+        self.taxa_text.grid(row=0, column=0, columnspan=2, sticky="nsew")
+
+        self.clean_status = self._action(tab, 3, [
+            ("Run cleaning", self._run_clean, "Run the ticked phases on the input data"),
+            ("Edit flagged records…", self._edit_flagged,
+             "Open the records phase 1 flagged in the Edit tab. Type Remove in the Action column of the ones to "
+             "drop, save, then run phase 2.")], columnspan=2)
         return tab
 
     def _build_images_tab(self):
         tab = ttk.Frame(self.notebook, padding=16)
         tab.columnconfigure(0, weight=1)
-        files = self._section(tab, "Files", 0)
-        self._field(files, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
-                    browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
-        self._field(files, 1, "Image folder", variable=self.media_dir_var, openable=True, kind="folder",
-                    browse=lambda: filedialog.askdirectory(title="Select image folder"))
-
-        download = self._section(tab, "Download images", 1)
-        self.media_status = self._action(download, 1, [("Download missing images", self._run_download_media),
-                                                       ("Choose records…", self._choose_downloads),
-                                                       ("Site logins…", self._open_site_logins)])
+        images = self._section(tab, "Download specimen images", 0)
+        self._field(images, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
+                    browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES),
+                    help="The cleaned dataset. The image of each record is found from its media column.")
+        self._field(images, 1, "Image folder", variable=self.media_dir_var, openable=True, kind="folder",
+                    browse=lambda: filedialog.askdirectory(title="Select image folder"),
+                    help="Where the images are saved, each named by its gbifID.")
+        self.media_status = self._action(images, 2, [
+            ("Download missing images", self._run_download_media,
+             "Download the image of every record that does not have one yet"),
+            ("Choose records…", self._choose_downloads, "Pick specific records to download, or download some again"),
+            ("Site logins…", self._open_site_logins,
+             "Sign in to image sites that refuse downloads, and choose what happens when one does")])
         return tab
 
     def _build_measure_tab(self):
-        tab = ttk.Frame(self.notebook, padding=16)
+        outer = ScrollFrame(self.notebook, self.palette)        # the tallest tab: it scrolls in a short window
+        tab = ttk.Frame(outer.inner, padding=16)
+        tab.grid(row=0, column=0, sticky="nsew")
         tab.columnconfigure(0, weight=1)
 
         files = self._section(tab, "Files", 0)
         self._field(files, 0, "Image folder", variable=self.media_dir_var, openable=True, kind="folder",
-                    browse=lambda: filedialog.askdirectory(title="Select image folder"))
+                    browse=lambda: filedialog.askdirectory(title="Select image folder"),
+                    help="The images to measure. Each file name (without its extension) is used as the gbifID.")
         self._field(files, 1, "Measurements CSV", variable=self.measurements_var, openable=True, kind="csv",
                     browse=lambda: filedialog.asksaveasfilename(title="Measurements CSV", defaultextension=".csv",
-                                                                filetypes=CSV_TYPES, confirmoverwrite=False))
+                                                                filetypes=CSV_TYPES, confirmoverwrite=False),
+                    help="Where the results go, one row per gbifID. It is created on the first run.")
 
-        model = self._section(tab, "Model", 1)
-        ttk.Label(model, text="Provider").grid(row=0, column=0, sticky="w")
-        provider_box = ttk.Combobox(model, textvariable=self.provider_var, state="readonly", width=34,
+        model = self._section(tab, "Vision model", 1)
+        help_label(model, "Provider", "What looks at the sheets. LM Studio runs a vision model on this computer. "
+                   "The others send the images to that provider, and usage is billed to the API key's account."
+                   ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        provider_row = ttk.Frame(model)
+        provider_row.grid(row=0, column=1, columnspan=3, sticky="w", pady=3)
+        provider_box = ttk.Combobox(provider_row, textvariable=self.provider_var, state="readonly", width=34,
                                     values=[info["label"] for info in PROVIDERS.values()])
-        provider_box.grid(row=0, column=1, sticky="w", pady=3)
+        provider_box.pack(side="left")
         provider_box.bind("<<ComboboxSelected>>", self._provider_changed)
-        self.key_button = ttk.Button(model, text="API key…", command=self._open_api_key)
-        self.key_button.grid(row=0, column=2, columnspan=2, padx=(6, 0), sticky="w")
-        self._field(model, 4, "Server", variable=self.server_var)
-        ttk.Label(model, text="Model").grid(row=5, column=0, sticky="w")
+        self.key_button = ttk.Button(provider_row, text="API key…", command=self._open_api_key)
+        self.key_button.pack(side="left", padx=(6, 0))
+        self._field(model, 1, "Server", variable=self.server_var,
+                    help="The address the model is reached at. Change it only for LM Studio on another port or "
+                         "computer, or for another OpenAI-compatible server (it ends in /v1).")
+        self.model_help = ""
+        help_label(model, "Model", lambda: self.model_help).grid(row=2, column=0, sticky="w", padx=(0, 10))
         self.model_box = ttk.Combobox(model, textvariable=self.model_var, width=40)
-        self.model_box.grid(row=5, column=1, sticky="ew", pady=3)
+        self.model_box.grid(row=2, column=1, sticky="ew", pady=3)
         model_buttons = ttk.Frame(model)
-        model_buttons.grid(row=5, column=2, columnspan=2, padx=(6, 0), sticky="w")
-        refresh = ttk.Button(model_buttons, text="Refresh", command=self._refresh_models)
+        model_buttons.grid(row=2, column=2, columnspan=2, padx=(6, 0), sticky="w")
+        refresh = tip(ttk.Button(model_buttons, text="Refresh", command=self._refresh_models),
+                      "Ask the provider which models are available and list them in the drop-down")
         refresh.pack(side="left")
-        test = ttk.Button(model_buttons, text="Test connection", command=self._test_connection)
+        test = tip(ttk.Button(model_buttons, text="Test connection", command=self._test_connection),
+                   "Check that the provider answers with these settings")
         test.pack(side="left", padx=(6, 0))
         self.action_buttons += [refresh, test]
-        self.model_hint = ttk.Label(model, style="Muted.TLabel", wraplength=640, justify="left")
-        self.model_hint.grid(row=6, column=1, columnspan=3, sticky="w")
+        help_label(model, "Options", "Token limit: the most the model may write per image. 0 means no limit.\n\n"
+                   "Thinking: how much the model reasons before it answers, where the model supports it.\n\n"
+                   "Image size: the longest side of the image that is sent, in pixels. 0 uses the provider's "
+                   "default; smaller is faster and cheaper but finds less.").grid(row=3, column=0, sticky="w",
+                                                                                 padx=(0, 10))
         options = ttk.Frame(model)
-        options.grid(row=7, column=1, columnspan=3, sticky="w", pady=3)
-        ttk.Spinbox(options, textvariable=self.token_var, from_=0, to=65536, increment=1000, width=8).pack(side="left")
-        ttk.Label(options, text="token limit per image (0 for none)", style="Muted.TLabel").pack(side="left", padx=(6, 20))
+        options.grid(row=3, column=1, columnspan=3, sticky="w", pady=3)
+        ttk.Label(options, text="Token limit").pack(side="left")
+        ttk.Spinbox(options, textvariable=self.token_var, from_=0, to=65536, increment=1000, width=8).pack(
+            side="left", padx=(6, 18))
         ttk.Label(options, text="Thinking").pack(side="left")
         ttk.Combobox(options, textvariable=self.thinking_var, values=list(THINKING_CHOICES), state="readonly",
-                     width=14).pack(side="left", padx=6)
+                     width=14).pack(side="left", padx=(6, 18))
+        ttk.Label(options, text="Image size").pack(side="left")
         ttk.Spinbox(options, textvariable=self.image_side_var, from_=0, to=4096, increment=256, width=6).pack(
-            side="left", padx=(20, 0))
-        ttk.Label(options, text="px longest image side (0 for the default; smaller is faster)",
-                  style="Muted.TLabel").pack(side="left", padx=6)
-        ttk.Label(model, text="Options").grid(row=7, column=0, sticky="w")
+            side="left", padx=(6, 4))
+        ttk.Label(options, text="px").pack(side="left")
+
         # How structures are found and checked: trained models take over from the vision model as they appear.
-        ttk.Label(model, text="Find with").grid(row=8, column=0, sticky="w", padx=(0, 10))
-        finder = ttk.Frame(model)
-        finder.grid(row=8, column=1, columnspan=3, sticky="w", pady=3)
+        finding = self._section(
+            tab, "Finding and reading", 2,
+            help="Models only find things on the sheet: the ruler, labels, panicles, leaves and seeds. The numbers "
+                 "come from the image geometry, and doubtful ones go to the Review tab.\n\nFind with: what does "
+                 "the finding. Your trained models take over from the vision model once you have some.\n\nRead "
+                 "labels: what transcribes the voucher label.\n\nSAM 2 outlines: precise outlines of leaves and "
+                 "seeds (needs the add-on from Model setup).\n\nSecond-opinion checks: the vision model is asked "
+                 "yes or no questions about each measured object. Slower, but catches more mistakes.")
+        ttk.Label(finding, text="Find with").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        finder = ttk.Frame(finding)
+        finder.grid(row=0, column=1, columnspan=3, sticky="w", pady=3)
         ttk.Combobox(finder, textvariable=self.detector_var, values=list(DETECTOR_CHOICES), state="readonly",
                      width=38).pack(side="left", padx=(0, 14))
         for text, var in (("SAM 2 outlines", self.refine_masks_var), ("Second-opinion checks", self.second_opinion_var)):
             ttk.Checkbutton(finder, text=text, variable=var).pack(side="left", padx=(0, 14))
-        ttk.Label(model, text="Read labels").grid(row=9, column=0, sticky="w", padx=(0, 10))
-        reader = ttk.Frame(model)
-        reader.grid(row=9, column=1, columnspan=3, sticky="w", pady=3)
+        ttk.Label(finding, text="Read labels").grid(row=1, column=0, sticky="w", padx=(0, 10))
+        reader = ttk.Frame(finding)
+        reader.grid(row=1, column=1, columnspan=3, sticky="w", pady=3)
         ttk.Combobox(reader, textvariable=self.label_var, values=list(LABEL_CHOICES), state="readonly",
                      width=38).pack(side="left", padx=(0, 14))
-        ttk.Button(reader, text="Model setup…", command=self.open_model_setup).pack(side="left")
-        self.detector_hint = ttk.Label(model, style="Muted.TLabel", wraplength=760, justify="left")
-        self.detector_hint.grid(row=10, column=1, columnspan=3, sticky="w")
+        self.setup_button = tip(ttk.Button(reader, text="Model setup…", command=self.open_model_setup),
+                                lambda: self.detector_help, wrap=460)
+        self.setup_button.pack(side="left")
+        self.detector_hint = ttk.Label(reader, style="Muted.TLabel")
+        self.detector_hint.pack(side="left", padx=(12, 0))
         self._refresh_detector_hint()
-        self.measure_status = self._action(model, 11, [("Measure new images", self._run_measurements),
-                                                       ("Choose images…", self._choose_measurements)])
+
+        self.measure_status = self._action(tab, 3, [
+            ("Measure new images", self._run_measurements,
+             "Measure every image in the folder that has not been measured yet. Images that failed are retried."),
+            ("Choose images…", self._choose_measurements, "Pick specific images to measure, or measure some again")],
+            columnspan=1)
         self._update_provider_widgets()
 
-        join = self._section(tab, "Use the results", 2)
+        join = self._section(tab, "Use the results", 4)
+        join.grid_configure(pady=(14, 0))
         self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
-                    browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
-        self.join_status = self._action(join, 2, [("Join into dataset…", self._run_join),
-                                                  ("Export Darwin Core records", self._export_mof)])
-        return tab
+                    browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES),
+                    help="The cleaned dataset the measurements are joined into.")
+        self.join_status = self._action(join, 2, [
+            ("Join into dataset…", self._run_join,
+             "Add the measurement columns to the dataset CSV, matched by gbifID"),
+            ("Export Darwin Core records", self._export_mof,
+             "Write the measurements as Darwin Core MeasurementOrFact records, for publishing with the dataset")])
+        return outer
 
     def _refresh_detector_hint(self):
+        """Which optional models are ready, as ticks beside Model setup; the full sentences are its hint."""
+        short = {"addon": "Add-on", "sam": "SAM 2", "ocr": "Label reader", "trained": "Trained models"}
+        ready = {c.key: c.status()[0] == READY for c in components() if c.key in short}
+        self.detector_hint.configure(text="    ".join(("✓ " if ready[key] else "○ ") + name
+                                                      for key, name in short.items() if key in ready))
         lines = trained.status() + ["Label reader (OCR): " + ("installed" if ocr.available() else "not installed")]
-        self.detector_hint.configure(text=" · ".join(lines) + ". Models only find things; the numbers come from "
-                                     "the image geometry, and doubtful ones go to the Review tab.")
+        self.detector_help = ("Install or download the optional models: the PyTorch add-on, SAM 2, the built-in "
+                              "label reader and your own trained models.\n\n" + "\n".join(lines))
 
     def _detector_options(self):
         label = LABEL_CHOICES.get(self.label_var.get(), "auto")
@@ -1836,6 +1966,8 @@ class PipelineApp:
         self.settings.update(
             theme=self.theme_var.get(), **self._model_settings_dict(), fill_blanks=self.fill_blanks_var.get(),
             detector=vars(self._detector_options()),
+            show_log=self.show_log_var.get(), check_updates=self.check_updates_var.get(),
+            auto_install_updates=self.auto_update_var.get(),
             dataset_csv=self.dataset_var.get().strip(), media_dir=self.media_dir_var.get().strip(),
             measurements_csv=self.measurements_var.get().strip(), keep_awake=self.keep_awake_var.get(),
             master_columns=self.master_columns, workspace=self.workspace.name if self.workspace else "",
@@ -1855,20 +1987,69 @@ class PipelineApp:
             self._log("The computer can sleep normally again.")
         self._save_settings()
 
-    def _on_close(self):
+    def _can_quit(self):
+        """True when it is fine to close the window now: asks about a running task and unsaved edits."""
         if self.running and not messagebox.askyesno("Quit", "A task is still running. Quit anyway?",
                                                     parent=self.root):
-            return
+            return False
         if not self.edit_tab.confirm_close():
-            return
+            return False
         if self.review_tab.has_unsaved_changes() and not messagebox.askyesno(
                 "Quit", "The sheet open on the Review tab has edits that were not accepted. Quit anyway?",
                 parent=self.root):
-            return
+            return False
+        return True
+
+    def _shutdown(self):
         self.control.cancel_event.set()
         self._save_settings()
         self.awake.disable()
         self.root.destroy()
+
+    def _on_close(self):
+        if self._can_quit():
+            self._shutdown()
+
+    # ------------------------------------------------------------------ updates
+
+    def check_for_updates(self, manual=False):
+        """Look for a newer release in the background. At launch it says nothing unless there is one; from the
+        menu it always answers."""
+        if self.checking_updates:
+            return
+        self.checking_updates = True
+
+        def work():
+            update, error = None, ""
+            try:
+                update = updater.check()
+            except updater.UpdateError as exc:
+                error = str(exc)
+            self._ui(self._update_checked, update, error, manual)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_checked(self, update, error, manual):
+        self.checking_updates = False
+        if error:
+            self._log(error)
+            if manual:
+                messagebox.showinfo("Check for updates", error, parent=self.root)
+            return
+        if update is None:
+            if manual:
+                where = "" if updater.install_location() else (
+                    "\n\nThis copy runs from source, so update it with git (git pull).")
+                messagebox.showinfo("Check for updates", f"{APP_NAME} is up to date ({APP_VERSION})." + where,
+                                    parent=self.root)
+            return
+        if not manual and self.settings.get("skipped_update") == update.tag:
+            return
+        self._log(f"{APP_NAME} {update.tag} is available (this is {APP_VERSION}).")
+        if not manual and self.auto_update_var.get() and updater.install_location() and not self.running:
+            UpdateDialog(self, update, start=True)
+        else:
+            UpdateDialog(self, update)
 
     def _image_side(self):
         try:
@@ -2136,8 +2317,8 @@ class PipelineApp:
             "custom": "Enter the server's OpenAI-compatible address (ending in /v1) and pick a model. "
                       "Add an API key only if the server needs one.",
         }
-        hint = hints.get(self.provider) or f"Pick a model after saving an API key. {describe_key(self.provider)}"
-        self.model_hint.configure(text=hint)
+        self.model_help = hints.get(self.provider) or ("Press Refresh to list the models your API key can use, "
+                                                       f"then pick one.\n\n{describe_key(self.provider)}")
 
     def _open_api_key(self):
         dialog = ApiKeyDialog(self, self.provider)
@@ -2201,5 +2382,7 @@ class PipelineApp:
 
 def launch():
     root = tk.Tk()
-    PipelineApp(root)
+    app = PipelineApp(root)
+    if app.check_updates_var.get() and updater.install_location():      # a source checkout is updated with git
+        root.after(2500, app.check_for_updates)
     root.mainloop()

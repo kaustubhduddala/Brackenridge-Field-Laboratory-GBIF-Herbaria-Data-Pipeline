@@ -4,8 +4,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from . import csv_statistics
-from .gui_widgets import CsvPicker
-from .gui_widgets import BarChart, DataTable
+from .gui_widgets import BarChart, CsvPicker, DataTable, HelpTip, help_label
 
 CHART_STATS = ("mean", "median", "count", "min", "max", "sum")
 
@@ -23,7 +22,7 @@ class AnalysisTab(ttk.Frame):
         file_box.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         file_box.columnconfigure(0, weight=1)
         self.picker = CsvPicker(file_box, app, source.path_var, source.choices, source.select,
-                                extras=[("Reload", source.reload)])
+                                extras=[("Reload", source.reload, "Read the file again from disk")])
         self.picker.grid(row=0, column=0, sticky="ew")
         self.status = ttk.Label(file_box, style="Muted.TLabel")
         self.status.grid(row=1, column=0, sticky="w")
@@ -36,10 +35,10 @@ class AnalysisTab(ttk.Frame):
         source.listeners.append(self._file_changed)
 
     def _page(self, hint):
+        """A page of the inner notebook. Its explanation is shown by the "?" at the end of its controls."""
         page = ttk.Frame(self.pages, padding=10)
         page.columnconfigure(0, weight=1)
-        ttk.Label(page, text=hint, style="Muted.TLabel", wraplength=820, justify="left").grid(
-            row=0, column=0, sticky="w", pady=(0, 6))
+        page.hint = hint
         return page
 
     def _chart(self, parent):
@@ -103,7 +102,7 @@ class AnalysisTab(ttk.Frame):
         self.picker.set_info(f"{len(df):,} rows, {len(df.columns)} columns")
         self.summary.configure(text="   ".join(f"{name}: {value:,}" if isinstance(value, int) else f"{name}: {value}"
                                                for name, value in info.items()))
-        self.profile_table.show(profile, note="Click a heading to sort.")
+        self.profile_table.show(profile)
         for table in (self.counts_table, self.groups_table, self.numbers_table):
             table.show(None)
         for chart in (self.counts_chart, self.numbers_chart, self.groups_chart):
@@ -139,9 +138,11 @@ class AnalysisTab(ttk.Frame):
         top.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         self.summary = ttk.Label(top, style="Heading.TLabel", wraplength=640, justify="left")
         self.summary.pack(side="left")
+        HelpTip(top, page.hint).pack(side="right", padx=(10, 0))
         self.key_box = ttk.Combobox(top, state="readonly", width=18)
         self.key_box.pack(side="right")
-        ttk.Label(top, text="Count duplicate and blank values of", style="Muted.TLabel").pack(side="right", padx=6)
+        help_label(top, "Key column", "The column that should identify each row. Its duplicate and blank values "
+                   "are counted in the summary.").pack(side="right", padx=6)
         self.key_box.bind("<<ComboboxSelected>>", lambda _: self.refresh())
         self.profile_table = DataTable(page, height=9, max_rows=2000, name="column_summary")
         self.profile_table.grid(row=2, column=0, sticky="nsew")
@@ -164,6 +165,8 @@ class AnalysisTab(ttk.Frame):
         self.counts_blank = tk.BooleanVar(value=True)
         ttk.Checkbutton(controls, text="Count blanks", variable=self.counts_blank).pack(side="left", padx=10)
         ttk.Button(controls, text="Show", style="Accent.TButton", command=self._show_counts).pack(side="left")
+        HelpTip(controls, page.hint + " Top sets how many of the most common values are listed.").pack(
+            side="left", padx=(10, 0))
         panes = ttk.PanedWindow(page, orient="horizontal")
         panes.grid(row=2, column=0, sticky="nsew")
         self.counts_table = DataTable(panes, height=8, max_rows=1000, name="value_counts")
@@ -203,6 +206,8 @@ class AnalysisTab(ttk.Frame):
         ttk.Spinbox(controls, textvariable=self.bins, from_=2, to=100, width=5).pack(side="left", padx=6)
         ttk.Button(controls, text="Show", style="Accent.TButton", command=self._show_numbers).pack(side="left",
                                                                                                     padx=10)
+        HelpTip(controls, page.hint + " Ranges sets how many equal ranges the values are split into.").pack(
+            side="left")
         self.number_summary = ttk.Label(page, style="Heading.TLabel", wraplength=820, justify="left")
         self.number_summary.grid(row=2, column=0, sticky="w", pady=(0, 6))
         panes = ttk.PanedWindow(page, orient="horizontal")
@@ -249,6 +254,8 @@ class AnalysisTab(ttk.Frame):
             side="left", padx=6)
         ttk.Button(controls, text="Show", style="Accent.TButton", command=self._show_groups).pack(side="left",
                                                                                                    padx=6)
+        HelpTip(controls, page.hint + "\n\nChart picks the figure the bars show, and Top how many groups are "
+                                      "charted.").pack(side="left", padx=(4, 0))
         panes = ttk.PanedWindow(page, orient="horizontal")
         panes.grid(row=2, column=0, sticky="nsew")
         self.groups_table = DataTable(panes, height=8, max_rows=1000, name="group_summary")

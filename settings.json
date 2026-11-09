@@ -14,10 +14,8 @@
   ],
   "issue_presets": {},
   "column_presets": {},
-  "workspace": "0011409-260928105237408_Megathyrsus_maximus",
-  "recent_csvs": [
-    "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/master_cleaned.csv"
-  ],
+  "workspace": "",
+  "recent_csvs": [],
   "provider": "lmstudio",
   "servers": {
     "lmstudio": "http://localhost:1234/v1"
@@ -33,5 +31,8 @@
     "read_labels": true,
     "label_reader": "auto"
   },
-  "image_side": 0
+  "image_side": 0,
+  "show_log": false,
+  "check_updates": true,
+  "auto_install_updates": false
 }

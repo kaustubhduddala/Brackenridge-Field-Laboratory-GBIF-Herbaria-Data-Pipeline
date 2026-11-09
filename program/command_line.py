@@ -2,7 +2,7 @@ import re
 import sys
 from pathlib import Path
 
-from config import PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, load_settings
+from config import APP_TITLE, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, load_settings
 from .gbif_download import download_dataset
 from .image_download import download_media
 from .measure.pipeline import measure_images
@@ -115,7 +115,7 @@ def interactive():
         "5": ("Measure images", _measure),
         "6": ("Join measurements into the dataset", _join),
     }
-    print("GBIF Herbaria Data Pipeline")
+    print(APP_TITLE)
     for key, (label, _) in actions.items():
         print(f"  {key}  {label}")
     choice = actions.get(input("Choice: ").strip())

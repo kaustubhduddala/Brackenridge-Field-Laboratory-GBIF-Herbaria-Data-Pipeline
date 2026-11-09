@@ -1,36 +1,30 @@
 import json
 import os
-import platform
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from program.updater import archive_suffix, platform_tag  # noqa: E402  (the updater looks for these file names)
+
 ROOT = Path(__file__).resolve().parent
-NAME = "GBIF Herbaria Pipeline"
-SLUG = "GBIF-Herbaria-Pipeline"
-BUNDLE_ID = "edu.utexas.gbif-herbaria-pipeline"
+NAME = "Graas"
+SLUG = "Graas"
+BUNDLE_ID = "edu.utexas.bfl-graas-app"
 HIDDEN_IMPORTS = ["program.app_window", "program.command_line", "bs4", "PIL._tkinter_finder"]
 ENTITLEMENTS = ROOT / "assets" / "entitlements.plist"
 MACHO_MAGIC = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
 
 USAGE = """Usage:
-  python build.py VERSION                 build, sign if configured, and zip
+  python build.py VERSION                 build, sign if configured, and archive (.zip, .tar.gz on Linux)
   python build.py VERSION --no-archive    build and sign only
-  python build.py VERSION --archive-only  zip an existing build
+  python build.py VERSION --archive-only  archive an existing build
 
 macOS signing runs when MACOS_SIGN_IDENTITY is set, and notarization when
 APPLE_ID, APPLE_TEAM_ID and APPLE_APP_PASSWORD are also set."""
-
-
-def platform_tag():
-    if sys.platform.startswith("win"):
-        return "windows-x64"
-    if sys.platform == "darwin":
-        return "macos-arm64" if platform.machine() == "arm64" else "macos-intel"
-    return f"linux-{platform.machine()}"
 
 
 def built_app():
@@ -66,8 +60,9 @@ def build(version):
     ]
     for module in HIDDEN_IMPORTS:
         args += ["--hidden-import", module]
-    icon = ROOT / "assets" / ("icon.ico" if sys.platform.startswith("win") else "icon.icns")
-    if icon.exists():
+    icon_name = {"win32": "icon.ico", "darwin": "icon.icns"}.get(sys.platform)     # Linux has no icon option
+    icon = ROOT / "assets" / icon_name if icon_name else None
+    if icon and icon.exists():
         args += ["--icon", str(icon)]
     if sys.platform == "darwin":
         args += ["--osx-bundle-identifier", BUNDLE_ID]
@@ -139,10 +134,13 @@ def archive(version):
     app = built_app()
     if not app.exists():
         raise SystemExit(f"{app} not found; build first")
-    target = ROOT / "dist" / f"{SLUG}-{version}-{platform_tag()}.zip"
+    linux = sys.platform.startswith("linux")
+    target = ROOT / "dist" / f"{SLUG}-{version}-{platform_tag()}{archive_suffix()}"
     target.unlink(missing_ok=True)
     if sys.platform == "darwin":
         run(["ditto", "-c", "-k", "--keepParent", app, target])
+    elif linux:                     # a tarball keeps the executable bits that a plain zip may lose
+        shutil.make_archive(str(target).removesuffix(".tar.gz"), "gztar", app.parent, app.name)
     else:
         shutil.make_archive(str(target.with_suffix("")), "zip", app.parent, app.name)
     print(f"Built {target}")
