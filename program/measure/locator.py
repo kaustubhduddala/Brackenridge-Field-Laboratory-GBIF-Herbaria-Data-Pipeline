@@ -1,8 +1,9 @@
-"""Ask a vision model WHERE things are on a herbarium sheet. It never measures anything.
+"""Ask a vision-language model WHERE things are on a herbarium sheet, and yes/no questions about them.
 
-The model answers with points and boxes; plant_geometry.py and scale_calibration.py then measure from the
-pixels. Points use named x/y fields so models cannot mix up the axis order, and each provider's
-coordinate convention is converted back to full-resolution pixels here.
+It never measures anything: its answers are points and boxes that geometry.py and calibration.py
+measure from, the label transcription, and second opinions ("is this tip hidden?") that count as
+one vote in decision.py. Points use named x/y fields so models cannot mix up the axis order, and
+each provider's coordinate convention is converted back to full-resolution pixels here.
 """
 from pathlib import Path
 
@@ -125,15 +126,6 @@ LEAF_WIDTH_SCHEMA = {
     },
     "required": ["left_margin", "right_margin", "usable"], "additionalProperties": False,
 }
-SEED_SCHEMA = {
-    "type": "object",
-    "properties": {"seeds": {"type": "array", "items": {
-        "type": "object",
-        "properties": {"base": _point("where the spikelet attaches to its branch"),
-                       "tip": _point("the far end of the same spikelet")},
-        "required": ["base", "tip"], "additionalProperties": False}}},
-    "required": ["seeds"], "additionalProperties": False,
-}
 SEED_BOX_SCHEMA = {
     "type": "object",
     "properties": {"spikelets": {"type": "array", "items": _box("tight box around one whole spikelet")}},
@@ -156,10 +148,9 @@ def _convention_text(convention, size):
 class Locator:
     """Wraps a provider client; converts the model's coordinates to full-resolution pixels."""
 
-    def __init__(self, client, use_references=False, seed_mode="points"):
+    def __init__(self, client, use_references=False):
         self.client = client
         self.use_references = use_references
-        self.seed_mode = seed_mode          # "points" (base/tip) or "boxes" (box, then axis found by plant_geometry.py)
         self.convention = COORDINATES.get(client.provider, "norm1000")
 
     def _prepare(self, image, crop=None):
@@ -316,36 +307,15 @@ class Locator:
                 continue
             a, b = ans.get("left_margin") or {}, ans.get("right_margin") or {}
             if {"x", "y"} <= a.keys() and {"x", "y"} <= b.keys():
-                out.append({"a": crop_to_full(a["x"], a["y"]), "b": crop_to_full(b["x"], b["y"])})
+                out.append({"a": crop_to_full(a["x"], a["y"]), "b": crop_to_full(b["x"], b["y"]),
+                            "centre": [cx, cy]})
         return out, raws
-
-    def seed_lengths(self, image, px_per_cm, centre, control=None, status=None):
-        """[{"base": point, "tip": point}] for a few intact spikelets near `centre`, plus the raw answer."""
-        half = SEED_SIZE_CM * px_per_cm / 2
-        crop = [max(0, centre[0] - half), max(0, centre[1] - half), min(image.width, centre[0] + half),
-                min(image.height, centre[1] + half)]
-        prompt = (PROTOCOL_DEFINITIONS + "\n\nThis is a close-up of part of a panicle. Pick up to 4 separate spikelets "
-                  "that are intact, in focus and not overlapping others. A spikelet is a small, pointed, boat-shaped "
-                  "capsule about 2.5 times longer than it is wide. For each, mark base and tip so that the segment "
-                  "covers the WHOLE spikelet: base at its very bottom end where it joins the branch, tip at its very "
-                  "top end. A segment that stops halfway is wrong. Each spikelet has its own length and direction; "
-                  "do not reuse one segment. Skip any you cannot see clearly." + (
-                      " The first image is a lab reference figure; the LAST image is the close-up."
-                      if self.use_references else ""))
-        parsed, raw, to_full = self._ask_with_references(image, ("seed_length",), prompt, SEED_SCHEMA, "spikelets",
-                                                         control, status, "Measuring seeds", crop=crop)
-        out = []
-        for item in (parsed.get("seeds") or [])[:4]:
-            base, tip = item.get("base") or {}, item.get("tip") or {}
-            if {"x", "y"} <= base.keys() and {"x", "y"} <= tip.keys():
-                out.append({"base": to_full(base["x"], base["y"]), "tip": to_full(tip["x"], tip["y"])})
-        return out, raw
 
     def seed_boxes(self, image, px_per_cm, centre, control=None, status=None, size_cm=None):
         """Tight boxes (full-res pixels) around up to 6 intact spikelets near `centre`, plus the raw answer.
 
-        Models are far better at boxing an object than at marking both ends of it; plant.spikelet_axis
-        then finds the spikelet's long axis inside each box.
+        Models are far better at boxing an object than at marking both ends of it; the spikelet's
+        outline and long axis are then found from the pixels inside each box.
         """
         half = (size_cm or SEED_SIZE_CM) * px_per_cm / 2
         crop = [max(0, centre[0] - half), max(0, centre[1] - half), min(image.width, centre[0] + half),
@@ -364,6 +334,54 @@ class Locator:
                 out.append(box)
         return out, raw
 
+    # ------------------------------------------------------------------ second opinions (yes/no only)
+
+    def check_panicle(self, image, box, control=None, status=None):
+        """Is each end of the panicle in `box` in view? ({"tip": ..., "base": ...}, raw answer)."""
+        prompt = ("This close-up shows one panicle (the branched seed head) of a dried grass specimen. "
+                  "Look at its two ends.\n"
+                  "- tip: 'visible' if the top end of the panicle's main axis tapers to a natural end on bare "
+                  "paper; 'hidden' if it runs under a label, envelope, tape or other plant parts, or off the "
+                  "edge of the sheet or image; 'unsure' otherwise.\n"
+                  "- base: the same for the lowest panicle node, where the lowest branch leaves the stem.")
+        parsed, raw, _ = self._ask(image, prompt, PANICLE_CHECK_SCHEMA, "panicle_check", control, status,
+                                   "Checking the panicle", crop=box)
+        return {end: parsed.get(end) if parsed.get(end) in END_STATES else "unsure" for end in ("tip", "base")}, raw
+
+    def check_leaf(self, image, box, control=None, status=None):
+        """Is the leaf blade in `box` flat? ({"flat": bool, "problem": text}, raw answer)."""
+        prompt = ("This close-up is centred on one leaf blade of a dried grass specimen. Is the blade at the "
+                  "centre flat and in full view where it is widest?\n"
+                  "- flat: true only if it is not folded lengthwise, not rolled or curled, not torn and not "
+                  "overlapped by another leaf or stem there.\n"
+                  "- problem: one of none, folded, rolled, overlapped, torn, unclear.")
+        parsed, raw, _ = self._ask(image, prompt, LEAF_CHECK_SCHEMA, "leaf_check", control, status,
+                                   "Checking a leaf", crop=box)
+        return {"flat": bool(parsed.get("flat", True)), "problem": str(parsed.get("problem") or "none")}, raw
+
+    def check_seeds(self, image, crop, boxes, control=None, status=None):
+        """For each numbered box in the crop: is it one whole spikelet? ([bool, ...], raw answer)."""
+        from PIL import ImageDraw
+
+        x0, y0, x1, y1 = [int(round(v)) for v in crop]
+        region = image.crop((x0, y0, x1, y1)).convert("RGB")
+        scale = max(1.0, MIN_CROP_SIDE / max(region.size))
+        region = region.resize((round(region.width * scale), round(region.height * scale)), Image.Resampling.LANCZOS)
+        draw = ImageDraw.Draw(region)
+        for n, box in enumerate(boxes, start=1):
+            bx0, by0, bx1, by1 = [(box[0] - x0) * scale, (box[1] - y0) * scale, (box[2] - x0) * scale,
+                                  (box[3] - y0) * scale]
+            draw.rectangle((bx0, by0, bx1, by1), outline=(255, 0, 0), width=2)
+            draw.text((bx0 + 2, max(0, by0 - 14)), str(n), fill=(255, 0, 0))
+        prompt = (f"The red boxes numbered 1 to {len(boxes)} were drawn on a close-up of a grass panicle. For each "
+                  "box say whether it holds exactly one whole spikelet (a small, pointed, boat-shaped capsule), "
+                  "as opposed to debris, a piece of branch, a broken spikelet or two spikelets together.")
+        parsed, raw = self.client.ask_json([region], SYSTEM, prompt, SEED_CHECK_SCHEMA, "spikelet_check", control,
+                                           status, "Checking seeds")
+        answers = {int(i.get("n", 0)): bool(i.get("one_whole_spikelet", True)) for i in parsed.get("boxes") or []
+                   if isinstance(i, dict)}
+        return [answers.get(n, True) for n in range(1, len(boxes) + 1)], raw
+
     def voucher(self, image, control=None, status=None):
         sent, _ = self._prepare(image)
         parsed, raw = self.client.ask_json([sent], SYSTEM, VOUCHER_PROMPT, VOUCHER_SCHEMA, "specimen_voucher", control,
@@ -372,6 +390,28 @@ class Locator:
         return {"voucher_text": str(parsed.get("voucher_text") or ""),
                 "voucher": {f: str(voucher.get(f) or "") for f in VOUCHER_FIELDS}}, raw
 
+
+END_STATES = ("visible", "hidden", "unsure")
+PANICLE_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {"tip": {"type": "string", "enum": list(END_STATES)},
+                   "base": {"type": "string", "enum": list(END_STATES)}},
+    "required": ["tip", "base"], "additionalProperties": False,
+}
+LEAF_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {"flat": {"type": "boolean"},
+                   "problem": {"type": "string", "enum": ["none", "folded", "rolled", "overlapped", "torn", "unclear"]}},
+    "required": ["flat", "problem"], "additionalProperties": False,
+}
+SEED_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {"boxes": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}, "one_whole_spikelet": {"type": "boolean"}},
+        "required": ["n", "one_whole_spikelet"], "additionalProperties": False}}},
+    "required": ["boxes"], "additionalProperties": False,
+}
 
 PANICLE_REFINE_PROMPT = (
     "The first image is a lab reference figure; the LAST image is a close-up of one panicle (the branched seed head) of a dried grass specimen. Follow the panicle's "

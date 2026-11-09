@@ -210,17 +210,15 @@ def phase_3_select_columns(ws, columns=None, full_csv=None, final_master=None, r
     return str(final_master)
 
 
-def run_cleaning(ws, folder=None, phases=(1, 2, 3), confirm=None, log=print, master_columns=None,
-                 column_chooser=None, **options):
+def run_cleaning(ws, folder=None, phases=(1, 2, 3), log=print, master_columns=None, column_chooser=None, **options):
     phases = set(phases)
     log(f"Working in {ws.root}")
     if 1 in phases:
         occurrence, multimedia = find_dwca_files(folder)
         phase_1_clean_and_merge(occurrence, multimedia, ws, log=log, **options)
         if 2 in phases:
-            log(f"Review {ws.inspect_csv} now. Type Remove in the Action column to drop a record.")
-            if confirm and not confirm():
-                return None
+            log(f"Records flagged for a look are in {ws.inspect_csv}. To drop one, put Remove in its Action column "
+                "(Edit tab) and run phase 2 again.")
     master = None
     if 2 in phases:
         master, _ = phase_2_finalize_dataset(ws, log=log)

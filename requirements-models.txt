@@ -1,0 +1,16 @@
+# Optional add-on for trained models and SAM 2 (not needed to run the app).
+# Install with:  python main.py models install
+# or by hand:    pip install -r requirements-models.txt && pip install --no-deps ultralytics
+# ultralytics is installed without its dependency list because it asks for opencv-python,
+# which would sit on top of the opencv-python-headless the app already uses.
+torch
+torchvision
+psutil
+polars
+pyyaml
+ultralytics-thop
+
+# Optional built-in label reader (RapidOCR, Apache-2.0). Install with Model setup, or
+#   python main.py models install-ocr
+# or by hand:  pip install onnxruntime pyclipper shapely pyyaml six && pip install --no-deps rapidocr-onnxruntime
+# (rapidocr is installed without its dependency list because it asks for opencv-python.)
