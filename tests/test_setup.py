@@ -374,3 +374,27 @@ class PanicleLine(unittest.TestCase):
             self.assertIn("straight lines through", entry["method"])
         finally:
             shutil.rmtree(folder, ignore_errors=True)
+
+
+class CommandHelp(unittest.TestCase):
+    """--help on a subcommand prints its usage and never runs it (cleaner 3 --help used to rewrite the dataset)."""
+
+    def test_help_does_not_run_the_command(self):
+        import contextlib
+        import io
+
+        import main
+        from program import command_line
+
+        handlers = {"cleaner": "cleaner_command", "measure": "measure_command", "join": "join_command",
+                    "benchmark": "benchmark_command", "export-mof": "export_mof_command",
+                    "models": "models_command", "labels": "labels_command", "train": "train_command"}
+        self.assertEqual(set(handlers), set(main.SUBCOMMANDS))
+        for command, handler in handlers.items():
+            for args in ([command, "--help"], [command, "3", "-h"], [command, "export", "--output", "x", "--help"]):
+                with self.subTest(args=args), mock.patch.object(command_line, handler) as run:
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        main.main(args)
+                    run.assert_not_called()
+                    self.assertIn(f"python main.py {command}", out.getvalue())

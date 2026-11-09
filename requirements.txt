@@ -1,3 +1,9 @@
+# Python 3.12 or later. Install with:  pip install -r requirements.txt
+# Used directly by the app: numpy, pandas, requests, urllib3, pygbif, beautifulsoup4, pillow, keyring,
+# playwright, openai, anthropic, opencv-python-headless, scikit-image, scipy, tksheet.
+# Everything else is a dependency of those, listed so builds stay reproducible.
+# Optional PyTorch / label-reader add-ons: see requirements-models.txt.
+
 annotated-types>=0.8.0
 anyio>=4.15.1
 appdirs>=1.4.4

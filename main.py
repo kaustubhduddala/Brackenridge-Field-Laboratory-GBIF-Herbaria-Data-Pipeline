@@ -6,7 +6,7 @@ USAGE = """Usage:
   python main.py                 open the app
   python main.py --cli           interactive command-line menu
   python main.py --version       print the version
-  python main.py cleaner ...     run phase 1 or 2 directly (run without arguments for details)
+  python main.py cleaner ...     run cleaning phase 1, 2 or 3 directly (cleaner --help for details)
   python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo] [--download NAME]
                       [--provider lmstudio|openai|gemini|anthropic|custom] [--model ID]
                       [--detector auto|vision|trained] [--no-sam] [--second-opinion] [--labels auto|ocr|vision|off]
@@ -26,7 +26,27 @@ USAGE = """Usage:
   python main.py train [pose | seg | all] [--epochs N] [--imgsz N] [--batch N] [--base weights.pt]
                                  fine-tune the models on the reviewed sheets
 
-Each download is kept in data/<download id>_<Species>/. --download NAME picks the folder (newest by default)."""
+Each download is kept in data/<download id>_<Species>/. --download NAME picks the folder (newest by default).
+Add --help to any command to see its usage without running it."""
+
+SUBCOMMANDS = ("cleaner", "measure", "join", "benchmark", "export-mof", "models", "labels", "train")
+HELP_FLAGS = ("-h", "--help")
+
+
+def command_usage(command):
+    """The usage text for one subcommand: its lines from USAGE (the cleaner keeps its own)."""
+    if command == "cleaner":
+        from program.command_line import CLEANER_USAGE
+        return CLEANER_USAGE
+    lines, inside = [], False
+    for line in USAGE.splitlines()[1:]:
+        if line.startswith("  python main.py "):
+            inside = line.split()[2] == command
+        elif not line.startswith("    "):
+            inside = False
+        if inside:
+            lines.append(line)
+    return "Usage:\n" + "\n".join(lines)
 
 
 def run_gui():
@@ -82,6 +102,10 @@ def main(argv=None):
         run_gui()
     elif command == "--cli":
         run_cli()
+    elif command in SUBCOMMANDS and any(arg in HELP_FLAGS for arg in args[1:]):
+        # Checked before dispatch: the commands take free-form arguments, so a help flag would otherwise be
+        # ignored (or read as a path) and the command would run, rewriting files.
+        print(command_usage(command))
     elif command == "cleaner":
         from program import command_line
         command_line.cleaner_command(args[1:])

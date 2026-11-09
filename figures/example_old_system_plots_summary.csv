@@ -1,4 +1,0 @@
-trait,sheets_verified,measured_values,coverage_pct,r,median_abs_error_pct,bias_pct,within_20pct,bias_cm
-Panicle length,200,164,82.0,0.728,30.4,-27.3,45.1,-7.232
-Leaf width,200,114,57.0,0.606,24.2,21.6,41.2,0.283
-Seed length,200,59,29.5,0.817,22.9,-22.3,39.0,-0.097

@@ -1,6 +1,6 @@
 # GBIF Herbaria Data Pipeline
 
-This is an ongoing project I'm building for the Invaisive Species Lab at 
+This is an ongoing project I'm building for the Invasive Species Lab at 
 UT Austin's Brackenridge Field Laboratory. It's a python application for 
 downloading GBIF herbarium occurrence data, cleaning it, downloading the
 specimen images, and measuring morphological traits from those images 
@@ -9,7 +9,8 @@ a command-line interface.
 
 The pipeline was developed for the G064 Guinea Grass Biogeography
 project at UT Austin, based on the measurement protocol by
-Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, and Kaustubh Duddala.
+Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, and Kaustubh Duddala
+(in `other/protocol/`).
 
 ## Contents
 
@@ -28,14 +29,23 @@ Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, and Kaustubh Duddala.
 
 ## 1. Requirements
 
-- Python 3.9 or later (3.11 or later recommended)
+- Python 3.12 or later (numpy and scipy need 3.12; the release builds
+  use 3.12)
 - tkinter for the graphical interface (see Troubleshooting if it is missing)
 - A GBIF account for new downloads (not needed when downloading by DOI)
-- LM Studio, or another OpenAI-compatible server, with a vision model
-  loaded, for image measurements
+- For image measurements, one of: LM Studio (or another
+  OpenAI-compatible server) with a vision model loaded, an API key for
+  OpenAI, Google Gemini or Anthropic Claude, or trained models plus the
+  built-in label reader (section 5)
 
-Python packages are listed in `requirements.txt`: numpy, pandas,
-requests, urllib3, pygbif, openai, beautifulsoup4, pillow and keyring.
+Python packages are listed in `requirements.txt`. The ones the app uses
+directly are numpy, pandas, requests, urllib3, pygbif, beautifulsoup4,
+pillow, keyring, playwright (browser sign-in), openai and anthropic
+(vision models), opencv-python-headless, scikit-image and scipy (image
+measurement) and tksheet (the Edit tab); the rest are their
+dependencies. The optional PyTorch and
+label-reader add-ons are in `requirements-models.txt` (see "Model setup"
+in section 5).
 
 ## 2. Installation
 
@@ -60,9 +70,19 @@ program/
         taxa.py  trained.py  training.py
         reference/  (example figures from the lab protocol)
 tests/           (drawn sheets with known measurements; python -m unittest discover tests)
-requirements-models.txt   (optional PyTorch add-on)
+assets/          (entitlements.plist for macOS signing)
+requirements-models.txt   (optional PyTorch and label-reader add-ons)
 .github/workflows/release.yml
+other/           (not part of the app, see below)
 ```
+
+`other/` holds material that the app does not use:
+
+- `other/protocol/`: the G064 measurement protocol the pipeline
+  follows, as Markdown, LaTeX, HTML and the original Word document,
+  with its screenshots in `other/protocol/assets/`
+- `other/Data_original/`: the lab's original G024 spreadsheets and
+  protocol data (not in git)
 
 Then:
 
@@ -520,7 +540,10 @@ soon as you uncheck it or close the app. It uses
 1. Scale first. The ruler is found and its tick spacing measured; with
    no usable ruler the standard 29 cm sheet width is used and the
    scale is marked uncertain. The DPI stored in the file is never
-   trusted. With no scale, nothing on the sheet is measured.
+   trusted. With no scale, nothing on the sheet is measured. The
+   paper's colour, cream or neutral white, is read from the sheet
+   itself (the commonest bright, weakly coloured shade), and both the
+   sheet edges and the plant mask are found against it.
 2. Finding. A detector points at each panicle (base and tip), leaf
    (the two margins at the widest point) and seed (a box). It never
    produces a number.
@@ -766,10 +789,7 @@ All files are written to the active download's folder,
 |---|---|
 | `workspace.json` | The download ID, species and where the download came from |
 | `raw/` | The extracted GBIF download |
-
-
-| File | Contents |
-|---|---|
+| `<download id>.zip` | The GBIF archive as downloaded |
 | `GBIFdownload_inspectFlags.csv` | Phase 1 result, for manual review |
 | `GBIFdownload_removed.csv` | Records removed in phase 1, with a `removal_reason` |
 | `Missing_Media.csv` | Records with no media, with every link found in the row |
@@ -781,12 +801,10 @@ All files are written to the active download's folder,
 | `media/` | Downloaded images named by gbifID |
 | `measurements.csv` | Image measurements, one row per gbifID |
 | `measurement_or_fact.csv` | The same values as Darwin Core MeasurementOrFact records |
-| `responses/` | Per image: the full result with every point (`.json`) and the overlay picture |
+| `responses/` | Per image: `<gbifID>.json` with every point and the raw model answers, and `<gbifID>_overlay.jpg` |
 | `labels/` | Reviewed labels, the training data for the models |
-| `backups/` | Earlier versions of CSV files replaced on the Edit and Modify tabs |
-| `responses/` | The raw model answer for each image, as `<gbifID>.json` |
 | `master_cleaned_before_join.csv` | The dataset as it was before the last join into it |
-| `backups/` | Earlier versions of CSVs replaced from the Modify tab |
+| `backups/` | Earlier versions of CSV files replaced on the Edit and Modify tabs |
 | `<name>_joined.csv` and similar | Results saved by the Modify tab |
 | `data/pipeline.log` | Everything shown in the app's log, with timestamps (one file for all downloads) |
 
@@ -800,29 +818,37 @@ python main.py --version        print the version
 python main.py --self-test      check that everything the app needs can be loaded
 ```
 
-Phase 1 and phase 2:
+Add `--help` (or `-h`) to any command below, for example
+`python main.py cleaner --help`, to print its usage without running it.
+
+Cleaning, phases 1 to 3:
 
 ```
 python main.py cleaner 1 <occurrence.txt> <multimedia.txt> [output_csv] [--strict | --no-precision]
-python main.py cleaner 2 <inspected_csv> [master_csv] [duplicates_csv]
+python main.py cleaner 2 [inspected_csv] [master_csv] [duplicates_csv]
+python main.py cleaner 3 [--columns a,b,c]
 ```
 
 Phase 1 uses at least 1 decimal place unless `--strict` (3 places) or
-`--no-precision` is given.
+`--no-precision` is given. Phase 2 reads the active download's
+`GBIFdownload_inspectFlags.csv` when no file is given. Phase 3 keeps
+every column when `--columns` is left out.
 
 Measurements:
 
 ```
 python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo]
-                     [--provider NAME] [--model ID] [--detector auto|vision|trained]
-                     [--no-sam] [--second-opinion] [--labels auto|ocr|vision|off]
+                     [--provider lmstudio|openai|gemini|anthropic|custom] [--model ID]
+                     [--detector auto|vision|trained] [--no-sam] [--second-opinion]
+                     [--labels auto|ocr|vision|off]
 python main.py benchmark hand_measurements.csv [--measure | --measurements file.csv]
-                     [--ids 123,456] [--split test] [--label NAME]
+                     [--ids 123,456] [--split test] [--label NAME] [--key gbifID]
+                     [--provider NAME] [--model ID] [--detector auto|vision|trained]
 python main.py export-mof [measurements_csv] [--output file.csv]
 python main.py models [status | install | download-sam | download-weights | install-ocr]
 python main.py labels export [--prelabels] [--output file.json]
 python main.py labels import corrected_coco.json
-python main.py train [pose | seg | all] [--epochs N] [--imgsz N] [--batch N]
+python main.py train [pose | seg | all] [--epochs N] [--imgsz N] [--batch N] [--base weights.pt]
 python main.py join [dataset_csv] [measurements_csv] [--fill-blanks] [--matched-only]
                      [--key gbifID] [--measurement-key gbifID] [--columns a,b,c] [--output file.csv]
 ```
@@ -840,7 +866,14 @@ folder.
 
 Every command that reads or writes a download's files accepts
 `--download NAME`, the name of a folder in `data/`, and uses the newest
-download when it is left out. This includes `cleaner 2` and `cleaner 3`.
+download when it is left out. This includes all three `cleaner` phases.
+
+To run the tests (59 of them, on drawn sheets with known measurements;
+they need no model and take about a minute):
+
+```
+python -m unittest discover tests
+```
 
 ## 9. Configuration
 
@@ -909,6 +942,7 @@ them in this list, so there are no circular imports.
 | `program/command_line.py` | The command-line menu and commands |
 | `main.py` | Entry point |
 | `build.py` | Builds, signs and packages the app |
+| `tests/` | Unit tests; `tests/synthetic.py` draws the test sheets |
 | `assets/entitlements.plist` | macOS signing entitlements |
 | `.github/workflows/release.yml` | Builds and publishes releases on GitHub |
 

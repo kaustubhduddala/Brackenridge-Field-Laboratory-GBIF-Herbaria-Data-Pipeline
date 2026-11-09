@@ -128,8 +128,14 @@ def interactive():
         print(f"Error: {exc}")
 
 
+CLEANER_USAGE = """Usage:
+  python main.py cleaner 1 <occurrence> <multimedia> [output] [--strict | --no-precision] [--download NAME]
+  python main.py cleaner 2 [inspected_csv] [master] [duplicates] [--download NAME]
+  python main.py cleaner 3 [--columns a,b,c] [--download NAME]   (all columns when --columns is omitted)
+Each download lives in data/<download id>_<Species>/. --download picks the folder by name (the newest download when omitted)."""
+
+
 def cleaner_command(args):
-    prog = Path(sys.argv[0]).name
     positional = _positional(args, ("--columns", "--download"))
     download = _option(args, "--download")
     if positional[:1] == ["1"] and len(positional) >= 3:
@@ -146,12 +152,7 @@ def cleaner_command(args):
         phase_3_select_columns(_workspace(download),
                                [c.strip() for c in columns.split(",") if c.strip()] if columns else None)
     else:
-        print("Usage:")
-        print(f"  python {prog} cleaner 1 <occurrence> <multimedia> [output] [--strict | --no-precision] [--download NAME]")
-        print(f"  python {prog} cleaner 2 [inspected_csv] [master] [duplicates] [--download NAME]")
-        print(f"  python {prog} cleaner 3 [--columns a,b,c] [--download NAME]   (all columns when --columns is omitted)")
-        print("Each download lives in data/<download id>_<Species>/. --download picks the folder by name "
-              "(the newest download when omitted).")
+        print(CLEANER_USAGE)
         sys.exit(1)
 
 
