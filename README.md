@@ -1061,7 +1061,7 @@ commands are only available when running from source.
 ### Updates
 
 The packaged app looks for a newer release on GitHub
-(`kaustubhduddala/GRASS`, set as `UPDATE_REPO` in `config.py`) two
+(`kaustubhduddala/GRAAS`, set as `UPDATE_REPO` in `config.py`) two
 seconds after it opens, and from File, then Check for updates (also
 in the Graas menu on a Mac). When there is one, a window shows its notes with
 three choices: Install and restart, Later, and Skip this version.

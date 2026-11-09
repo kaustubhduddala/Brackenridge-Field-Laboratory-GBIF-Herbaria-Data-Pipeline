@@ -18,7 +18,7 @@ def _read_version():
 
 
 APP_VERSION = _read_version()
-UPDATE_REPO = "kaustubhduddala/GRASS"     # GitHub repository whose releases the app updates itself from
+UPDATE_REPO = "kaustubhduddala/GRAAS"     # GitHub repository whose releases the app updates itself from
 
 
 
