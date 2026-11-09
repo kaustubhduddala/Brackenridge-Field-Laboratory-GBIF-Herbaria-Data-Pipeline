@@ -2,6 +2,7 @@
 import subprocess
 import sys
 import tkinter as tk
+import weakref
 from pathlib import Path
 from tkinter import filedialog, ttk
 
@@ -41,20 +42,237 @@ def wheel_steps(event):
     return -event.delta if sys.platform == "darwin" else -event.delta // 120
 
 
+# --------------------------------------------------------------------------- hints
+
+# The colours in use, filled in by apply_theme. Widgets drawn by hand read them here, and `themed`
+# widgets are restyled whenever the theme changes.
+ACTIVE = {}
+_themed = weakref.WeakKeyDictionary()
+
+
+def themed(widget, styler):
+    """Style a hand-coloured widget (a Canvas, Listbox...) now and again on every theme change."""
+    _themed[widget] = styler
+    if ACTIVE:
+        styler(widget, ACTIVE)
+    return widget
+
+
+def _restyle_themed(palette):
+    for widget, styler in list(_themed.items()):
+        try:
+            styler(widget, palette)
+        except tk.TclError:                              # the widget is gone
+            _themed.pop(widget, None)
+
+
+class Tooltip:
+    """Help text that pops up beside a widget while the pointer rests on it.
+
+    `text` is a string, or a function returning one for hints that change. `click` makes a press
+    show the hint at once (the "?" badges) instead of dismissing it.
+    """
+    shown = None
+
+    def __init__(self, widget, text, delay=500, wrap=340, click=False):
+        self.widget, self.text, self.delay, self.wrap = widget, text, delay, wrap
+        self.window, self.job = None, None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+        widget.bind("<Destroy>", self.hide, add="+")
+        widget.bind("<ButtonPress>", self.toggle if click else self.hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self.job = self.widget.after(self.delay, self.show)
+
+    def _cancel(self):
+        if self.job:
+            try:
+                self.widget.after_cancel(self.job)
+            except tk.TclError:
+                pass
+            self.job = None
+
+    def toggle(self, _event=None):
+        self.hide() if self.window else self.show()
+
+    def show(self):
+        self._cancel()
+        try:
+            text = self.text() if callable(self.text) else self.text
+            if not text or self.window or not self.widget.winfo_viewable():
+                return
+            if Tooltip.shown:
+                Tooltip.shown.hide()
+            p = ACTIVE or PALETTES["light"]
+            tip = self.window = tk.Toplevel(self.widget)
+            tip.wm_overrideredirect(True)
+            try:                                         # macOS: a help window that never takes the focus
+                tip.tk.call("::tk::unsupported::MacWindowStyle", "style", tip._w, "help", "noActivates")
+            except tk.TclError:
+                pass
+            tip.configure(background=p["border"])
+            tk.Label(tip, text=text, justify="left", wraplength=self.wrap, background=p["surface"],
+                     foreground=p["text"], padx=10, pady=7).pack(padx=1, pady=1)
+            tip.update_idletasks()
+            widget = self.widget
+            width, height = tip.winfo_reqwidth(), tip.winfo_reqheight()
+            x, y = widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height() + 6
+            screen_w, screen_h = widget.winfo_screenwidth(), widget.winfo_screenheight()
+            if 0 <= x < screen_w and 0 <= y < screen_h + height:     # on the main screen: keep it on screen
+                x = max(8, min(x, screen_w - width - 8))
+                if y + height > screen_h - 8:
+                    y = widget.winfo_rooty() - height - 6
+            tip.wm_geometry(f"+{x}+{y}")
+            try:
+                if widget.winfo_toplevel().attributes("-topmost"):
+                    tip.attributes("-topmost", True)     # stay above a window that is itself kept on top
+            except tk.TclError:
+                pass
+            tip.lift()
+            Tooltip.shown = self
+        except tk.TclError:
+            self.window = None
+
+    def hide(self, _event=None):
+        self._cancel()
+        window, self.window = self.window, None
+        if Tooltip.shown is self:
+            Tooltip.shown = None
+        if window is not None:
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
+
+
+def tip(widget, text, **options):
+    """Give `widget` a hover hint; returns the widget so it can be laid out in the same line."""
+    widget.tooltip = Tooltip(widget, text, **options)
+    return widget
+
+
+class HelpTip(ttk.Label):
+    """A tiny grey "?" that explains the thing beside it when hovered or clicked.
+
+    Used instead of lines of explanatory text, so the layout shows only the controls. `on` names the
+    palette colour it sits on when that is not the window background.
+    """
+
+    def __init__(self, parent, text, wrap=380, on="bg"):
+        super().__init__(parent, text="?", cursor="hand2", takefocus=0,
+                         style="Help.TLabel" if on == "bg" else "HelpRaised.TLabel")
+        self.tooltip = Tooltip(self, text, delay=120, wrap=wrap, click=True)
+        self.bind("<Enter>", lambda _: self.state(["active"]), add="+")
+        self.bind("<Leave>", lambda _: self.state(["!active"]), add="+")
+
+    def set_text(self, text):
+        self.tooltip.text = text
+
+
+def help_label(parent, text, help_text, style="TLabel"):
+    """A label that shows `help_text` when the pointer rests on it, marked by a tiny "?" after the text."""
+    frame = ttk.Frame(parent)
+    label = ttk.Label(frame, text=text, style=style)
+    label.pack(side="left")
+    if help_text:
+        label.tooltip = Tooltip(label, help_text, delay=350, wrap=380)
+        frame.help = HelpTip(frame, help_text)
+        frame.help.pack(side="left", padx=(3, 0), anchor="n")
+    return frame
+
+
+def titled_frame(parent, title, help_text=None, **options):
+    """A LabelFrame whose title can carry a "?" badge."""
+    frame = ttk.LabelFrame(parent, text=title, **options)
+    if help_text:
+        frame.configure(labelwidget=help_label(frame, title, help_text, style="TLabelframe.Label"))
+    return frame
+
+
+def placeholder(entry, text, variable=None):
+    """Grey prompt text inside an entry while it is empty. It is never part of the entry's value."""
+    label = ttk.Label(entry, text=text, style="Placeholder.TLabel", cursor="xterm")
+
+    def refresh(*_):
+        try:
+            if entry.get():
+                label.place_forget()
+            else:
+                label.place(x=10, rely=0.5, anchor="w")    # leaves the text cursor visible beside it
+        except tk.TclError:
+            pass
+
+    for event in ("<KeyRelease>", "<FocusIn>", "<FocusOut>", "<<Paste>>", "<<Cut>>"):
+        entry.bind(event, lambda _: entry.after_idle(refresh), add="+")
+    label.bind("<Button-1>", lambda _: entry.focus_set())
+    if variable is not None:
+        variable.trace_add("write", refresh)
+    refresh()
+    return entry
+
+
+def search_entry(parent, variable, width=24, prompt="Search"):
+    return placeholder(ttk.Entry(parent, textvariable=variable, width=width), prompt, variable)
+
+
+def menu_button(parent, text, items, **options):
+    """A button that drops down a menu of (label, command) pairs; None adds a separator."""
+    button = ttk.Button(parent, text=text + "  ▾", **options)
+    menu = tk.Menu(button, tearoff=False)
+    for item in items:
+        if item is None:
+            menu.add_separator()
+        else:
+            menu.add_command(label=item[0], command=item[1])
+    button.configure(command=lambda: menu.tk_popup(button.winfo_rootx(),
+                                                   button.winfo_rooty() + button.winfo_height()))
+    button.menu = menu
+    return button
+
+
+def style_listbox(widget, p):
+    widget.configure(background=p["surface"], foreground=p["text"], selectbackground=p["select"],
+                     selectforeground=p["text"], highlightthickness=1, highlightbackground=p["border"],
+                     highlightcolor=p["accent"], relief="flat", borderwidth=0)
+
+
+def listbox(parent, **options):
+    """A tk.Listbox in the app's colours, restyled when the theme changes."""
+    return themed(tk.Listbox(parent, exportselection=False, **options), style_listbox)
+
+
 class ScrollFrame(ttk.Frame):
+    """A frame that scrolls vertically when its content (`inner`) is taller than the space it has.
+    The scrollbar is only shown while there is something to scroll."""
+
     def __init__(self, master, palette):
         super().__init__(master)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
         self.canvas = tk.Canvas(self, background=palette["bg"], highlightthickness=0)
-        bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=bar.set)
-        bar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
+        themed(self.canvas, lambda canvas, p: canvas.configure(background=p["bg"]))
+        self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.bar.grid(row=0, column=1, sticky="ns")
         self.inner = ttk.Frame(self.canvas)
         window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.inner.columnconfigure(0, weight=1)
-        self.inner.bind("<Configure>", lambda _: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(window, width=e.width))
+        self.inner.bind("<Configure>", lambda _: self._resized())
+        self.canvas.bind("<Configure>", lambda e: (self.canvas.itemconfigure(window, width=e.width),
+                                                   self._resized()))
         self.winfo_toplevel().bind("<MouseWheel>", self._wheel, add="+")
+
+    def _resized(self):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        needed = self.inner.winfo_reqheight() > self.canvas.winfo_height() + 1
+        if needed and not self.bar.winfo_ismapped():
+            self.bar.grid()
+        elif not needed and self.bar.winfo_ismapped():
+            self.canvas.yview_moveto(0)
+            self.bar.grid_remove()
 
     def _wheel(self, event):
         try:
@@ -83,15 +301,15 @@ class ColumnChecklist(ttk.LabelFrame):
         self.columnconfigure(1, weight=1)
         self.rowconfigure(2, weight=1)
 
-        ttk.Label(self, text="Match on").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        help_label(self, "Match on", "The column whose values pair the rows of the two files. Checked columns "
+                   "below are the ones carried into the result.").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.key_var = tk.StringVar(value=key_default if key_default in self.columns else self.columns[0])
         self.key_box = ttk.Combobox(self, textvariable=self.key_var, values=self.columns, state="readonly")
         self.key_box.grid(row=0, column=1, sticky="ew")
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self._refresh())
-        search = ttk.Entry(self, textvariable=self.search_var)
-        search.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 6))
-        ttk.Label(self, text="Search", style="Muted.TLabel").grid(row=1, column=2, sticky="w", padx=(6, 0))
+        search_entry(self, self.search_var, prompt="Search columns").grid(row=1, column=0, columnspan=3,
+                                                                          sticky="ew", pady=(8, 6))
 
         frame = ttk.Frame(self)
         frame.grid(row=2, column=0, columnspan=3, sticky="nsew")
@@ -105,8 +323,10 @@ class ColumnChecklist(ttk.LabelFrame):
 
         buttons = ttk.Frame(self)
         buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-        ttk.Button(buttons, text="Check shown", command=lambda: self._set_shown(True)).pack(side="left")
-        ttk.Button(buttons, text="Uncheck shown", command=lambda: self._set_shown(False)).pack(side="left", padx=6)
+        tip(ttk.Button(buttons, text="Check all", command=lambda: self._set_shown(True)),
+            "Check every column in the list (only the ones the search shows)").pack(side="left")
+        tip(ttk.Button(buttons, text="Uncheck all", command=lambda: self._set_shown(False)),
+            "Uncheck every column in the list (only the ones the search shows)").pack(side="left", padx=6)
         self.count_label = ttk.Label(buttons, style="Muted.TLabel")
         self.count_label.pack(side="right")
         self._refresh()
@@ -162,14 +382,15 @@ class DataTable(ttk.Frame):
         top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         self.query = tk.StringVar()
         if searchable:
-            ttk.Label(top, text="Filter").pack(side="left")
             self.query.trace_add("write", lambda *_: self._refresh())
-            ttk.Entry(top, textvariable=self.query, width=28).pack(side="left", padx=6)
+            search_entry(top, self.query, width=28, prompt="Filter rows").pack(side="left", padx=(0, 6))
         self.note = ttk.Label(top, style="Muted.TLabel")
         self.note.pack(side="left", padx=6)
         if saveable:
-            ttk.Button(top, text="Save as CSV…", command=self.save).pack(side="right")
+            tip(ttk.Button(top, text="Save as CSV…", command=self.save),
+                "Save this table (the filtered rows, when a filter is on) as a CSV file").pack(side="right")
         self.tree = ttk.Treeview(self, show="headings", height=height, selectmode="extended")
+        tip(self.tree, "Click a column heading to sort by it; click again to reverse.", delay=1500)
         y = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         x = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=y.set, xscrollcommand=x.set)
@@ -403,9 +624,13 @@ class CsvPicker(ttk.Frame):
         self.columnconfigure(1, weight=1)
         self.combo = PathCombo(self, app, variable, choices, on_select)
         self.combo.grid(row=0, column=1, sticky="ew", pady=3)
-        buttons = [("Browse…", self._browse), ("Open", lambda: app._open(variable.get().strip())), *extras]
-        for column, (text, command) in enumerate(buttons, start=2):
-            ttk.Button(self, text=text, command=command).grid(row=0, column=column, padx=(6, 0), pady=3)
+        buttons = [("Browse…", self._browse, "Pick any CSV file"),
+                   ("Open", lambda: app._open(variable.get().strip()), "Open the file in its usual app"), *extras]
+        for column, (text, command, *hint) in enumerate(buttons, start=2):
+            button = ttk.Button(self, text=text, command=command)
+            button.grid(row=0, column=column, padx=(6, 0), pady=3)
+            if hint:
+                tip(button, hint[0])
         self.info = ttk.Label(self, style="Muted.TLabel", wraplength=760, justify="left")
         self.info.grid(row=1, column=1, columnspan=len(buttons) + 1, sticky="w")
         self.refresh_choices()
@@ -492,6 +717,8 @@ def style_text(widget, p):
 
 def apply_theme(root, name, fonts):
     p = PALETTES[name]
+    ACTIVE.clear()
+    ACTIVE.update(p)
     root.configure(background=p["bg"])
     for option, value in (("background", p["surface"]), ("foreground", p["text"]),
                           ("selectBackground", p["select"]), ("selectForeground", p["text"])):
@@ -567,5 +794,10 @@ def apply_theme(root, name, fonts):
     style.configure("Muted.TLabel", foreground=p["muted"], font=fonts["small"])
     style.configure("Link.TLabel", foreground=p["accent"], font=fonts["small"])
     style.configure("Heading.TLabel", foreground=p["text"], font=fonts["bold"])
+    style.configure("Placeholder.TLabel", foreground=p["muted"], background=p["surface"])
+    for name, back in (("Help.TLabel", p["bg"]), ("HelpRaised.TLabel", p["raised"])):
+        style.configure(name, foreground=p["muted"], background=back, font=fonts["small"], padding=(1, 0))
+        style.map(name, foreground=[("active", p["accent"])])
+    _restyle_themed(p)
     set_title_bar(root, name == "dark")
     return p

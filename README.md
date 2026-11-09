@@ -1,4 +1,4 @@
-# GBIF Herbaria Data Pipeline
+# G.R.A.A.S - Grass Research & Analysis Automation System
 
 This is an ongoing project I'm building for the Invasive Species Lab at 
 UT Austin's Brackenridge Field Laboratory. It's a python application for 
@@ -147,10 +147,15 @@ python main.py --cli
 ```
 
 The menu bar has File (GBIF account, open the data folder or log,
-quit), View (theme and keep awake) and Help (About, which also shows
-where your data is kept). The theme picker in the top right switches
-between System, Light and Dark. Your theme, file paths and model settings are saved in
+quit), View (theme, show log and keep awake) and Help (About, which also
+shows where your data is kept). View switches between the System, Light
+and Dark themes. Your theme, file paths and model settings are saved in
 `settings.json` and restored the next time you open the app.
+
+The window shows controls, not instructions. Wherever a label is followed
+by a small grey "?", rest the pointer on the label (or click the "?") to
+read what it does; most buttons show a hint the same way. The "Log" box
+in the bottom bar hides or shows the log, which gives the tabs more room.
 
 ## 4. Workflow
 
@@ -163,7 +168,7 @@ extracted GBIF files, every cleaned CSV, the images, the measurements
 and the raw model answers for that download are all kept inside it, so
 two downloads never overwrite each other. The species name is added
 when it can be found; otherwise the folder is named by the download ID
-alone. The **Download** box at the top of the window selects the active
+alone. The **Active download** box at the top of the window selects the active
 download; choosing one fills in the file paths on every tab. A download
 or a cleaning run makes its folder the active one automatically.
 
@@ -184,7 +189,8 @@ extracts it into that folder's `raw/` subfolder. When you paste a DOI,
 the download ID is read from the link and the species is looked up
 from GBIF.
 
-"Run full workflow" does the download, phase 1 and phase 2 in one go.
+"Download + clean" does the download and then cleaning phases 1 to 3 in
+one go, with the settings on the Clean tab.
 
 ### Tab 2: Clean
 
@@ -298,7 +304,7 @@ the matching voucher_ columns checked. It never overwrites a value
 that is already there, and the filled column names are recorded in
 `voucher_filled_columns` so you can review them.
 
-### Review
+### Tab 5: Review
 
 Lists the measured sheets that need a person, least confident first: a
 trait needs review, or is only a lower bound. Choose a sheet to see
@@ -337,8 +343,11 @@ what was measured drawn on it.
   folder. Objects the pipeline rejected stay out unless you corrected
   them.
 
-**Untouched sheets.** The drop-down above the list also offers
-"Untouched sheets", the images that were never measured. Opening one
+The drop-down above the list chooses which sheets are listed and shows
+how many there are of each kind. The arrow buttons beside "Accept sheet"
+step to the previous or next sheet without accepting.
+
+**Untouched sheets.** The drop-down also offers "Untouched sheets", the images that were never measured. Opening one
 finds the scale from the ruler or the sheet width (image analysis, no
 model), and you click the measurements yourself: Panicle (base, then
 tip), Leaf (the two margins) and Seed (the two ends). A panicle is a
@@ -356,18 +365,21 @@ one, with the difference in percent, so you can check your clicks. A
 table of lengths alone cannot train the landmark model, because it needs
 to know where the points are, which is why the clicks are what is saved.
 
-The buttons at the bottom right exchange labels with CVAT, Label
-Studio or Roboflow as COCO files ("Export pre-labels..." writes what
-the pipeline found so it can be corrected there, "Import labels..."
-reads the corrections back) and train the models on the reviewed
-sheets (section 5).
+"Labels and training" at the bottom right exchanges labels with CVAT,
+Label Studio or Roboflow as COCO files ("Export pre-labels" writes what
+the pipeline found so it can be corrected there, "Import corrected
+labels" reads the corrections back) and trains the models on the
+reviewed sheets (section 5). "Re-outline" in the Selected measurement
+box outlines the selected measurement again with SAM 2.
 
 ### Edit
 
 Opens any CSV as a spreadsheet. Type in a cell to change it; copy,
 paste, undo and find use the usual keys; right-click for sorting and
 for inserting or deleting rows and columns; double-click a heading to
-rename a column. "Filter rows" shows only the rows containing a text.
+rename a column. The same row and column tools are under "Rows and
+columns". Type in the filter box and press Enter to show only the rows
+containing a text.
 
 Every cell is kept as text exactly as it is in the file, so an "NA"
 stays "NA" and an ID keeps its leading zeros. "Save" keeps the previous
@@ -383,7 +395,7 @@ and the dataset; Browse picks any other file. The tools are:
 
 - **Columns**: tick the columns to keep, move them up or down,
   rename them, and see how much of each column is filled in. "Uncheck
-  empty columns" drops the empty ones. The removed columns can be saved
+  empty" drops the empty ones. The removed columns can be saved
   to a separate file together with a match column, like phase 3 does.
 - **Join two files**: pick a second CSV (file B) and the column each
   file is matched on, which can have different names. Choose the
@@ -402,12 +414,13 @@ and the dataset; Browse picks any other file. The tools are:
   `source_file` column and removing identical rows.
 - **Preview**: the first rows of file A, sortable and searchable.
 
-"Save the result" at the bottom of the tab decides where a change goes:
-a new file next to the original (named for the change, for example
-`master_cleaned_joined.csv`), a file name you choose, or the original
-itself. When the original is replaced the old version is kept in a
+"Save the result as" at the bottom of the tab decides where a change
+goes: a new file next to the original (named for the change, for example
+`master_cleaned_joined.csv`), the original itself, or a file name you
+choose. When the original is replaced the old version is kept in a
 `backups/` folder next to it and **Undo last change** brings it back.
-By default the result becomes the open file so changes can be chained.
+With "Then open it" ticked (the default) the result becomes the open
+file, so changes can be chained.
 
 ### Analysis
 
@@ -500,7 +513,7 @@ detail. You can:
 - Click the box next to a gbifID, or highlight rows and press Space,
   to check or uncheck them
 - Search, filter by status, and sort by clicking a column heading
-- Use "Check shown" or "Uncheck shown" to check everything the current
+- Use "Check all" or "Uncheck all" to check everything the current
   search and filter show, for example all Failed rows
 - Paste a list of gbifIDs and choose "Check these"
 - Preview the image and, for measured images, the calibration, notes
@@ -525,7 +538,7 @@ Partly downloaded images are never left in the image folder.
 
 ### Keep computer awake
 
-The "Keep computer awake" box in the top right stops the computer from
+The "Keep awake" box in the bottom bar (also View > Keep computer awake) stops the computer from
 going to sleep while the app is open, which matters for long GBIF
 downloads and measurement runs. The screen may still turn off. The
 setting is remembered, and the computer can sleep normally again as
@@ -669,7 +682,7 @@ the add-on from Model setup. With it installed:
 
 - SAM 2 outlines each object the detector points at, which gives the
   leaf and seed measurements a precise outline.
-- "Train models..." on the Review tab (or `python main.py train pose`)
+- "Labels and training > Train models..." on the Review tab (or `python main.py train pose`)
   fine-tunes a landmark model on the reviewed sheets: panicle base and
   tip, leaf margins, seed ends. At least 10 reviewed sheets are needed;
   100 to 200 that include the hard cases is a sensible first target.
@@ -764,7 +777,7 @@ are not in the data are kept.
 
 The Preset bar at the top of the dialog saves the current assignments
 under a name ("Save as..."), loads or deletes saved presets, and
-"Reset to default" restores the app's defaults. Presets are stored in
+"Reset" restores the app's defaults. Presets are stored in
 `settings.json`.
 
 To add a preset, add an entry to `PRESETS` in `config.py`:
@@ -891,7 +904,7 @@ Most settings are in `config.py`:
 | `LINK_COLUMNS`, `MEDIA_COLUMNS` | Columns searched for reference and image links |
 
 Environment variables: `GBIF_USER`, `GBIF_PASSWORD`, `GBIF_EMAIL`
-(these override the account saved in the app), `GBIF_PIPELINE_HOME`,
+(these override the account saved in the app), `GRAAS_HOME` (or the older `GBIF_PIPELINE_HOME`),
 `LMSTUDIO_URL`, and `LMSTUDIO_MODEL`. Set `LMSTUDIO_MODEL` only to force
 a specific model, for example with a server other than LM Studio.
 
@@ -940,6 +953,7 @@ them in this list, so there are no circular imports.
 | `program/keep_awake.py` | Keeping the computer awake |
 | `program/app_window.py` | The graphical interface |
 | `program/command_line.py` | The command-line menu and commands |
+| `program/updater.py`, `program/update_dialog.py` | Update check, download, verification and install |
 | `main.py` | Entry point |
 | `build.py` | Builds, signs and packages the app |
 | `tests/` | Unit tests; `tests/synthetic.py` draws the test sheets |
@@ -948,8 +962,8 @@ them in this list, so there are no circular imports.
 
 ## 11. Packaged releases
 
-GitHub Actions builds a Windows app and two macOS apps (Apple Silicon
-and Intel) and publishes them as a release on the repository's
+GitHub Actions builds a Windows app, two macOS apps (Apple Silicon and
+Intel) and a Linux app (x64) and publishes them as a release on the repository's
 Releases page every time something is merged into `main`. The workflow
 is `.github/workflows/release.yml` and the build itself is `build.py`,
 which uses PyInstaller.
@@ -973,7 +987,7 @@ which uses PyInstaller.
 | Pull request into `main` | Yes | No |
 | Merge or push to `main` | Yes | Yes, numbered automatically |
 | Pushing a tag such as `v2.0.0` | Yes | Yes, using the tag as the version |
-| "Run workflow" in the Actions tab | Yes | No; the zips are attached to the run |
+| "Run workflow" in the Actions tab | Yes | No; the archives are attached to the run |
 
 Pushes that only change Markdown files or `.gitignore` do not start a
 build.
@@ -981,11 +995,12 @@ build.
 Each build installs the requirements, runs `python main.py --self-test`
 to check that every module and package loads, builds the app, and runs
 the same self-test on the packaged app. A release is only published if
-all three platforms pass. It contains:
+all four builds pass. It contains:
 
-- `GBIF-Herbaria-Pipeline-v1.0.12-windows-x64.zip`
-- `GBIF-Herbaria-Pipeline-v1.0.12-macos-arm64.zip`
-- `GBIF-Herbaria-Pipeline-v1.0.12-macos-intel.zip`
+- `Graas-v1.0.12-windows-x64.zip`
+- `Graas-v1.0.12-macos-arm64.zip`
+- `Graas-v1.0.12-macos-intel.zip`
+- `Graas-v1.0.12-linux-x64.tar.gz`
 
 The release notes list the pull requests merged since the previous
 release, so descriptive pull request titles make useful notes. The
@@ -1020,23 +1035,54 @@ pip install pyinstaller
 python build.py v1.2.0
 ```
 
-The zip is written to `dist/`. `python build.py --help` lists the
+The archive is written to `dist/` (a `.zip`, or a `.tar.gz` on Linux). `python build.py --help` lists the
 options; on a Mac with your Developer ID certificate in the keychain,
 set `MACOS_SIGN_IDENTITY` (and the three `APPLE_` variables for
 notarization) to sign a local build the same way. Each platform can only build its own
-app, which is why the workflow uses three runners. To give the app an
-icon, add `assets/icon.ico` (Windows) and `assets/icon.icns` (macOS).
+app, which is why the workflow uses a runner for each. To give the app an
+icon, add `assets/icon.ico` (Windows) and `assets/icon.icns` (macOS); the
+Linux app has no icon file.
 
 ### Where the packaged app keeps its files
 
 The packaged app stores `data/` and `settings.json` in
-`Documents/GBIF Herbaria Pipeline` in your home folder, because the
-app folder itself may be read-only. When run from source they stay
-next to `main.py`. Set the environment variable `GBIF_PIPELINE_HOME`
-to use a different folder in either case.
+`Documents/Graas` in your home folder, because the
+app folder itself may be read-only. If you used an earlier version
+(named GBIF Herbaria Pipeline) and have a `Documents/GBIF Herbaria
+Pipeline` folder, the app keeps using that folder until you rename it
+to `Graas`. Saved passwords and API keys are found under the old name
+too and copied across. When run from source they stay next to
+`main.py`. Set the environment variable `GRAAS_HOME` (or the older
+`GBIF_PIPELINE_HOME`) to use a different folder in either case.
 
 The packaged app has no console, so the command-line menu and
 commands are only available when running from source.
+
+### Updates
+
+The packaged app looks for a newer release on GitHub
+(`kaustubhduddala/GRASS`, set as `UPDATE_REPO` in `config.py`) two
+seconds after it opens, and from File, then Check for updates (also
+in the Graas menu on a Mac). When there is one, a window shows its notes with
+three choices: Install and restart, Later, and Skip this version.
+
+Installing downloads the file for your computer, checks it against the
+SHA-256 checksum the release publishes (the workflow writes
+`SHA256SUMS.txt`), unpacks it next to the installed app and runs the new
+app's `--self-test`. Only if that passes does the app quit, swap the new
+version in, and start it again. If anything fails, the installed app is
+left as it was and the window offers the releases page instead. Your
+data and settings are outside the app folder, so they are untouched.
+
+File also has two switches: "Check for updates on launch" (on by
+default) and "Install updates without asking" (off by default). With the
+second on, an update found at launch is downloaded and installed
+straight away, with the progress window showing.
+
+An update needs a release made by this workflow, a folder the app can
+write to (an app in `Program Files` or `/Applications` owned by another
+user cannot replace itself), and a network connection. A copy run from
+source is not updated this way: use `git pull`.
 
 ### Code signing
 
@@ -1138,11 +1184,15 @@ accumulate. To open the app while it shows, choose "More info", then
 #### Opening an unsigned build
 
 - Windows: choose "More info", then "Run anyway".
+- Linux: extract the archive with `tar -xzf Graas-*-linux-x64.tar.gz`
+  and run `Graas/Graas`. It needs a desktop with X11 or XWayland and
+  the usual system libraries; if it does not start, run it from a
+  terminal to see which one is missing.
 - macOS: unzip the app and move it to Applications, right-click it,
   choose Open, and confirm. If macOS says the app is damaged, run:
 
 ```
-xattr -dr com.apple.quarantine "/Applications/GBIF Herbaria Pipeline.app"
+xattr -dr com.apple.quarantine "/Applications/Graas.app"
 ```
 
 ## 12. Troubleshooting

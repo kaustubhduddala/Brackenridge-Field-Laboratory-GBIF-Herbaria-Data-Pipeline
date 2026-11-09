@@ -4,9 +4,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import csv_editing
-from .gui_widgets import CsvPicker
+from .gui_widgets import (CSV_TYPES, ColumnChecklist, CsvPicker, DataTable, HelpTip, ScrollFrame, _check_image,
+                          _set_entry, help_label, listbox, placeholder, search_entry, tip)
 from .utils import save_csv
-from .gui_widgets import CSV_TYPES, ColumnChecklist, DataTable, ScrollFrame, _check_image, _set_entry
 
 ALL_COLUMNS = "(all columns)"
 
@@ -26,31 +26,37 @@ def _fix_combo(box, values, keep=True):
     box.set(current if keep and current in values else (values[0] if values else ""))
 
 
-class OutputBar(ttk.LabelFrame):
-    """Where the result goes. Shared by every tool on the Modify tab."""
+class OutputBar(ttk.Frame):
+    """Where the result goes, on one line. Shared by every tool on the Modify tab."""
 
     def __init__(self, parent):
-        super().__init__(parent, text="Save the result")
-        self.columnconfigure(2, weight=1)
+        super().__init__(parent)
+        self.columnconfigure(4, weight=1)
         self.mode = tk.StringVar(value="auto")
         self.continue_var = tk.BooleanVar(value=True)
-        ttk.Radiobutton(self, text="As a new file next to the original", variable=self.mode, value="auto").grid(
-            row=0, column=0, sticky="w", padx=(0, 16))
-        ttk.Radiobutton(self, text="Replace the original (Undo brings it back)", variable=self.mode,
-                        value="replace").grid(row=0, column=1, columnspan=2, sticky="w")
-        ttk.Radiobutton(self, text="Save as", variable=self.mode, value="path").grid(row=1, column=0, sticky="w")
-        self.entry = ttk.Entry(self)
-        self.entry.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(4, 0))
+        help_label(self, "Save the result as", "Every tool on this tab saves its result the way chosen here.",
+                   style="Heading.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 14))
+        tip(ttk.Radiobutton(self, text="A new file", variable=self.mode, value="auto"),
+            "A new file next to the original, named for the change (for example master_cleaned_joined.csv). The "
+            "original is left as it is.").grid(row=0, column=1, sticky="w", padx=(0, 12))
+        tip(ttk.Radiobutton(self, text="The original", variable=self.mode, value="replace"),
+            "Replace the original file. The old version is kept in a backups/ folder next to it, and Undo last "
+            "change brings it back.").grid(row=0, column=2, sticky="w", padx=(0, 12))
+        ttk.Radiobutton(self, text="This file", variable=self.mode, value="path").grid(row=0, column=3, sticky="w")
+        self.entry = placeholder(ttk.Entry(self, width=12), "File name or path")
+        self.entry.grid(row=0, column=4, sticky="ew", padx=(6, 0))
         self.entry.bind("<Key>", lambda _: self.mode.set("path"))
-        ttk.Button(self, text="Browse…", command=self._browse).grid(row=1, column=3, padx=(6, 0))
-        ttk.Checkbutton(self, text="Open the result afterwards so the next change builds on it",
-                        variable=self.continue_var).grid(row=2, column=0, columnspan=4, sticky="w")
+        ttk.Button(self, text="Browse…", command=self._browse).grid(row=0, column=5, padx=(6, 0))
+        tip(ttk.Checkbutton(self, text="Then open it", variable=self.continue_var),
+            "Open the result as file A afterwards, so the next change builds on it.").grid(row=0, column=6,
+                                                                                         padx=(14, 0))
 
     def _browse(self):
         path = filedialog.asksaveasfilename(parent=self.winfo_toplevel(), title="Save as", defaultextension=".csv",
                                             filetypes=CSV_TYPES)
         if path:
             _set_entry(self.entry, path)
+            self.entry.event_generate("<KeyRelease>")   # the grey prompt goes once there is a path
             self.mode.set("path")
 
     def target(self, source, suffix, allow_replace=True):
@@ -71,6 +77,10 @@ class OutputBar(ttk.LabelFrame):
 class ColumnEditor(ttk.Frame):
     """Check the columns to keep, drag them into order and rename them."""
 
+    HELP = ("Checked columns are kept; unchecked ones are removed. Click a box to check it, or select rows and "
+            "press Space.\n\nSelect rows and use ▲ ▼ to change their order.\n\nDouble-click a New name cell (or "
+            "press Rename…) to rename a column.\n\nFilled shows how much of each column has a value.")
+
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
@@ -82,18 +92,18 @@ class ColumnEditor(ttk.Frame):
 
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        ttk.Label(top, text="Search").pack(side="left")
         self.query = tk.StringVar()
         self.query.trace_add("write", lambda *_: self._refresh())
-        ttk.Entry(top, textvariable=self.query, width=26).pack(side="left", padx=6)
+        search_entry(top, self.query, width=28, prompt="Search columns").pack(side="left", padx=(0, 6))
         self.count_label = ttk.Label(top, style="Muted.TLabel")
         self.count_label.pack(side="left", padx=6)
+        HelpTip(top, self.HELP).pack(side="right")
 
         frame = ttk.Frame(self)
         frame.grid(row=1, column=0, sticky="nsew")
         self.tree = ttk.Treeview(frame, columns=("new", "filled"), show="tree headings", selectmode="extended",
                                  height=7)
-        for column, text, width, stretch in (("#0", "Column (checked columns are kept)", 280, True),
+        for column, text, width, stretch in (("#0", "Keep column", 280, True),
                                              ("new", "New name", 200, True), ("filled", "Filled", 110, False)):
             self.tree.heading(column, text=text, anchor="w")
             self.tree.column(column, width=width, anchor="w", stretch=stretch)
@@ -107,13 +117,17 @@ class ColumnEditor(ttk.Frame):
 
         buttons = ttk.Frame(self)
         buttons.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        for text, command in (("Check shown", lambda: self._set_shown(True)),
-                              ("Uncheck shown", lambda: self._set_shown(False)),
-                              ("Invert shown", self._invert_shown),
-                              ("Uncheck empty columns", self._uncheck_empty),
-                              ("Move up", lambda: self._move(-1)), ("Move down", lambda: self._move(1)),
-                              ("Rename…", self._rename), ("Reset", self.reset)):
-            ttk.Button(buttons, text=text, command=command).pack(side="left", padx=(0, 6))
+        for text, command, hint, gap in (
+                ("Check all", lambda: self._set_shown(True), "Check every column the search shows", 6),
+                ("Uncheck all", lambda: self._set_shown(False), "Uncheck every column the search shows", 6),
+                ("Invert", self._invert_shown, "Swap checked and unchecked, for the columns the search shows", 6),
+                ("Uncheck empty", self._uncheck_empty, "Uncheck the columns that are empty in every row", 18),
+                ("▲", lambda: self._move(-1), "Move the selected columns up", 2),
+                ("▼", lambda: self._move(1), "Move the selected columns down", 6),
+                ("Rename…", self._rename, "Rename the selected column", 18),
+                ("Reset", self.reset, "Check every column again and undo the renames and reordering", 0)):
+            button = ttk.Button(buttons, text=text, command=command, **({"width": 3} if text in "▲▼" else {}))
+            tip(button, hint).pack(side="left", padx=(0, gap))
 
     def load(self, columns, rows, filled):
         self.original, self.rows, self.filled = list(columns), rows, filled
@@ -236,7 +250,10 @@ class ModifyTab(ttk.Frame):
         file_box.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         file_box.columnconfigure(0, weight=1)
         self.picker = CsvPicker(file_box, app, source.path_var, source.choices, source.select,
-                                extras=[("Reload", source.reload), ("Undo last change", self._undo)])
+                                extras=[("Reload", source.reload, "Read the file again from disk"),
+                                        ("Undo last change", self._undo,
+                                         "Bring back the version saved before the last change that replaced "
+                                         "this file")])
         self.picker.grid(row=0, column=0, sticky="ew")
 
         self.pages = ttk.Notebook(self)
@@ -262,10 +279,6 @@ class ModifyTab(ttk.Frame):
         scroll = ScrollFrame(page, self.app.palette)
         scroll.grid(row=0, column=0, sticky="nsew")
         return page, scroll.inner
-
-    def _hint(self, parent, text, row=0, columnspan=1):
-        ttk.Label(parent, text=text, style="Muted.TLabel", wraplength=820, justify="left").grid(
-            row=row, column=0, columnspan=columnspan, sticky="w", pady=(0, 6))
 
     # ------------------------------------------------------------------ loading
 
@@ -323,7 +336,7 @@ class ModifyTab(ttk.Frame):
             self.dup_list.insert("end", column)
         self._rebuild_join_lists()
         self.preview.show(self.df.head(500) if self.df is not None else None,
-                          note="Click a column heading to sort.")
+                          note="first 500 rows" if self.df is not None and len(self.df) > 500 else "")
 
     def _need_table(self):
         if self.df is None:
@@ -393,16 +406,15 @@ class ModifyTab(ttk.Frame):
     def _build_columns(self):
         page = self._page()
         page.rowconfigure(1, weight=1)
-        self._hint(page, "Tick the columns to keep, move them into the order you want and rename them. Unticked "
-                         "columns are removed. Click a box to tick it, or select rows and press Space. Double-click "
-                         "a New name cell to rename it.")
         self.editor = ColumnEditor(page, self.app)
         self.editor.grid(row=1, column=0, sticky="nsew")
         options = ttk.Frame(page)
         options.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.save_removed_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(options, text="Also save the removed columns to a separate file, with this column to match "
-                                      "them again:", variable=self.save_removed_var).pack(side="left")
+        tip(ttk.Checkbutton(options, text="Save the removed columns to their own file, matched by",
+                            variable=self.save_removed_var),
+            "Writes the removed columns to a separate CSV together with the column chosen here, so they can be "
+            "joined back later.").pack(side="left")
         self.removed_key = ttk.Combobox(options, state="readonly", width=22)
         self.removed_key.pack(side="left", padx=6)
         self.columns_status = self.app._action(page, 3, [("Apply columns", self._apply_columns)], columnspan=1)
@@ -433,11 +445,13 @@ class ModifyTab(ttk.Frame):
 
     def _build_join(self):
         page, body = self._scrolled()
-        self._hint(body, "Join any two CSV files on a column they share. Check the columns to carry over from each "
-                         "file and the column each file is matched on. File A is the CSV chosen at the top.")
         file_b = ttk.Frame(body)
         file_b.grid(row=1, column=0, sticky="ew")
         file_b.columnconfigure(0, weight=1)
+        HelpTip(file_b, "Join any two CSV files on a column they share (the two columns can have different "
+                        "names). File A is the CSV chosen at the top; choose file B here.\n\nFor each file, pick "
+                        "the column it is matched on and check the columns to carry into the result.").grid(
+            row=0, column=1, sticky="n", padx=(8, 4), pady=8)
         self.b_var = tk.StringVar()
         self.picker_b = CsvPicker(file_b, self.app, self.b_var, self.source.choices, self._select_b)
         self.picker_b.label("File B")
@@ -447,28 +461,28 @@ class ModifyTab(ttk.Frame):
         self.lists.columnconfigure((0, 1), weight=1, uniform="lists")
         self.list_a = self.list_b = None
         self._join_placeholder = ttk.Label(self.lists, style="Muted.TLabel",
-                                           text="Choose file A at the top and file B above to see their columns.")
+                                           text="Choose file B to see the columns of both files.")
         self._join_placeholder.grid(row=0, column=0, columnspan=2, sticky="w")
         self.match_label = ttk.Label(body, style="Heading.TLabel")
         self.match_label.grid(row=3, column=0, sticky="w")
 
         options = ttk.Frame(body)
         options.grid(row=4, column=0, sticky="ew", pady=(6, 0))
-        options.columnconfigure(1, weight=1)
+        options.columnconfigure(3, weight=1)
         self.join_type = _combo(options, csv_editing.JOIN_TYPES, width=46)
         self.join_type.set(next(iter(csv_editing.JOIN_TYPES)))
         self.conflict = _combo(options, csv_editing.CONFLICT_CHOICES, width=46)
         self.conflict.set(next(iter(csv_editing.CONFLICT_CHOICES)))
         self.duplicates = _combo(options, csv_editing.DUPLICATE_CHOICES, width=46)
         self.duplicates.set(next(iter(csv_editing.DUPLICATE_CHOICES)))
-        for row, (text, box) in enumerate((("Rows to keep", self.join_type), ("A column is in both files", self.conflict),
-                                           ("File B has several rows per match", self.duplicates))):
+        for row, (text, box) in enumerate((("Rows to keep", self.join_type), ("Column in both files", self.conflict),
+                                           ("Several matches in B", self.duplicates))):
             ttk.Label(options, text=text).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=2)
             box.grid(row=row, column=1, sticky="w", pady=2)
         self.loose_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(options, text="Ignore capital letters and extra spaces when matching",
-                        variable=self.loose_var, command=self._update_matches).grid(row=3, column=0, columnspan=2,
-                                                                                    sticky="w")
+        tip(ttk.Checkbutton(options, text="Loose matching", variable=self.loose_var, command=self._update_matches),
+            "Ignore capital letters and extra spaces when comparing the match columns.").grid(
+            row=0, column=2, sticky="w", padx=(16, 0))
         self.join_status = self.app._action(body, 5, [("Join files", self._apply_join)], columnspan=1)
         return page
 
@@ -553,8 +567,6 @@ class ModifyTab(ttk.Frame):
     def _build_rows(self):
         page, body = self._scrolled()
         body.columnconfigure((0, 1), weight=1, uniform="tools")
-        self._hint(body, "Each tool changes file A and saves the result as set under Save the result.", columnspan=2)
-
         # filter
         box = ttk.LabelFrame(body, text="Filter rows")
         box.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 8))
@@ -576,7 +588,8 @@ class ModifyTab(ttk.Frame):
         self.filter_save = tk.BooleanVar(value=False)
         ttk.Checkbutton(box, text="Match capital letters", variable=self.filter_case).grid(
             row=5, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(box, text="Also save the rows that were left out", variable=self.filter_save).grid(
+        tip(ttk.Checkbutton(box, text="Also save the rows left out", variable=self.filter_save),
+            "Writes the rows the filter took out to a second file, named _left_out.").grid(
             row=6, column=0, columnspan=2, sticky="w")
         self.filter_status = self.app._action(box, 7, [("Filter", self._apply_filter)], columnspan=2)
 
@@ -584,17 +597,13 @@ class ModifyTab(ttk.Frame):
         box = ttk.LabelFrame(body, text="Remove duplicate rows")
         box.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8))
         box.columnconfigure(0, weight=1)
-        ttk.Label(box, text="Rows are duplicates when these columns match (select none to compare whole rows)",
-                  style="Muted.TLabel", wraplength=380, justify="left").grid(row=0, column=0, columnspan=2,
-                                                                              sticky="w")
+        help_label(box, "Compare these columns", "Rows are duplicates when they match in every column selected "
+                   "here. Select none to compare whole rows. Click to select; Cmd/Ctrl-click adds another, "
+                   "Shift-click a range.").grid(row=0, column=0, columnspan=2, sticky="w")
         holder = ttk.Frame(box)
         holder.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=4)
         holder.columnconfigure(0, weight=1)
-        self.dup_list = tk.Listbox(holder, selectmode="extended", height=5, exportselection=False,
-                                   background=self.app.palette["surface"], foreground=self.app.palette["text"],
-                                   selectbackground=self.app.palette["select"],
-                                   selectforeground=self.app.palette["text"], highlightthickness=1,
-                                   highlightbackground=self.app.palette["border"], relief="flat")
+        self.dup_list = listbox(holder, selectmode="extended", height=5)
         bar = ttk.Scrollbar(holder, orient="vertical", command=self.dup_list.yview)
         self.dup_list.configure(yscrollcommand=bar.set)
         self.dup_list.grid(row=0, column=0, sticky="ew")
@@ -605,8 +614,8 @@ class ModifyTab(ttk.Frame):
         ttk.Radiobutton(box, text="Keep the last of each", variable=self.dup_keep, value="last").grid(
             row=3, column=0, sticky="w")
         self.dup_save = tk.BooleanVar(value=True)
-        ttk.Checkbutton(box, text="Also save the removed duplicates", variable=self.dup_save).grid(
-            row=4, column=0, sticky="w")
+        tip(ttk.Checkbutton(box, text="Also save the removed duplicates", variable=self.dup_save),
+            "Writes the removed rows to a second file, named _duplicates.").grid(row=4, column=0, sticky="w")
         self.dup_status = self.app._action(box, 5, [("Remove duplicates", self._apply_duplicates)], columnspan=2)
 
         # find and replace
@@ -623,10 +632,13 @@ class ModifyTab(ttk.Frame):
         self.replace_whole = tk.BooleanVar(value=False)
         self.replace_case = tk.BooleanVar(value=False)
         self.replace_regex = tk.BooleanVar(value=False)
-        for row, (text, var) in enumerate((("The whole cell must match", self.replace_whole),
-                                           ("Match capital letters", self.replace_case),
-                                           ("The text to find is a regular expression", self.replace_regex)), start=3):
-            ttk.Checkbutton(box, text=text, variable=var).grid(row=row, column=0, columnspan=2, sticky="w")
+        for row, (text, var, hint) in enumerate((
+                ("Whole cell only", self.replace_whole, "Only replace cells whose entire value is the text to find."),
+                ("Match capital letters", self.replace_case, "Treat A and a as different."),
+                ("Regular expression", self.replace_regex,
+                 "Read the text to find as a regular expression (a pattern), for example ^\\s+ for leading "
+                 "spaces.")), start=3):
+            tip(ttk.Checkbutton(box, text=text, variable=var), hint).grid(row=row, column=0, columnspan=2, sticky="w")
         self.replace_status = self.app._action(box, 6, [("Replace", self._apply_replace)], columnspan=2)
 
         # sort
@@ -638,9 +650,10 @@ class ModifyTab(ttk.Frame):
         self.sort_column.grid(row=0, column=1, sticky="ew", pady=2)
         self.sort_desc = tk.BooleanVar(value=False)
         self.sort_numbers = tk.BooleanVar(value=False)
-        ttk.Checkbutton(box, text="Largest or last first", variable=self.sort_desc).grid(
+        ttk.Checkbutton(box, text="Descending (largest or last first)", variable=self.sort_desc).grid(
             row=1, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(box, text="Sort as numbers (10 comes after 9)", variable=self.sort_numbers).grid(
+        tip(ttk.Checkbutton(box, text="Sort as numbers", variable=self.sort_numbers),
+            "Compare the values as numbers, so 10 comes after 9 instead of after 1.").grid(
             row=2, column=0, columnspan=2, sticky="w")
         self.sort_status = self.app._action(box, 3, [("Sort", self._apply_sort)], columnspan=2)
 
@@ -739,17 +752,11 @@ class ModifyTab(ttk.Frame):
     def _build_combine(self):
         page = self._page()
         page.rowconfigure(1, weight=1)
-        self._hint(page, "Stack the rows of two or more CSV files into one. Columns are matched by name; a column "
-                         "missing from a file is left empty for its rows. The result is always a new file.")
         holder = ttk.Frame(page)
         holder.grid(row=1, column=0, sticky="nsew")
         holder.columnconfigure(0, weight=1)
         holder.rowconfigure(0, weight=1)
-        self.combine_list = tk.Listbox(holder, selectmode="extended", height=6, exportselection=False,
-                                       background=self.app.palette["surface"], foreground=self.app.palette["text"],
-                                       selectbackground=self.app.palette["select"],
-                                       selectforeground=self.app.palette["text"], highlightthickness=1,
-                                       highlightbackground=self.app.palette["border"], relief="flat")
+        self.combine_list = listbox(holder, selectmode="extended", height=6)
         bar = ttk.Scrollbar(holder, orient="vertical", command=self.combine_list.yview)
         self.combine_list.configure(yscrollcommand=bar.set)
         self.combine_list.grid(row=0, column=0, sticky="nsew")
@@ -759,12 +766,15 @@ class ModifyTab(ttk.Frame):
         for text, command in (("Add files…", self._combine_add), ("Add file A", self._combine_add_current),
                               ("Remove selected", self._combine_remove), ("Clear", lambda: self.combine_list.delete(0, "end"))):
             ttk.Button(buttons, text=text, command=command).pack(side="left", padx=(0, 6))
+        HelpTip(buttons, "Stack the rows of two or more CSV files into one. Columns are matched by name; a column "
+                         "missing from a file is left empty for its rows. The result is always a new file."
+                ).pack(side="left", padx=(4, 0))
         self.combine_source = tk.BooleanVar(value=True)
         self.combine_dedupe = tk.BooleanVar(value=False)
-        ttk.Checkbutton(page, text="Add a source_file column with the name of the file each row came from",
-                        variable=self.combine_source).grid(row=3, column=0, sticky="w")
-        ttk.Checkbutton(page, text="Remove rows that are identical after combining",
-                        variable=self.combine_dedupe).grid(row=4, column=0, sticky="w")
+        tip(ttk.Checkbutton(page, text="Add a source_file column", variable=self.combine_source),
+            "Adds a column holding the name of the file each row came from.").grid(row=3, column=0, sticky="w")
+        ttk.Checkbutton(page, text="Remove identical rows", variable=self.combine_dedupe).grid(row=4, column=0,
+                                                                                               sticky="w")
         self.combine_status = self.app._action(page, 5, [("Combine files", self._apply_combine)], columnspan=1)
         return page
 

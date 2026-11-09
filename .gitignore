@@ -34,6 +34,4 @@ site_logins.json.*
 settings.json
 
 # Personal folders kept out of the repo
-/Weekly Meeting Notes
-/other/Weekly Meeting Notes
-/PythonAutomation(old)/
+/other

@@ -21,7 +21,7 @@ from .pipeline import blank_result, load_result, new_entry, refine_outline, reme
 from .benchmark import load_reference
 from .records import describe, is_done, load_measurements, lowest_confidence, needs_review
 from .taxa import LANDMARKS, TRAIT_LABELS, TRAITS, profile_for
-from ..gui_widgets import wheel_steps
+from ..gui_widgets import HelpTip, help_label, menu_button, tip, titled_frame, wheel_steps
 from ..utils import index_images
 
 UNTOUCHED = "Untouched sheets"
@@ -29,9 +29,19 @@ FILTERS = ("Needs review", "Not reviewed yet", "Reviewed", "All measured", UNTOU
 HANDLE = 6
 ZOOM_STEP = 1.25
 JSON_TYPES = [("COCO JSON", "*.json"), ("All files", "*.*")]
-IDLE_HINT = ("Drag a point to correct it. Drag along a panicle line to pull out a new point; double-click a "
-             "point to remove it. Fit to plant traces the selected panicle along the plant. Scroll to zoom, drag "
-             "the sheet to move it, double-click to fit.")
+SHEET_HELP = ("Drag a point to correct a measurement.\n\nDrag along a panicle line to pull out a new point; "
+              "double-click a point to remove it.\n\nScroll to zoom, drag the sheet to move it, double-click to "
+              "fit it in the window.\n\nDelete removes the selected measurement. Esc stops a tool.")
+SELECTED_HELP = ("Click a measurement on the sheet or in the list to select it.\n\nFolded or overlapped: it cannot "
+                 "be measured, so its value becomes NA.\nAn end is hidden: the value is only a minimum.\nLeave "
+                 "out: ignore this one.\n\nFit to plant traces the selected panicle along the plant, from each "
+                 "of its points to the next; press it again after moving or adding points. Straighten goes back "
+                 "to straight lines between the points.\n\nRe-outline draws the outline again with SAM 2, from "
+                 "the points as they are now.")
+ADD_HELP = ("Pick a tool, then click two points on the sheet: the base then the tip of a panicle, the two margins "
+            "of a leaf, or the two ends of a seed. The tool stays on so you can add several; press Esc or the "
+            "button again to stop.\n\nScale… sets the scale from two points a known distance apart (for example "
+            "0 and 10 cm on the ruler), and every value on the sheet is recomputed.")
 DRAG_START_PX = 5        # a press on a line becomes "pull out a new point" once the mouse moves this far
 VIA_HANDLE = 4
 
@@ -195,7 +205,7 @@ class ReviewTab(ttk.Frame):
         self.rows, self.images, self.items = {}, {}, []
         self.gbif_id, self.result, self.raw, self.rgb, self.cache = None, None, {}, None, {}
         self.selected, self.dirty, self.mode, self.mode_points = None, False, None, []
-        self.hand, self.hand_name, self.manual = {}, "", False
+        self.hand, self.hand_name, self.manual, self.read_error = {}, "", False, ""
         self.sam = None                                         # SAM 2, loaded the first time it is asked for
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
@@ -204,11 +214,15 @@ class ReviewTab(ttk.Frame):
         left = ttk.Frame(self)
         left.grid(row=0, column=0, sticky="ns", padx=(0, 8))
         left.rowconfigure(2, weight=1)
+        self.filter_choice = FILTERS[0]                         # the drop-down shows each with its count
         self.filter_var = tk.StringVar(value=FILTERS[0])
-        box = ttk.Combobox(left, textvariable=self.filter_var, values=FILTERS, state="readonly", width=20)
+        box = self.filter_box = ttk.Combobox(left, textvariable=self.filter_var, values=FILTERS, state="readonly",
+                                             width=22)
         box.grid(row=0, column=0, sticky="ew")
-        box.bind("<<ComboboxSelected>>", lambda _: self._fill_queue())
-        self.count = ttk.Label(left, style="Muted.TLabel")
+        box.bind("<<ComboboxSelected>>", lambda _: self.set_filter(FILTERS[box.current()]))
+        tip(box, "Which sheets to list. Sheets that need review come least confident first; untouched sheets "
+                 "were never measured, and you can measure them by hand.", delay=900)
+        self.count = ttk.Label(left, style="Muted.TLabel", wraplength=210, justify="left")
         self.count.grid(row=1, column=0, sticky="w", pady=(2, 4))
         frame = ttk.Frame(left)
         frame.grid(row=2, column=0, sticky="ns")
@@ -222,12 +236,14 @@ class ReviewTab(ttk.Frame):
         bar.pack(side="right", fill="y")
         self.queue.pack(side="left", fill="y", expand=True)
         self.queue.bind("<<TreeviewSelect>>", lambda _: self._queue_selected())
-        ttk.Button(left, text="Refresh", command=self.refresh).grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        tip(ttk.Button(left, text="Refresh", command=self.refresh),
+            "Read the measurements and the image folder again").grid(row=3, column=0, sticky="ew", pady=(6, 0))
 
         # ---- middle: the sheet
         self.view = SheetView(self, self)
         self.view.grid(row=0, column=1, sticky="nsew")
         self.view.restyle(app.palette)
+        HelpTip(self.view, SHEET_HELP, on="raised").place(relx=1.0, x=-8, y=8, anchor="ne")
         app.restyle_hooks.append(lambda palette: (self.view.restyle(palette), self.view.redraw()))
         self.view.bind("<Key-Delete>", lambda _: self._delete_entry())
         self.view.bind("<Key-BackSpace>", lambda _: self._delete_entry())
@@ -259,56 +275,77 @@ class ReviewTab(ttk.Frame):
         self.detail = ttk.Label(right, style="Muted.TLabel", wraplength=300, justify="left")
         self.detail.grid(row=3, column=0, sticky="nw", pady=(6, 6))
 
-        attrs = self.attrs_frame = ttk.LabelFrame(right, text="Selected measurement", padding=(10, 4))
+        attrs = self.attrs_frame = titled_frame(right, "Selected measurement", SELECTED_HELP, padding=(10, 4))
         attrs.grid(row=4, column=0, sticky="ew")
+        attrs.columnconfigure(0, weight=1)
         self.attr_vars = {}
-        for i, (key, text) in enumerate((("folded", "Folded or overlapped (not measurable)"),
-                                         ("cut_off", "An end is hidden (value is a minimum)"),
-                                         ("exclude", "Leave this one out"))):
+        for i, (key, text, hint) in enumerate((
+                ("folded", "Folded or overlapped", "It cannot be measured: the value becomes NA."),
+                ("cut_off", "An end is hidden", "The value is only a minimum (a lower bound)."),
+                ("exclude", "Leave out", "Ignore this measurement."))):
             var = tk.BooleanVar()
             self.attr_vars[key] = var
-            ttk.Checkbutton(attrs, text=text, variable=var, command=self._attrs_changed).grid(
+            tip(ttk.Checkbutton(attrs, text=text, variable=var, command=self._attrs_changed), hint).grid(
                 row=i, column=0, sticky="w")
-        ttk.Button(attrs, text="Delete", command=self._delete_entry).grid(row=2, column=1, sticky="e", padx=(8, 0))
+        tip(ttk.Button(attrs, text="Re-outline", command=self._refine_outline),
+            "Outline the selected measurement again with SAM 2, from its points as they are now"
+            ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(8, 0))
+        tip(ttk.Button(attrs, text="Delete", command=self._delete_entry),
+            "Remove the selected measurement (also the Delete key)").grid(row=2, column=1, sticky="e", padx=(8, 0))
         route = ttk.Frame(attrs)
         route.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(route, text="Panicle route").pack(side="left", padx=(0, 8))
-        ttk.Button(route, text="Fit to plant", command=self._fit_to_plant).pack(side="left")
-        ttk.Button(route, text="Straighten", command=self._straighten).pack(side="left", padx=(6, 0))
-        outline = ttk.Frame(attrs)
-        outline.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(outline, text="Outline").pack(side="left", padx=(0, 8))
-        ttk.Button(outline, text="Re-run SAM 2", command=self._refine_outline).pack(side="left")
+        ttk.Label(route, text="Panicle").pack(side="left", padx=(0, 8))
+        tip(ttk.Button(route, text="Fit to plant", command=self._fit_to_plant),
+            "Trace the selected panicle along the plant, through its points").pack(side="left")
+        tip(ttk.Button(route, text="Straighten", command=self._straighten),
+            "Back to straight lines between the points").pack(side="left", padx=(6, 0))
 
-        tools = self.tools_frame = ttk.LabelFrame(right, text="Add by clicking", padding=(10, 4))
+        tools = self.tools_frame = titled_frame(right, "Add by clicking", ADD_HELP, padding=(10, 4))
         self.tool_buttons = {}
         tools.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        ends = {"panicle_length": "base, then tip", "leaf_width": "one margin, then the other",
+                "seed_length": "one end, then the other"}
         for i, trait in enumerate(TRAITS):
-            self.tool_buttons[trait] = ttk.Button(tools, text=TRAIT_LABELS[trait].capitalize(), width=6,
-                                                  command=lambda t=trait: self._toggle_mode(t))
+            self.tool_buttons[trait] = tip(ttk.Button(tools, text=TRAIT_LABELS[trait].capitalize(), width=6,
+                                                      command=lambda t=trait: self._toggle_mode(t)),
+                                           f"Add a {TRAIT_LABELS[trait]} with two clicks: {ends.get(trait, 'two points')}")
             self.tool_buttons[trait].grid(row=0, column=i, padx=(0, 4))
-        self.tool_buttons["scale"] = ttk.Button(tools, text="Scale…", width=6,
-                                                command=lambda: self._toggle_mode("scale"))
+        self.tool_buttons["scale"] = tip(ttk.Button(tools, text="Scale…", width=6,
+                                                    command=lambda: self._toggle_mode("scale")),
+                                         "Set the scale from two points a known distance apart")
         self.tool_buttons["scale"].grid(row=0, column=3)
-        self.mode_label = ttk.Label(right, style="Muted.TLabel", wraplength=300, justify="left", text=IDLE_HINT)
+        self.mode_label = ttk.Label(right, style="Link.TLabel", wraplength=300, justify="left")
         self.mode_label.grid(row=6, column=0, sticky="w", pady=(6, 0))
 
         # ---- bottom: accepting, labels and training
         bottom = ttk.Frame(self)
         bottom.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        self.accept_button = ttk.Button(bottom, text="Accept sheet", style="Accent.TButton", command=self._accept)
+        self.accept_button = tip(ttk.Button(bottom, text="Accept sheet", style="Accent.TButton",
+                                            command=self._accept),
+                                 "Store this sheet as reviewed: its row in the measurements CSV is rewritten and a "
+                                 "training label is saved. Then the next sheet opens.")
         self.accept_button.pack(side="left")
-        ttk.Button(bottom, text="Next", command=lambda: self._step(1)).pack(side="left", padx=6)
-        ttk.Button(bottom, text="Undo edits", command=self._reload_sheet).pack(side="left")
-        ttk.Button(bottom, text="Hand values…", command=self._choose_hand).pack(side="left", padx=6)
-        for text, command in (("Train models…", self._train), ("Import labels…", self._import_coco),
-                              ("Export pre-labels…", lambda: self._export_coco(False)),
-                              ("Export labels…", lambda: self._export_coco(True))):
-            button = ttk.Button(bottom, text=text, command=command)
-            button.pack(side="right", padx=(6, 0))
-            app.action_buttons.append(button)
+        tip(ttk.Button(bottom, text="◀", width=3, command=lambda: self._step(-1)),
+            "Previous sheet in the list").pack(side="left", padx=(6, 0))
+        tip(ttk.Button(bottom, text="▶", width=3, command=lambda: self._step(1)),
+            "Next sheet in the list, without accepting this one").pack(side="left", padx=(2, 6))
+        tip(ttk.Button(bottom, text="Undo edits", command=self._reload_sheet),
+            "Drop every change made to this sheet since it was opened or accepted").pack(side="left")
+        more = menu_button(bottom, "Labels and training", [
+            ("Export labels (reviewed sheets)…", lambda: self._export_coco(True)),
+            ("Export pre-labels (everything found)…", lambda: self._export_coco(False)),
+            ("Import corrected labels…", self._import_coco), None,
+            ("Train models…", self._train)])
+        tip(more, "Exchange labels with CVAT, Label Studio or Roboflow as COCO files, and train your own models on "
+                  "the sheets you reviewed", delay=900)
+        more.pack(side="right", padx=(6, 0))
+        app.action_buttons.append(more)
+        tip(ttk.Button(bottom, text="Hand values…", command=self._choose_hand),
+            "Load a CSV of your own measurements (gbifID, Panicle length (cm), Leaf width (cm), Seed length (cm)). "
+            "Each sheet then shows your value beside the measured one, with the difference.").pack(side="right",
+                                                                                                    padx=(6, 0))
         self.status = ttk.Label(bottom, style="Muted.TLabel")
-        self.status.pack(side="right", padx=8)
+        self.status.pack(side="left", padx=10)
 
     # ------------------------------------------------------------------ the queue
 
@@ -355,37 +392,41 @@ class ReviewTab(ttk.Frame):
 
     def refresh(self):
         csv_path, media = self._paths()
-        self.rows, self.images = {}, {}
+        self.rows, self.images, self.read_error = {}, {}, ""
         if csv_path and media:
             try:
                 self.rows = {k: v for k, v in load_measurements(csv_path).items() if is_done(v)}
                 self.images = index_images(media)
             except Exception as exc:
-                self.count.configure(text=f"Could not read the measurements: {exc}")
+                self.read_error = f"Could not read the measurements: {exc}"
+        self._fill_queue()
+
+    def set_filter(self, name):
+        self.filter_choice = name
         self._fill_queue()
 
     def _fill_queue(self):
-        chosen = self.filter_var.get()
+        measured = {gbif_id: row for gbif_id, row in self.rows.items() if gbif_id in self.images}
+        reviewed = {gbif_id for gbif_id, row in measured.items() if row.get("ai_review") == "reviewed"}
+        groups = {"Needs review": [i for i, row in measured.items() if needs_review(row)],
+                  "Not reviewed yet": [i for i in measured if i not in reviewed], "Reviewed": list(reviewed),
+                  "All measured": list(measured), UNTOUCHED: [i for i in self.images if i not in self.rows]}
+        chosen = self.filter_choice
         if chosen == UNTOUCHED:
-            self.items = sorted(gbif_id for gbif_id in self.images if gbif_id not in self.rows)
+            self.items = sorted(groups[chosen])
         else:
-            def wanted(row):
-                reviewed = row.get("ai_review") == "reviewed"
-                return {"Needs review": needs_review(row), "Not reviewed yet": not reviewed, "Reviewed": reviewed,
-                        "All measured": True}[chosen]
-
-            self.items = sorted((gbif_id for gbif_id, row in self.rows.items() if gbif_id in self.images
-                                 and wanted(row)), key=lambda i: (lowest_confidence(self.rows[i]), i))
+            self.items = sorted(groups[chosen], key=lambda i: (lowest_confidence(self.rows[i]), i))
+        labels = [f"{name}  ({len(groups[name])})" for name in FILTERS]
+        self.filter_box.configure(values=labels)
+        self.filter_var.set(labels[FILTERS.index(chosen)])
         self.queue.delete(*self.queue.get_children())
         for gbif_id in self.items:
             confidence = "-" if gbif_id not in self.rows else f"{lowest_confidence(self.rows[gbif_id]):.2f}"
             self.queue.insert("", "end", iid=gbif_id, text=gbif_id, values=(confidence,))
-        waiting = sum(1 for row in self.rows.values() if needs_review(row))
-        reviewed = sum(1 for row in self.rows.values() if row.get("ai_review") == "reviewed")
-        untouched = sum(1 for gbif_id in self.images if gbif_id not in self.rows)
-        self.count.configure(text=f"{len(self.items)} shown · {waiting} need review · {reviewed} reviewed · "
-                                  f"{untouched} untouched" if self.images else
-                             "No images yet. Download images on the Images tab.")
+        if self.images or self.read_error:
+            self.count.configure(text=self.read_error)
+        else:
+            self.count.configure(text="No images yet. Download them on the Images tab.")
         if self.gbif_id in self.items:
             self.queue.selection_set(self.gbif_id)
         elif self.gbif_id is None and self.items:
@@ -462,7 +503,7 @@ class ReviewTab(ttk.Frame):
         result = self.result
         calibration = result.get("calibration") or {}
         scale = (f"{calibration['px_per_cm']:.1f} px/cm from {calibration.get('source')}"
-                 if calibration.get("px_per_cm") else "no scale: use Set scale…")
+                 if calibration.get("px_per_cm") else "no scale: set one with Scale…")
         reviewed = " · reviewed" if result.get("review_status") == "reviewed" else ""
         untouched = " · untouched: add the measurements yourself" if self.manual and not self._entries() else ""
         self.title.configure(text=f"{self.gbif_id}{reviewed}{untouched}{' · edited' if self.dirty else ''}")
@@ -496,7 +537,7 @@ class ReviewTab(ttk.Frame):
         for key, var in self.attr_vars.items():
             var.set(bool(entry and (entry.get("attrs") or {}).get(key)))
         if not entry:
-            self.detail.configure(text="Click a measurement on the sheet or in the list.")
+            self.detail.configure(text="")
             return
         lines = [entry.get("method", "")]
         if entry.get("confidence") is not None:
@@ -775,8 +816,8 @@ class ReviewTab(ttk.Frame):
                        "it along the plant." if mode == "panicle_length" else ""))
             self.view.focus_set()
         else:
-            text = IDLE_HINT
-        self.mode_label.configure(text=text, style="Link.TLabel" if mode else "Muted.TLabel")
+            text = ""
+        self.mode_label.configure(text=text)
         self.view.redraw()
 
     def place_point(self, point):
@@ -930,21 +971,29 @@ class TrainDialog(tk.Toplevel):
         self.configure(background=app.palette["bg"], padx=16, pady=14)
         self.resizable(False, False)
         self.result = None
-        ttk.Label(self, wraplength=440, justify="left", text=(
-            f"{sheets} reviewed sheets with labels are available (at least {training.MIN_SHEETS} are needed). "
-            "Training starts from pretrained weights and can take from minutes to hours. The new model is used "
-            "for measuring as soon as it is done; check it afterwards with the benchmark on the held-out sheets."
-        )).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        enough = sheets >= training.MIN_SHEETS
+        help_label(self, f"{sheets} reviewed sheets with labels" + ("" if enough else
+                                                                    f" (at least {training.MIN_SHEETS} are needed)"),
+                   "Training starts from pretrained weights and can take from minutes to hours.\n\nThe new model "
+                   "is used for measuring as soon as it is done. Check it afterwards with the benchmark on the "
+                   "held-out sheets (python main.py benchmark).", style="Heading.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
         self.pose = tk.BooleanVar(value=True)
         self.seg = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self, text="Landmark model (pose): panicle base and tip, leaf margins, seed ends",
-                        variable=self.pose).grid(row=1, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(self, text="Outline model (seg): needs labels with outlines (SAM 2 or CVAT)",
-                        variable=self.seg).grid(row=2, column=0, columnspan=2, sticky="w")
+        tip(ttk.Checkbutton(self, text="Landmark model", variable=self.pose),
+            "Finds the points: panicle base and tip, leaf margins, seed ends (a pose model).").grid(
+            row=1, column=0, columnspan=2, sticky="w")
+        tip(ttk.Checkbutton(self, text="Outline model", variable=self.seg),
+            "Finds the outlines (a segmentation model). It needs labels that have outlines, from SAM 2 or "
+            "CVAT.").grid(row=2, column=0, columnspan=2, sticky="w")
         self.epochs = tk.StringVar(value=str(training.DEFAULTS["epochs"]))
         self.imgsz = tk.StringVar(value=str(training.DEFAULTS["imgsz"]))
-        for row, (text, var) in enumerate((("Epochs", self.epochs), ("Image size (px)", self.imgsz)), start=3):
-            ttk.Label(self, text=text).grid(row=row, column=0, sticky="w", pady=(8, 0))
+        for row, (text, var, hint) in enumerate((
+                ("Epochs", self.epochs, "How many passes over the sheets. More takes longer and fits closer."),
+                ("Image size (px)", self.imgsz, "The size the sheets are trained at, at least 320. Larger sees "
+                                                "small seeds better but is slower and needs more memory.")),
+                start=3):
+            help_label(self, text, hint).grid(row=row, column=0, sticky="w", pady=(8, 0), padx=(0, 12))
             ttk.Entry(self, textvariable=var, width=10).grid(row=row, column=1, sticky="w", pady=(8, 0))
         buttons = ttk.Frame(self)
         buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(14, 0))

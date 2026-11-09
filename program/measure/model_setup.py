@@ -15,7 +15,7 @@ from typing import Callable
 from config import BASE_DIR, FROZEN
 from . import downloads, ocr, trained
 from .detectors import DETECTOR_CHOICES, LABEL_CHOICES
-from ..gui_widgets import set_title_bar, style_text
+from ..gui_widgets import HelpTip, help_label, set_title_bar, style_text, tip
 
 READY, MISSING, PARTIAL = "ready", "missing", "partial"
 LOW_DISK_GB = 6.0                # warn before the PyTorch add-on when less than this is free
@@ -128,7 +128,7 @@ class ModelSetupDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app.root)
         self.title("Model setup")
-        self.geometry("820x760")
+        self.geometry("780x640")
         self.minsize(640, 520)
         self.transient(app.root)
         self.configure(background=app.palette["bg"])
@@ -140,14 +140,8 @@ class ModelSetupDialog(tk.Toplevel):
         body.pack(fill="both", expand=True)
         body.columnconfigure(0, weight=1)
         body.rowconfigure(3, weight=1)
-        ttk.Label(body, wraplength=740, justify="left", style="Muted.TLabel",
-                  text="Everything here is optional. The app measures with a vision model (such as LM Studio) "
-                       "without any of it. The add-on and your own trained models replace the vision model for "
-                       "finding structures; the label reader replaces it for labels. Nothing is downloaded until "
-                       "you press a button.").grid(row=0, column=0, sticky="w")
-
         self.list_frame = ttk.Frame(body)
-        self.list_frame.grid(row=1, column=0, sticky="ew", pady=(10, 4))
+        self.list_frame.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         self.list_frame.columnconfigure(0, weight=1)
 
         choices = ttk.LabelFrame(body, text="Choices")
@@ -161,10 +155,12 @@ class ModelSetupDialog(tk.Toplevel):
                      width=42).grid(row=1, column=1, sticky="w", pady=2)
         flags = ttk.Frame(choices)
         flags.grid(row=2, column=1, sticky="w")
-        ttk.Checkbutton(flags, text="Outline with SAM 2", variable=app.refine_masks_var).pack(side="left",
-                                                                                              padx=(0, 16))
-        ttk.Checkbutton(flags, text="Second-opinion checks by the vision model",
-                        variable=app.second_opinion_var).pack(side="left")
+        tip(ttk.Checkbutton(flags, text="SAM 2 outlines", variable=app.refine_masks_var),
+            "Outline leaves and seeds precisely with SAM 2 (needs the add-on and the SAM 2 download).").pack(
+            side="left", padx=(0, 16))
+        tip(ttk.Checkbutton(flags, text="Second-opinion checks", variable=app.second_opinion_var),
+            "Ask the vision model yes or no questions about each measured object. Slower, but catches more "
+            "mistakes.").pack(side="left")
 
         log_frame = ttk.Frame(body)
         log_frame.grid(row=3, column=0, sticky="nsew")
@@ -181,11 +177,15 @@ class ModelSetupDialog(tk.Toplevel):
         self.disk.grid(row=4, column=0, sticky="w", pady=(6, 0))
         footer = ttk.Frame(body)
         footer.grid(row=5, column=0, sticky="ew", pady=(10, 0))
-        self.all_button = ttk.Button(footer, text="Get everything that is missing", style="Accent.TButton",
+        self.all_button = ttk.Button(footer, text="Get everything missing", style="Accent.TButton",
                                      command=self._get_all)
         self.all_button.pack(side="left")
         self.cancel_button = ttk.Button(footer, text="Cancel", command=self._cancel, state="disabled")
         self.cancel_button.pack(side="left", padx=6)
+        HelpTip(footer, "Everything here is optional: the app measures with a vision model (such as LM Studio) "
+                        "without any of it.\n\nThe add-on and your own trained models replace the vision model "
+                        "for finding structures, and the label reader replaces it for reading labels.\n\nNothing "
+                        "is installed or downloaded until you press a button.").pack(side="left", padx=(4, 0))
         ttk.Button(footer, text="Close", command=self._close).pack(side="right")
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<Escape>", lambda _: self._close())
@@ -211,15 +211,14 @@ class ModelSetupDialog(tk.Toplevel):
             mark = {READY: "✓", PARTIAL: "◐", MISSING: "○"}[state]
             colour = {READY: "ok", PARTIAL: "busy", MISSING: "muted"}[state]
             ttk.Label(frame, text=mark, width=2, foreground=self.app.palette[colour],
-                      font=self.app.fonts["bold"]).grid(row=0, column=0, rowspan=3, sticky="n", padx=(0, 6))
-            ttk.Label(frame, text=component.title + (f"   ({component.size})" if component.size else ""),
-                      style="Heading.TLabel").grid(row=0, column=1, sticky="w")
-            ttk.Label(frame, text=component.detail, style="Muted.TLabel", wraplength=560, justify="left").grid(
-                row=1, column=1, sticky="w")
-            ttk.Label(frame, text=text, foreground=self.app.palette[colour]).grid(row=2, column=1, sticky="w")
+                      font=self.app.fonts["bold"]).grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 6))
+            help_label(frame, component.title, component.detail, style="Heading.TLabel").grid(row=0, column=1,
+                                                                                               sticky="w")
+            ttk.Label(frame, text=text + (f"  ·  {component.size}" if component.size and state != READY else ""),
+                      foreground=self.app.palette[colour]).grid(row=1, column=1, sticky="w")
             if component.install and state != READY:
                 button = ttk.Button(frame, text=component.label, command=lambda c=component: self._run([c]))
-                button.grid(row=0, column=2, rowspan=3, padx=(8, 0))
+                button.grid(row=0, column=2, rowspan=2, padx=(8, 0))
                 self.rows.append(button)
         free = free_gb()
         addon_missing = trained.available() is False

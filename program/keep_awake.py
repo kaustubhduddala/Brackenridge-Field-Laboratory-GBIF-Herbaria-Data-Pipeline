@@ -38,7 +38,7 @@ class KeepAwake:
         elif shutil.which("systemd-inhibit"):
             what = "idle:sleep" if keep_display_on else "sleep"
             self._process = subprocess.Popen(
-                ["systemd-inhibit", f"--what={what}", "--who=GBIF Herbaria Data Pipeline",
+                ["systemd-inhibit", f"--what={what}", "--who=Graas",
                  "--why=Long-running download or measurement", "--mode=block", "sleep", "infinity"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
