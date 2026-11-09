@@ -24,7 +24,7 @@
   },
   "models": {
     "anthropic": "claude-opus-5-5",
-    "lmstudio": "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive"
+    "lmstudio": "qwen/qwen3-vl-8b"
   },
   "detector": {
     "mode": "auto",
@@ -32,5 +32,6 @@
     "second_opinion": false,
     "read_labels": true,
     "label_reader": "auto"
-  }
+  },
+  "image_side": 0
 }

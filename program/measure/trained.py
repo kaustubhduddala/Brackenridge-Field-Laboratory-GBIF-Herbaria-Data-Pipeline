@@ -339,13 +339,17 @@ class SamRefiner:
         self.name = path.stem
         self.model = SAM(str(path))
 
-    def outline(self, rgb, box=None, point=None, margin=0.25, min_side=256):
-        """Outline [[x, y], ...] in sheet pixels of the object in `box` and/or under `point`, or None."""
+    def outline(self, rgb, box=None, point=None, margin=0.25, min_side=256, reach=None):
+        """Outline [[x, y], ...] in sheet pixels of the object in `box` and/or under `point`, or None.
+
+        With only a point, SAM 2 looks at a square of side 2 x `reach` pixels around it (a few cm of the sheet by
+        default).
+        """
         from .geometry import largest_blob, mask_polygon
 
         h, w = rgb.shape[:2]
         if box is None:
-            half = max(min_side, 0.04 * max(h, w))
+            half = reach or max(min_side, 0.04 * max(h, w))
             box_for_crop = [point[0] - half, point[1] - half, point[0] + half, point[1] + half]
         else:
             box_for_crop = box

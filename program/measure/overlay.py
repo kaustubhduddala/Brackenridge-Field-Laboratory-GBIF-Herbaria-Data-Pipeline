@@ -73,6 +73,9 @@ def draw_overlay(image_path, result, out_path, max_side=2200):
             for p in (entry.get("anchors") or {}).values():
                 x, y = pt(p)
                 draw.ellipse((x - 5, y - 5, x + 5, y + 5), outline=colour, width=2)
+            for p in entry.get("via") or []:
+                x, y = pt(p)
+                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=colour, outline=(0, 0, 0))
             if points:
                 draw.text((points[0][0] + 8, points[0][1] - font.size), entry_label(entry, n), fill=colour,
                           font=font, stroke_width=2, stroke_fill=(0, 0, 0))

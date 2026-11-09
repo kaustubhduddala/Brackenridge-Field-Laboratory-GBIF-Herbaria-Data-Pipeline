@@ -444,30 +444,6 @@ def _sheet_for(result, rgb, profile=DEFAULT_PROFILE, cache=None, image_path=None
     return sheet
 
 
-def panicle_from_outline(result, rgb, polygon, box=None, profile=DEFAULT_PROFILE, cache=None):
-    """A panicle entry for an outline (SAM 2 from a box a person drew). Not added to the result.
-
-    The two ends are the extremes of the outline along its long axis, the lower one as the base. They are only
-    a first guess, since a panicle with a long side branch has a longer axis than its main stem, so the entry
-    is marked for measuring again: the route is then traced along the plant inside the outline between them,
-    and a person can drag either end.
-    """
-    cal = Calibration.from_dict(result.get("calibration"))
-    if not cal.px_per_cm:
-        raise ValueError("This sheet has no scale yet; set it with Scale… first")
-    sheet = _sheet_for(result, rgb, profile, cache)
-    mask, offset, scale = _outline_mask(polygon, cal.px_per_cm, sheet.plant.work_px_per_cm)
-    axis = geometry.principal_axis(mask)
-    if axis is None:
-        raise ValueError("The outline is too small to find its ends")
-    base, tip = sorted((_to_full(axis[0], offset, scale), _to_full(axis[1], offset, scale)), key=lambda p: -p[1])
-    taken = [int(e["id"].rsplit("-", 1)[-1]) for e in result["traits"]["panicle_length"]
-             if e["id"].rsplit("-", 1)[-1].isdigit()]
-    entry = new_entry("panicle_length", {"polygon": polygon, "box": box, "source": "sam"}, 1 + max(taken, default=0))
-    entry.update(anchors={"base": base, "tip": tip}, edited=True, reviewed=True)
-    return entry
-
-
 def remeasure(result, rgb=None, image_path=None, profile=DEFAULT_PROFILE, cache=None):
     """Recompute values and decisions after a person changed points, attributes or the scale.
 
@@ -498,23 +474,173 @@ def remeasure(result, rgb=None, image_path=None, profile=DEFAULT_PROFILE, cache=
     return decide(result, profile)
 
 
+MAX_CURVE = 2.5             # a long curve that is almost all on the plant may be this much longer than its chord
+NEARLY_STRAIGHT = 1.25      # a route this close to straight is harmless even where the plant mask has gaps
+
+
+def route_verdict(on_plant, ratio):
+    """(accepted, reason) for a traced stretch, from the share of it on plant pixels and how much longer it is
+    than the straight distance.
+
+    Accepted: a route that is nearly straight (it can only be a little wrong, whatever the mask looks like); one
+    that is mostly on the plant and not much longer than the straight distance; or a long curve that is almost
+    entirely on the plant. Otherwise the reason is spelled out, because "no path" is rarely the real problem.
+    """
+    if ratio <= NEARLY_STRAIGHT and on_plant >= 0.3:
+        return True, ""
+    if on_plant >= MIN_ON_PLANT_FIT and ratio <= MAX_WINDING:
+        return True, ""
+    if on_plant >= 0.85 and ratio <= MAX_CURVE:
+        return True, ""
+    if on_plant < MIN_ON_PLANT_FIT:
+        return False, (f"only {on_plant:.0%} of the route is on plant colour (a pale or thin stem can be too faint "
+                       "for the plant mask)")
+    return False, (f"the route would be {ratio:.1f} times longer than the straight distance, which usually means it "
+                   "jumped onto another stem")
+
+
+MIN_ON_PLANT_FIT = 0.6
+
+
+def _trace_chain(sheet, chain, straight=False, outline=None):
+    """Route along a chain of points: (path, length in px, share of the path on the plant, notes).
+
+    Every stretch between two neighbouring points is traced along the plant (the lowest-cost route on the
+    plant mask), so the route goes through each point and follows the panicle between them. A stretch whose route
+    fails route_verdict is drawn straight instead, and so is every stretch when `straight` is set, like a
+    segmented line in ImageJ. `notes` has one entry per stretch drawn straight although a route was wanted: its
+    number, the reason, and which points of the path it covers (so it can be shown).
+    """
+    plant, ppc = sheet.plant, sheet.ppc
+    last = len(chain) - 2
+    points, length, on_plant_px, notes = [], 0.0, 0.0, []
+    for k, (a, b) in enumerate(zip(chain, chain[1:])):
+        gap = _distance(a, b)
+        piece, piece_px, share = [list(a), list(b)], gap, 1.0
+        if not straight and gap / ppc >= 0.3:
+            end_reach = 1.0 if outline else 0.5            # a click can land a little off a thin stem
+            sa = plant.snap(a, radius_cm=end_reach if k == 0 else 0.5) or a
+            sb = plant.snap(b, radius_cm=end_reach if k == last else 0.5) or b
+            path, cm, on_plant = plant.trace(sa, sb, prefer=outline)
+            ratio = cm * ppc / max(_distance(sa, sb), 1.0)
+            accepted, reason = route_verdict(on_plant, ratio)
+            if not accepted:
+                # The strict plant mask drops pale stems and grey or purple spikelets. Look again with the sensitive
+                # mask before giving up on following the plant.
+                fa = plant.snap(a, radius_cm=end_reach if k == 0 else 0.5, faint=True) or sa
+                fb = plant.snap(b, radius_cm=end_reach if k == last else 0.5, faint=True) or sb
+                f_path, f_cm, f_on = plant.trace(fa, fb, prefer=outline, faint=True)
+                f_ratio = f_cm * ppc / max(_distance(fa, fb), 1.0)
+                f_accepted, _ = route_verdict(f_on, f_ratio)
+                if f_accepted:
+                    path, cm, on_plant, accepted, sa, sb = f_path, f_cm, f_on, True, fa, fb
+            if accepted:
+                piece = [list(a)] + path + [list(b)]
+                piece_px, share = cm * ppc + _distance(a, sa) + _distance(sb, b), on_plant
+            else:
+                start = len(points) - 1 if points else 0
+                notes.append({"stretch": k, "reason": reason, "on_plant": round(on_plant, 2), "ratio": round(ratio, 2),
+                              "span": [max(start, 0), max(start, 0) + 1]})
+        added = piece if not points else piece[1:]
+        points += added
+        length += piece_px
+        on_plant_px += share * piece_px
+    return points, length, (on_plant_px / length if length else 0.0), notes
+
+
+def outline_prompt(entry, ppc):
+    """(box, point, reach) to prompt SAM 2 with for a measurement: where the object is and how big it is."""
+    names = LANDMARKS[entry["trait"]]
+    chain = [entry["anchors"][names[0]], *(entry.get("via") or []), entry["anchors"][names[1]]]
+    xs, ys = [p[0] for p in chain], [p[1] for p in chain]
+    route = entry.get("points") or chain
+    middle = geometry.point_along(route, 0.5)
+    ends = _distance(chain[0], chain[-1])
+    if entry["trait"] == "leaf_width":                     # the two margins are across the blade: look around it
+        return None, middle, max(4.0 * ppc, 3.0 * ends)
+    pad = max(1.5 * ppc, 0.2 * geometry.polyline_length(route)) if entry["trait"] == "panicle_length" \
+        else max(0.15 * ppc, 0.5 * ends)
+    return [min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad], middle, None
+
+
+def refine_outline(result, rgb, entry, sam):
+    """Outline one measurement with SAM 2. Returns (polygon, note), or (None, why not).
+
+    The note says how the outline compares with the person's own points (a leaf's widest part, a seed's long
+    axis), which is a quick check that the outline found the right thing.
+    """
+    import cv2
+
+    ppc = (result.get("calibration") or {}).get("px_per_cm")
+    if not ppc:
+        return None, "this sheet has no scale yet"
+    if not all((entry.get("anchors") or {}).get(n) for n in LANDMARKS[entry["trait"]]):
+        return None, "this measurement has no points"
+    box, point, reach = outline_prompt(entry, ppc)
+    polygon = sam.outline(rgb, box=box, point=point, reach=reach)
+    if not polygon:
+        return None, "SAM 2 found nothing there"
+    area = cv2.contourArea(np.array(polygon, np.float32)) / ppc ** 2
+    note = f"outline found ({area:.1f} cm\u00b2)"
+    yours = entry.get("value_cm")
+    mine = f" (your points: {yours:.2f} cm)" if yours is not None else ""
+    if entry["trait"] == "leaf_width":
+        mask, offset, scale = _outline_mask(polygon, ppc, WIDTH_PX_PER_CM)
+        found = geometry.widest_point(mask)
+        if found:
+            note += f"; its widest part is {found[0] / scale / ppc:.2f} cm{mine}"
+    elif entry["trait"] == "seed_length":
+        mask, offset, scale = _outline_mask(polygon, ppc)
+        axis = geometry.principal_axis(mask)
+        if axis:
+            note += f"; its long axis is {axis[2] / ppc:.2f} cm{mine}"
+    return polygon, note
+
+
+def via_position(entry, point):
+    """Where in entry["via"] a new point belongs: between the two points of the line that the click is nearest
+    to along the drawn route (not the straight chord between them, which can be far from a curved route)."""
+    route = entry.get("points") or []
+    chain = [entry["anchors"]["base"], *(entry.get("via") or []), entry["anchors"]["tip"]]
+    if len(route) < 2:
+        route = chain
+
+    def nearest(p):
+        return min(range(len(route)), key=lambda i: (route[i][0] - p[0]) ** 2 + (route[i][1] - p[1]) ** 2)
+
+    where, running = [], 0
+    for p in chain:
+        running = max(running, nearest(p))                 # the route passes through the points in order
+        where.append(running)
+    clicked = nearest(point)
+    return max((j for j in range(len(chain) - 1) if where[j] <= clicked), default=0)
+
+
 def _measure_edited(sheet, entry, first, second):
     entry["flags"] = []
-    straight = _distance(first, second)
-    if entry["trait"] == "panicle_length" and straight / sheet.ppc >= 2.0:
-        outline = entry.get("polygon")                  # from SAM 2: the route stays on this panicle
-        reach = 1.0 if outline else 0.3
-        a = sheet.plant.snap(first, radius_cm=reach) or first
-        b = sheet.plant.snap(second, radius_cm=reach) or second
-        path, length_cm, on_plant = sheet.plant.trace(a, b, prefer=outline)
-        if on_plant >= 0.6 and length_cm * sheet.ppc <= MAX_WINDING * _distance(a, b):
-            entry.update(points=path, quality=round(on_plant, 2),
-                         method=("geodesic path along the plant inside the SAM outline between the reviewer's points"
-                                 if outline else "geodesic path along the plant between the reviewer's points"))
-            return _set_value(entry, length_cm * sheet.ppc, sheet)
-    entry.update(points=[list(first), list(second)], quality=1.0,
-                 method="straight distance between the reviewer's points")
-    return _set_value(entry, straight, sheet)
+    if entry["trait"] != "panicle_length":
+        entry.update(points=[list(first), list(second)], quality=1.0,
+                     method="straight distance between the reviewer's points")
+        return _set_value(entry, _distance(first, second), sheet)
+    via = [list(p) for p in entry.get("via") or []]
+    chain = [list(first), *via, list(second)]
+    straight = not entry.get("fit", True)                   # lines drawn by hand start straight until fitted
+    outline = None if straight else entry.get("polygon")    # from SAM 2: the route stays on this panicle
+    points, px, share, notes = _trace_chain(sheet, chain, straight, outline)
+    bent, stretches = len(notes), len(chain) - 1
+    entry["fit_notes"] = notes
+    entry["straight_spans"] = [n["span"] for n in notes]
+    through = f" through the reviewer's {len(chain)} points" if via else " between the reviewer's points"
+    if straight or bent == stretches:
+        method = ("straight lines" + through) if via else "straight distance between the reviewer's points"
+        share = 1.0
+    else:
+        method = ("geodesic path along the plant inside the SAM outline" if outline
+                  else "geodesic path along the plant") + through
+        if bent:
+            method += f" ({bent} of {stretches} stretches straight, where the plant could not be followed)"
+    entry.update(points=points, quality=round(share, 2), method=method)
+    return _set_value(entry, px, sheet)
 
 
 def measure_sheet(image_path, detector, profile=DEFAULT_PROFILE, log=print, control=None, status=None):

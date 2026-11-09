@@ -287,18 +287,26 @@ what was measured drawn on it.
 - Drag a point to correct a measurement. Scroll to zoom, drag the sheet
   to move it, double-click to fit it in the window.
 - "Panicle", "Leaf" and "Seed" add a measurement from two clicks (base
-  then tip, or the two margins of a leaf). Delete removes the selected
-  one.
-- "Panicle from a box (SAM)..." is the quick way to a panicle: click two
-  opposite corners of a box around it, SAM 2 cuts the panicle out from
-  the leaves and stems around it (about 3 s), and the route is traced
-  along the plant inside that outline. It needs the add-on and the SAM 2
-  download from Model setup. The two ends are only a first guess, the
-  extremes of the outline along its long axis, so a long side branch or
-  a stretch of bare stem can pull them off the lowest panicle node: drag
-  them to where they belong. No tool finds the panicle by itself without
-  a model; leaves, stems and the panicle are all connected plant, and a
-  route traced across them wanders over the sheet.
+  then tip, or the two margins of a leaf). The tool you pick is
+  highlighted and stays on, so you can keep clicking to add more lines.
+  It stops when you press Esc, press the same button again, or click
+  something unrelated (the sheet list, a tab, the bottom buttons). Points
+  that already exist can still be dragged while a tool is on, and the
+  Fit to plant, Straighten and checkbox controls keep it on. "Scale..."
+  sets one scale and then turns itself off. Delete removes the selected
+  line.
+- A panicle starts as a straight line between your two clicks. "Fit to
+  plant" (in the Selected measurement box) then traces it along the plant,
+  with the same lowest-cost path along the plant mask that the automatic
+  measuring uses, so the route follows the panicle where it bends. If the
+  route takes a shortcut, drag along the line to pull out a new point
+  where it should go (the line stays fitted and is traced through the
+  point), and press "Fit to plant" again whenever you want to re-trace.
+  Drag a point to move it and double-click it to remove it. "Straighten"
+  goes back to straight lines between the points, like a segmented line
+  in ImageJ. A stretch the plant cannot be followed along is drawn
+  straight and noted in the method. Leaf width and seed length are single
+  straight lines between two points, so they take no extra points.
 - The checkboxes mark the selected measurement as folded (not
   measurable), as having a hidden end (its value becomes a lower
   bound), or leave it out.
@@ -313,9 +321,9 @@ what was measured drawn on it.
 "Untouched sheets", the images that were never measured. Opening one
 finds the scale from the ruler or the sheet width (image analysis, no
 model), and you click the measurements yourself: Panicle (base, then
-tip), Leaf (the two margins) and Seed (the two ends). The panicle is
-traced along the plant between your two points; a leaf or seed is the
-distance between them. "Accept sheet" stores them like any reviewed
+tip), Leaf (the two margins) and Seed (the two ends). A panicle is a
+straight line until you press Fit to plant, which traces it along the
+plant; a leaf or seed is the distance between its two points. "Accept sheet" stores them like any reviewed
 sheet, so measuring sheets by hand is also how you build training data
 from scratch, with or without LM Studio.
 

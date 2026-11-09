@@ -62,6 +62,10 @@ def label_from_result(gbif_id, result, reviewed_only=True):
                 continue
             keypoints = {name: [round(float(v), 1) for v in anchors[name]] for name in LANDMARKS[trait]}
             objects.append({"cls": cls, "keypoints": keypoints, "polygon": entry.get("polygon"),
+                            "via": [list(p) for p in entry.get("via") or []],
+                            "fitted": bool(entry.get("fit", True)),
+                            "route": [[round(float(x), 1), round(float(y), 1)] for x, y in entry.get("points") or []]
+                            if trait == "panicle_length" else None,
                             "box": box_of(cls, keypoints, entry.get("polygon"), result["size"]), "attrs": attrs,
                             "value_cm": entry.get("value_cm")})
     for obj in (result.get("layout") or {}).get("objects") or []:      # labels and rulers found by a trained model

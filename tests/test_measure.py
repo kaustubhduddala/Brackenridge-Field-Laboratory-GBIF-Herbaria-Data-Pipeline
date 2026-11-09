@@ -55,6 +55,34 @@ class Geometry(unittest.TestCase):
         self.assertGreater((back & mask).sum() / (back | mask).sum(), 0.9)
 
 
+class FaintTracing(unittest.TestCase):
+    """A pale stem, and a sheet box detected too small, must not stop a route that follows the plant."""
+
+    def sheet(self, sheet_box):
+        from program.measure.geometry import PlantImage
+        from program.measure.pipeline import Sheet
+        from program.measure.calibration import Calibration
+        rgb = np.full((800, 1600, 3), (236, 234, 226), np.uint8)
+        points = np.array([[200 + i, 400 - int(120 * math.sin(i / 1100 * math.pi))] for i in range(0, 1200, 4)], np.int32)
+        cv2.polylines(rgb, [points], False, (210, 206, 190), thickness=4)       # a faint stem: ~25 lightness below paper
+        cal = Calibration(px_per_cm=80.0, source="sheet", sheet_box=sheet_box)
+        return Sheet(rgb, cal, PlantImage(rgb, 80.0, [], sheet_box), [], DEFAULT_PROFILE), points
+
+    def test_pale_stem_is_followed(self):
+        from program.measure.pipeline import _trace_chain
+        sheet, points = self.sheet([0, 0, 1600, 800])
+        chain = [points[0].tolist(), points[len(points) // 2].tolist(), points[-1].tolist()]
+        path, length, share, notes = _trace_chain(sheet, chain)
+        self.assertEqual(notes, [])
+        self.assertGreater(length, geometry.polyline_length(chain) * 1.01)       # along the curve, not the chord
+
+    def test_wrong_sheet_box_does_not_block_the_route(self):
+        from program.measure.pipeline import _trace_chain
+        sheet, points = self.sheet([0, 0, 500, 800])           # the paper was found much too small
+        chain = [points[0].tolist(), points[len(points) // 2].tolist(), points[-1].tolist()]
+        self.assertEqual(_trace_chain(sheet, chain)[3], [])
+
+
 class Decisions(unittest.TestCase):
     def entry(self, value, *codes, score=0.9):
         entry = {"trait": "panicle_length", "value_cm": value, "score": score, "quality": 1.0, "flags": []}

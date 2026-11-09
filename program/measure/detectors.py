@@ -19,6 +19,7 @@ in full-resolution pixels. Nothing here measures anything.
 from dataclasses import dataclass
 
 from . import ocr, trained
+from .geometry import point_along as _along
 from .locator import CROP_MARGIN, LEAF_SIZE_CM, SEED_SIZE_CM, Locator
 
 DETECTOR_CHOICES = {"Automatic (trained models when available)": "auto", "Vision model only": "vision",
@@ -49,18 +50,6 @@ def _box_around(points, margin, size):
     xs, ys = [p[0] for p in points], [p[1] for p in points]
     return [max(0, min(xs) - margin), max(0, min(ys) - margin), min(size[0], max(xs) + margin),
             min(size[1], max(ys) + margin)]
-
-
-def _along(points, share):
-    """The point a given share of the way along a path."""
-    lengths = [((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5 for a, b in zip(points, points[1:])]
-    target, walked = share * sum(lengths), 0.0
-    for (a, b), length in zip(zip(points, points[1:]), lengths):
-        if length and walked + length >= target:
-            t = (target - walked) / length
-            return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
-        walked += length
-    return list(points[-1])
 
 
 class Detector:

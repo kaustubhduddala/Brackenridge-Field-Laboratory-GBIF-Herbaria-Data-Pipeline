@@ -53,6 +53,38 @@ def plant_mask(rgb, exclude_boxes=(), sheet_box=None):
     return mask.astype(np.uint8)
 
 
+def faint_mask(rgb, exclude_boxes=(), sheet_box=None):
+    """A more sensitive plant mask for tracing: anything even slightly darker or more coloured than the paper.
+
+    plant_mask is strict on purpose (it feeds measurements and checks), so it drops pale stems, and grey or purple
+    spikelets that look like ink. A route that a person drew along such a plant is still a route on the plant;
+    this mask lets the tracer see it. Boxes and the sheet edge are cleared as in plant_mask.
+    """
+    cv2 = _cv2()
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.int16)
+    light, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
+    paper_like = (light > 120) & (b >= 130)
+    paper_l = np.median(light[paper_like]) if paper_like.any() else 220
+    paper_b = np.median(b[paper_like]) if paper_like.any() else 136
+    chroma = np.hypot(a - 128, b - 128)
+    paper_chroma = np.median(chroma[paper_like]) if paper_like.any() else 8
+    mask = ((light < paper_l - 12) | (b > paper_b + 7) | (chroma > paper_chroma + 10)) & (light > 25)
+    mask &= ~(a > 150)
+    mask &= ~(b < 120)
+    h, w = mask.shape
+    inside = np.zeros_like(mask)
+    if sheet_box is not None:
+        x0, y0, x1, y1 = _clip_box(sheet_box, w, h)
+    else:
+        x0, y0, x1, y1 = int(0.04 * w), int(0.04 * h), w - int(0.04 * w), h - int(0.04 * h)
+    inside[y0:y1, x0:x1] = True
+    mask &= inside
+    for box in exclude_boxes or ():
+        bx0, by0, bx1, by1 = _clip_box(box, w, h)
+        mask[by0:by1, bx0:bx1] = False
+    return mask.astype(np.uint8)
+
+
 def _clip_box(box, w, h):
     x0, y0, x1, y1 = box
     x0, x1 = sorted((int(round(x0)), int(round(x1))))
@@ -77,14 +109,31 @@ class PlantImage:
         # the plant runs on top of a label or disappears under it.
         self.raw = cv2.morphologyEx(plant_mask(small, (), sb), cv2.MORPH_CLOSE, kernel)
         self.mask = self.raw.copy()
+        self._small = small
+        self._faint = None                  # built on first use: only a route the strict mask cannot follow needs it
         h_work, w_work = self.mask.shape
         self.work_px_per_cm = px_per_cm * self.scale if px_per_cm else None
         # A label's edge and the shadow beside it look like a thin stem; clear a little beyond each box.
         pad = EXCLUDE_PAD_CM * self.work_px_per_cm if self.work_px_per_cm else 0
+        self._excluded = []
         for box in exclude_boxes or ():
             x0, y0, x1, y1 = [v * self.scale for v in box]
             x0, y0, x1, y1 = _clip_box([x0 - pad, y0 - pad, x1 + pad, y1 + pad], w_work, h_work)
             self.mask[y0:y1, x0:x1] = 0
+            self._excluded.append((x0, y0, x1, y1))
+
+    @property
+    def faint(self):
+        """The sensitive mask (see faint_mask), a superset of the strict one, at the working scale."""
+        if self._faint is None:
+            cv2 = _cv2()
+            # not clipped to the sheet box: when the sheet was detected too small, the plant outside it is still
+            # plant, and the person has put the points there
+            faint = faint_mask(self._small, (), None)
+            for x0, y0, x1, y1 in self._excluded:
+                faint[y0:y1, x0:x1] = 0
+            self._faint = cv2.morphologyEx(faint, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)) | self.mask
+        return self._faint
 
     def to_work(self, point):
         return (point[0] * self.scale, point[1] * self.scale)
@@ -92,13 +141,14 @@ class PlantImage:
     def to_full(self, point):
         return [round(point[0] / self.scale, 1), round(point[1] / self.scale, 1)]
 
-    def snap(self, point, radius_cm=0.6):
-        """Nearest plant pixel to a full-res point within radius_cm, or None."""
+    def snap(self, point, radius_cm=0.6, faint=False):
+        """Nearest plant pixel to a full-res point within radius_cm, or None (`faint`: use the sensitive mask)."""
         x, y = self.to_work(point)
         r = max(2, int(radius_cm * self.work_px_per_cm))
-        h, w = self.mask.shape
+        mask = self.faint if faint else self.mask
+        h, w = mask.shape
         x0, x1, y0, y1 = max(0, int(x) - r), min(w, int(x) + r + 1), max(0, int(y) - r), min(h, int(y) + r + 1)
-        ys, xs = np.nonzero(self.mask[y0:y1, x0:x1])
+        ys, xs = np.nonzero(mask[y0:y1, x0:x1])
         if not len(xs):
             return None
         d = (xs + x0 - x) ** 2 + (ys + y0 - y) ** 2
@@ -107,7 +157,7 @@ class PlantImage:
             return None
         return self.to_full((xs[i] + x0, ys[i] + y0))
 
-    def _cost(self, box, prefer=None):
+    def _cost(self, box, prefer=None, faint=False):
         """Travel cost in a work-scale box: cheap along thick plant parts, expensive across paper.
 
         `prefer` is a full-resolution outline (the object's own mask); plant outside it costs three
@@ -118,6 +168,8 @@ class PlantImage:
         sub = self.mask[y0:y1, x0:x1]
         dist = cv2.distanceTransform(sub, cv2.DIST_L2, 3)
         cost = np.where(sub > 0, 1.0 / (1.0 + 0.5 * dist), 40.0)
+        if faint:                                      # pale plant: dearer than solid plant, far cheaper than paper
+            cost = np.where((sub == 0) & (self.faint[y0:y1, x0:x1] > 0), 2.0, cost)
         if prefer is not None and len(prefer) >= 3:
             inside = polygon_mask(prefer, sub.shape, offset=(x0, y0), scale=self.scale)
             reach = max(1, int(0.3 * self.work_px_per_cm))
@@ -133,23 +185,25 @@ class PlantImage:
         return (max(0, int(min(xs)) - m), max(0, int(min(ys)) - m),
                 min(w, int(max(xs)) + m + 1), min(h, int(max(ys)) + m + 1))
 
-    def trace(self, start, end, margin_cm=4.0, prefer=None):
+    def trace(self, start, end, margin_cm=4.0, prefer=None, faint=False):
         """Lowest-cost path along the plant between two full-res points (the geodesic between landmarks).
 
         Returns (path in full-res pixels, length in cm, fraction of the path on plant pixels).
+        With `faint` the route may also use pale plant (the sensitive mask), and counts it as plant.
         """
         from skimage.graph import route_through_array
 
         a, b = self.to_work(start), self.to_work(end)
         box = self._box_around([a, b], margin_cm)
-        cost = self._cost(box, prefer)
+        cost = self._cost(box, prefer, faint)
         x0, y0 = box[0], box[1]
         h, w = cost.shape
         ra = (min(h - 1, max(0, int(a[1]) - y0)), min(w - 1, max(0, int(a[0]) - x0)))
         rb = (min(h - 1, max(0, int(b[1]) - y0)), min(w - 1, max(0, int(b[0]) - x0)))
         indices, _ = route_through_array(cost, ra, rb, fully_connected=True, geometric=True)
         path = np.array([(c + x0, r + y0) for r, c in indices], dtype=np.float64)
-        on_plant = float(np.mean([self.mask[int(y), int(x)] > 0 for x, y in path])) if len(path) else 0.0
+        seen = self.faint if faint else self.mask
+        on_plant = float(np.mean([seen[int(y), int(x)] > 0 for x, y in path])) if len(path) else 0.0
         smooth = smooth_path(path, window=max(3, int(0.2 * self.work_px_per_cm)))
         length_cm = polyline_length(smooth) / self.work_px_per_cm
         return [self.to_full(p) for p in simplify(smooth, 0.5)], length_cm, on_plant
@@ -443,6 +497,18 @@ def mask_polygon(mask, offset=(0, 0), scale=1.0, tolerance=1.0):
     if len(contour) < 3:
         return None
     return [[round(float((x + offset[0]) / scale), 1), round(float((y + offset[1]) / scale), 1)] for x, y in contour]
+
+
+def point_along(points, share):
+    """The point a given share (0 to 1) of the way along a path."""
+    lengths = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])]
+    target, walked = share * sum(lengths), 0.0
+    for (a, b), length in zip(zip(points, points[1:]), lengths):
+        if length and walked + length >= target:
+            t = (target - walked) / length
+            return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
+        walked += length
+    return list(points[-1])
 
 
 def largest_blob(mask):

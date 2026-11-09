@@ -17,7 +17,7 @@ from . import labels, trained, training
 from .calibration import manual_calibration
 from .decision import ACCEPT, LOWER_BOUND, NEEDS_REVIEW
 from .overlay import COLOURS, entry_label
-from .pipeline import blank_result, load_result, new_entry, panicle_from_outline, remeasure
+from .pipeline import blank_result, load_result, new_entry, refine_outline, remeasure, via_position
 from .benchmark import load_reference
 from .records import describe, is_done, load_measurements, lowest_confidence, needs_review
 from .taxa import LANDMARKS, TRAIT_LABELS, TRAITS, profile_for
@@ -29,7 +29,11 @@ FILTERS = ("Needs review", "Not reviewed yet", "Reviewed", "All measured", UNTOU
 HANDLE = 6
 ZOOM_STEP = 1.25
 JSON_TYPES = [("COCO JSON", "*.json"), ("All files", "*.*")]
-IDLE_HINT = "Drag a point to correct it. Scroll to zoom, drag the sheet to move it, double-click to fit."
+IDLE_HINT = ("Drag a point to correct it. Drag along a panicle line to pull out a new point; double-click a "
+             "point to remove it. Fit to plant traces the selected panicle along the plant. Scroll to zoom, drag "
+             "the sheet to move it, double-click to fit.")
+DRAG_START_PX = 5        # a press on a line becomes "pull out a new point" once the mouse moves this far
+VIA_HANDLE = 4
 
 
 def _hex(rgb):
@@ -50,7 +54,7 @@ class SheetView(tk.Canvas):
         self.bind("<B1-Motion>", self._motion)
         self.bind("<ButtonRelease-1>", self._release)
         self.bind("<MouseWheel>", self._wheel)
-        self.bind("<Double-Button-1>", lambda _: self.fit())
+        self.bind("<Double-Button-1>", self._double)
 
     def restyle(self, palette):
         self.configure(background=palette["raised"], highlightbackground=palette["border"])
@@ -123,19 +127,40 @@ class SheetView(tk.Canvas):
         self.focus_set()
         if self.image is None:
             return
-        if self.tab.mode:
+        hit = self._handle_at(event.x, event.y)
+        if self.tab.mode and not (hit and hit[1] and not self.tab.mode_points):
+            # a tool is on: the click places a point. (A point that already exists can still be dragged, unless
+            # a line is half drawn, when the click is that line's second point.)
             self.tab.place_point(self.to_image(event.x, event.y))
             return
-        hit = self._handle_at(event.x, event.y)
         if hit:
             self.tab.select_entry(hit[0])
-            self.drag = ("handle", hit[0], hit[1]) if hit[1] else None
+            if hit[1]:
+                self.drag = ("handle", hit[0], hit[1])
+            else:                                       # on the line itself: a drag from here pulls out a new point
+                self.drag = ("line", hit[0], event.x, event.y, self.to_image(event.x, event.y))
         else:
             self.drag = ("pan", event.x, event.y, list(self.origin))
+
+    def _double(self, event):
+        hit = self._handle_at(event.x, event.y) if self.image is not None else None
+        if hit and hit[1] and hit[1].startswith("via"):
+            self.drag = None
+            self.tab.remove_via(hit[0], hit[1])
+        else:
+            self.fit()
 
     def _motion(self, event):
         if not self.drag:
             return
+        if self.drag[0] == "line":
+            _, entry_id, x, y, start = self.drag
+            if abs(event.x - x) + abs(event.y - y) < DRAG_START_PX:
+                return
+            name = self.tab.add_via(entry_id, start)
+            self.drag = ("handle", entry_id, name) if name else None
+            if not self.drag:
+                return
         if self.drag[0] == "pan":
             _, x, y, origin = self.drag
             self.origin = [origin[0] - (event.x - x) / self.zoom, origin[1] - (event.y - y) / self.zoom]
@@ -171,6 +196,7 @@ class ReviewTab(ttk.Frame):
         self.gbif_id, self.result, self.raw, self.rgb, self.cache = None, None, {}, None, {}
         self.selected, self.dirty, self.mode, self.mode_points = None, False, None, []
         self.hand, self.hand_name, self.manual = {}, "", False
+        self.sam = None                                         # SAM 2, loaded the first time it is asked for
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
 
@@ -206,6 +232,9 @@ class ReviewTab(ttk.Frame):
         self.view.bind("<Key-Delete>", lambda _: self._delete_entry())
         self.view.bind("<Key-BackSpace>", lambda _: self._delete_entry())
         self.view.bind("<Escape>", lambda _: self._set_mode(None))
+        top = self.winfo_toplevel()
+        top.bind("<Escape>", self._escape, add="+")             # works whichever button has the focus
+        top.bind("<Button-1>", self._click_elsewhere, add="+")
 
         # ---- right: the measurements on this sheet
         right = ttk.Frame(self)
@@ -215,7 +244,7 @@ class ReviewTab(ttk.Frame):
         self.title.grid(row=0, column=0, sticky="w")
         self.summary = ttk.Label(right, style="Muted.TLabel", wraplength=300, justify="left")
         self.summary.grid(row=1, column=0, sticky="w", pady=(2, 6))
-        listing = ttk.Frame(right)
+        listing = self.listing_frame = ttk.Frame(right)
         listing.grid(row=2, column=0, sticky="nsew")
         self.objects = ttk.Treeview(listing, columns=("value", "status"), show="tree headings", selectmode="browse",
                                     height=4)
@@ -230,7 +259,7 @@ class ReviewTab(ttk.Frame):
         self.detail = ttk.Label(right, style="Muted.TLabel", wraplength=300, justify="left")
         self.detail.grid(row=3, column=0, sticky="nw", pady=(6, 6))
 
-        attrs = ttk.LabelFrame(right, text="Selected measurement", padding=(10, 4))
+        attrs = self.attrs_frame = ttk.LabelFrame(right, text="Selected measurement", padding=(10, 4))
         attrs.grid(row=4, column=0, sticky="ew")
         self.attr_vars = {}
         for i, (key, text) in enumerate((("folded", "Folded or overlapped (not measurable)"),
@@ -241,15 +270,26 @@ class ReviewTab(ttk.Frame):
             ttk.Checkbutton(attrs, text=text, variable=var, command=self._attrs_changed).grid(
                 row=i, column=0, sticky="w")
         ttk.Button(attrs, text="Delete", command=self._delete_entry).grid(row=2, column=1, sticky="e", padx=(8, 0))
+        route = ttk.Frame(attrs)
+        route.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(route, text="Panicle route").pack(side="left", padx=(0, 8))
+        ttk.Button(route, text="Fit to plant", command=self._fit_to_plant).pack(side="left")
+        ttk.Button(route, text="Straighten", command=self._straighten).pack(side="left", padx=(6, 0))
+        outline = ttk.Frame(attrs)
+        outline.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(outline, text="Outline").pack(side="left", padx=(0, 8))
+        ttk.Button(outline, text="Re-run SAM 2", command=self._refine_outline).pack(side="left")
 
-        tools = ttk.LabelFrame(right, text="Add by clicking two points", padding=(10, 4))
+        tools = self.tools_frame = ttk.LabelFrame(right, text="Add by clicking", padding=(10, 4))
+        self.tool_buttons = {}
         tools.grid(row=5, column=0, sticky="ew", pady=(8, 0))
         for i, trait in enumerate(TRAITS):
-            ttk.Button(tools, text=TRAIT_LABELS[trait].capitalize(), width=6,
-                       command=lambda t=trait: self._set_mode(t)).grid(row=0, column=i, padx=(0, 4))
-        ttk.Button(tools, text="Scale…", width=6, command=lambda: self._set_mode("scale")).grid(row=0, column=3)
-        ttk.Button(tools, text="Panicle from a box (SAM)…", command=lambda: self._set_mode("panicle_box")).grid(
-            row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+            self.tool_buttons[trait] = ttk.Button(tools, text=TRAIT_LABELS[trait].capitalize(), width=6,
+                                                  command=lambda t=trait: self._toggle_mode(t))
+            self.tool_buttons[trait].grid(row=0, column=i, padx=(0, 4))
+        self.tool_buttons["scale"] = ttk.Button(tools, text="Scale…", width=6,
+                                                command=lambda: self._toggle_mode("scale"))
+        self.tool_buttons["scale"].grid(row=0, column=3)
         self.mode_label = ttk.Label(right, style="Muted.TLabel", wraplength=300, justify="left", text=IDLE_HINT)
         self.mode_label.grid(row=6, column=0, sticky="w", pady=(6, 0))
 
@@ -505,12 +545,17 @@ class ReviewTab(ttk.Frame):
                     view.create_polygon(*flat, outline=colour, fill="", width=1, tags=("entry", entry["id"]))
                 points = [view.to_screen(p) for p in entry.get("points") or []]
                 if len(points) >= 2:
+                    straight = trait == "panicle_length" and not entry.get("fit", True)
                     view.create_line(*[v for p in points for v in p], fill=colour, width=4 if chosen else 2,
-                                     tags=("entry", entry["id"]))
+                                     dash=(8, 5) if straight else None, tags=("entry", entry["id"]))
                 for name, point in (entry.get("anchors") or {}).items():
                     x, y = view.to_screen(point)
                     view.create_oval(x - HANDLE, y - HANDLE, x + HANDLE, y + HANDLE, outline=colour,
                                      fill="#ffffff" if chosen else "", width=2, tags=("handle", entry["id"], name))
+                for i, point in enumerate(entry.get("via") or []):
+                    x, y = view.to_screen(point)
+                    view.create_oval(x - VIA_HANDLE, y - VIA_HANDLE, x + VIA_HANDLE, y + VIA_HANDLE, outline="#000000",
+                                     fill=colour, width=1, tags=("handle", entry["id"], f"via{i}"))
                 if points:
                     view.create_text(points[0][0] + 10, points[0][1] - 10, text=entry_label(entry, n), anchor="w",
                                      fill=colour, font=self.app.fonts["bold"])
@@ -533,13 +578,49 @@ class ReviewTab(ttk.Frame):
         if not entry or self.rgb is None:
             return
         height, width = self.rgb.shape[:2]
-        entry["anchors"][name] = [round(min(max(point[0], 0), width - 1), 1), round(min(max(point[1], 0), height - 1), 1)]
-        entry["points"] = [entry["anchors"][n] for n in LANDMARKS[entry["trait"]]]
+        spot = [round(min(max(point[0], 0), width - 1), 1), round(min(max(point[1], 0), height - 1), 1)]
+        if name.startswith("via"):
+            index = int(name[3:])
+            if index >= len(entry.get("via") or []):
+                return
+            entry["via"][index] = spot
+        else:
+            entry["anchors"][name] = spot
+        entry["points"] = self._chain(entry)
         entry["polygon"], entry["edited"], entry["reviewed"] = None, True, True
         if final:
             self._measure_again()
         else:
             self.view.redraw()
+
+    @staticmethod
+    def _chain(entry):
+        """The points of a line in order, as straight stretches (until the route is traced again)."""
+        names = LANDMARKS[entry["trait"]]
+        return [entry["anchors"][names[0]], *(entry.get("via") or []), entry["anchors"][names[1]]]
+
+    def add_via(self, entry_id, point, measure=False):
+        """Add a point to a panicle line, between the two points the click is nearest to. Returns its name."""
+        entry = self._entry(entry_id)
+        if not entry or entry["trait"] != "panicle_length" or not all((entry.get("anchors") or {}).get(n)
+                                                                      for n in ("base", "tip")):
+            return None
+        index = via_position(entry, point)
+        entry.setdefault("via", []).insert(index, [round(point[0], 1), round(point[1], 1)])
+        entry["points"] = self._chain(entry)
+        entry["polygon"], entry["edited"], entry["reviewed"] = None, True, True
+        if measure:
+            self._measure_again()
+        return f"via{index}"
+
+    def remove_via(self, entry_id, name):
+        entry = self._entry(entry_id)
+        index = int(name[3:])
+        if entry and index < len(entry.get("via") or []):
+            entry["via"].pop(index)
+            entry["points"] = self._chain(entry)
+            entry["polygon"], entry["edited"], entry["reviewed"] = None, True, True
+            self._measure_again()
 
     def _attrs_changed(self):
         entry = self._entry(self.selected) if self.selected else None
@@ -549,6 +630,106 @@ class ReviewTab(ttk.Frame):
         entry["reviewed"] = True
         self._measure_again()
 
+    def _selected_panicle(self):
+        entry = self._entry(self.selected) if self.selected else None
+        if not entry or entry["trait"] != "panicle_length" or not (entry.get("anchors") or {}).get("tip"):
+            messagebox.showinfo("Panicle route", "Select a panicle line first (click it on the sheet or in the list).",
+                                parent=self.app.root)
+            return None
+        return entry
+
+    def _set_route(self, fit):
+        entry = self._selected_panicle()
+        if not entry:
+            return
+        before = entry.get("value_cm")
+        entry["fit"], entry["edited"], entry["reviewed"] = fit, True, True
+        self._measure_again()
+        entry = self._entry(entry["id"]) or entry
+        after, method = entry.get("value_cm"), entry.get("method", "")
+        change = f"{before:.2f} → {after:.2f} cm" if before is not None and after is not None else ""
+        if not fit:
+            message = f"Straightened: {after:.2f} cm." if after is not None else "Straightened."
+        elif method.startswith("straight"):
+            why = next((n["reason"] for n in entry.get("fit_notes") or [] if n.get("reason")), "")
+            message = ("The plant could not be followed between these points, so the line stays straight"
+                       + (f": {why}." if why else ".") + " Add points along the panicle and fit again.")
+        elif "stretches straight" in method:
+            why = next((n["reason"] for n in entry.get("fit_notes") or [] if n.get("reason")), "")
+            message = (f"Fitted, but part of the line could not follow the plant and stays straight ({change})"
+                       + (f": {why}." if why else "."))
+        elif before is not None and after is not None and abs(after - before) < 0.05:
+            message = f"Fitted: the line already followed the plant ({after:.2f} cm)."
+        else:
+            message = f"Fitted to the plant: {change}."
+        self.status.configure(text=message)
+
+    def _load_sam(self):
+        """SAM 2, loaded once; None (with the reason shown) when the add-on or its weights are missing."""
+        if self.sam is not None:
+            return self.sam
+        if not trained.available():
+            messagebox.showinfo("SAM 2", "The model add-on is not installed. Install it in Model setup first.",
+                                parent=self.app.root)
+            return None
+        if trained.sam_weights() is None:
+            messagebox.showinfo("SAM 2", "The SAM 2 weights are not downloaded yet. Download them in Model setup "
+                                "(about 160 MB), then try again.", parent=self.app.root)
+            return None
+        try:
+            self.status.configure(text="Loading SAM 2...")
+            self.app.root.update_idletasks()
+            self.sam = trained.SamRefiner()
+        except Exception as exc:
+            messagebox.showerror("SAM 2", f"SAM 2 could not be loaded: {exc}", parent=self.app.root)
+        return self.sam
+
+    def _refine_outline(self):
+        """Outline the selected measurement again with SAM 2, prompted by the points as they are now.
+
+        A panicle that is fitted to the plant is then traced again inside the new outline, which keeps the route on
+        its own panicle and off a neighbouring stem.
+        """
+        entry = self._entry(self.selected) if self.selected else None
+        if not entry or self.rgb is None:
+            messagebox.showinfo("SAM 2", "Select a measurement first (click it on the sheet or in the list).",
+                                parent=self.app.root)
+            return
+        try:
+            self.app.root.configure(cursor="watch")
+            sam = self._load_sam()
+            if sam is None:
+                self.status.configure(text="")
+                return
+            self.status.configure(text="Outlining with SAM 2...")
+            self.app.root.update_idletasks()
+            polygon, note = refine_outline(self.result, self.rgb, entry, sam)
+        except Exception as exc:
+            polygon, note = None, f"SAM 2 failed: {exc}"
+        finally:
+            self.app.root.configure(cursor="")
+        if not polygon:
+            self.status.configure(text=f"No new outline: {note}.")
+            return
+        entry["polygon"], entry["reviewed"] = polygon, True
+        if entry["trait"] == "panicle_length" and entry.get("fit", True):
+            entry["edited"] = True                      # trace the route again, now inside the outline
+            self._measure_again()
+        else:
+            self.dirty = True
+            self._refresh_panel()
+            self.view.redraw()
+        self.status.configure(text=f"SAM 2: {note}.")
+
+    def _fit_to_plant(self):
+        """Trace the selected panicle along the plant, from each of its points to the next. Press it again after
+        adding or moving points to fit again."""
+        self._set_route(True)
+
+    def _straighten(self):
+        """Back to straight lines between the points."""
+        self._set_route(False)
+
     def _delete_entry(self):
         entry = self._entry(self.selected) if self.selected else None
         if not entry:
@@ -557,20 +738,42 @@ class ReviewTab(ttk.Frame):
         self.selected = None
         self._measure_again()
 
+    def _toggle_mode(self, mode):
+        """A tool button: switch that tool on, or off when it is already the one that is on."""
+        self._set_mode(None if self.mode == mode else mode)
+
+    def _escape(self, _event=None):
+        if self.mode:
+            self._set_mode(None)
+
+    def _click_elsewhere(self, event):
+        """A click on something unrelated to drawing (the sheet list, the other tabs, the bottom buttons...) ends the
+        tool. The sheet, the tool buttons, the measurement list and the Selected measurement box belong to it."""
+        if not self.mode:
+            return
+        where = str(event.widget)
+        for part in (self.view, self.tools_frame, self.attrs_frame, self.listing_frame):
+            if where == str(part) or where.startswith(str(part) + "."):
+                return
+        self._set_mode(None)
+
     def _set_mode(self, mode):
         if mode and self.result is None:
             return
         self.mode, self.mode_points, self.view.pending = mode, [], None
-        if mode == "panicle_box":
-            text = ("Click two opposite corners of a box around the whole panicle. SAM 2 cuts it out, the route is "
-                    "traced inside it, and you can drag either end. Esc cancels.")
-        elif mode == "scale":
+        for tool, button in self.tool_buttons.items():          # the tool that is on stands out
+            button.configure(style="Accent.TButton" if tool == mode else "TButton")
+        stop = "Esc, or the button again, stops."
+        if mode == "scale":
             text = "Click the two ends of a known length (for example 0 and 10 cm on the ruler). Esc cancels."
         elif mode:
             first, second = LANDMARKS[mode]
             names = {"a": "one margin", "b": "the opposite margin"}
             text = (f"Click the {names.get(first, first)}, then the {names.get(second, second)} of the "
-                    f"{TRAIT_LABELS[mode]}. Esc cancels.")
+                    f"{TRAIT_LABELS[mode]}, and keep going to add more. {stop}"
+                    + (" Each starts as a straight line: drag along it to add points, and use Fit to plant to trace "
+                       "it along the plant." if mode == "panicle_length" else ""))
+            self.view.focus_set()
         else:
             text = IDLE_HINT
         self.mode_label.configure(text=text, style="Link.TLabel" if mode else "Muted.TLabel")
@@ -583,11 +786,9 @@ class ReviewTab(ttk.Frame):
             self.view.redraw()
             return
         mode, (first, second) = self.mode, self.mode_points
-        self._set_mode(None)
-        if mode == "panicle_box":
-            self._panicle_from_box(first, second)
-            return
+        self.mode_points, self.view.pending = [], None          # the tool stays on for the next line
         if mode == "scale":
+            self._set_mode(None)                                # a scale is set once
             length = simpledialog.askfloat("Set scale", "Distance between the two points, in cm:", minvalue=0.1,
                                            parent=self.app.root)
             if length:
@@ -606,42 +807,11 @@ class ReviewTab(ttk.Frame):
         entry = new_entry(mode, {"source": "review"}, number)
         names = LANDMARKS[mode]
         entry.update(anchors={names[0]: first, names[1]: second}, points=[first, second], edited=True, reviewed=True)
+        if mode == "panicle_length":
+            entry["fit"] = False                            # straight until "Fit to plant"
         entries.append(entry)
         self.selected = entry["id"]
-        self._measure_again()
-
-    def _panicle_from_box(self, first, second):
-        """SAM 2 outlines the panicle inside a box the person drew; the route is traced inside the outline."""
-        if not (self.result.get("calibration") or {}).get("px_per_cm"):
-            messagebox.showinfo("Panicle from a box", "This sheet has no scale yet. Set it with Scale… first.",
-                                parent=self.app.root)
-            return
-        if not trained.available() or trained.sam_weights() is None:
-            if messagebox.askyesno("SAM 2 needed", "This uses SAM 2, which is not set up yet (the add-on and the "
-                                   "SAM 2 download). Open Model setup?", parent=self.app.root):
-                self.app.open_model_setup()
-            return
-        box = [min(first[0], second[0]), min(first[1], second[1]), max(first[0], second[0]), max(first[1], second[1])]
-        try:
-            self.app.root.configure(cursor="watch")
-            self.app.root.update_idletasks()
-            if getattr(self, "_sam", None) is None:
-                self._sam = trained.SamRefiner()
-            polygon = self._sam.outline(self.rgb, box=box)
-            if not polygon:
-                messagebox.showinfo("Panicle from a box", "SAM 2 found nothing in that box. Try a box that "
-                                    "holds the whole panicle.", parent=self.app.root)
-                return
-            entry = panicle_from_outline(self.result, self.rgb, polygon, box, profile_for(self.result.get("profile")),
-                                         self.cache)
-        except Exception as exc:
-            messagebox.showerror("Panicle from a box", str(exc), parent=self.app.root)
-            return
-        finally:
-            self.app.root.configure(cursor="")
-        self.result["traits"]["panicle_length"].append(entry)
-        self.selected = entry["id"]
-        self._measure_again()
+        self._measure_again()                                   # redraws, with the tool still on
 
     # ------------------------------------------------------------------ accepting
 

@@ -338,52 +338,39 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class PanicleFromOutline(unittest.TestCase):
-    """The "Panicle from a box (SAM)" tool: an outline in, a routed panicle out."""
+class PanicleLine(unittest.TestCase):
+    """A panicle drawn by hand is a straight line until it is fitted to the plant."""
 
-    def test_route_inside_an_outline(self):
-        import cv2
+    def test_straight_then_fitted_then_through_a_point(self):
         import numpy as np
 
-        from program.measure.geometry import mask_polygon
-
-        folder = Path(tempfile.mkdtemp(prefix="herbaria_outline_"))
+        folder = Path(tempfile.mkdtemp(prefix="herbaria_fit_"))
         try:
             rgb, facts = syn.make_sheet()
             image = folder / "sheet.jpg"
             Image.fromarray(rgb).save(image, quality=93)
-            axis = np.array([(facts["sheet"][0] + syn.px(x), facts["sheet"][1] + syn.px(y))
-                             for x, y in syn.panicle_points()], np.int32)
-            mask = np.zeros(rgb.shape[:2], np.uint8)
-            cv2.polylines(mask, [axis], False, 1, thickness=syn.px(0.5))      # what SAM 2 would cut out: tight
-            polygon = mask_polygon(mask)
-
-            from program.measure.pipeline import panicle_from_outline
-
             result = blank_result(image)
-            entry = panicle_from_outline(result, rgb, polygon, None)
-            self.assertEqual(entry["source"], "sam")
-            base, tip = entry["anchors"]["base"], entry["anchors"]["tip"]
-            self.assertGreater(base[1], tip[1])                                # the lower end is the base
-            self.assertLess(((base[0] - facts["base"][0]) ** 2 + (base[1] - facts["base"][1]) ** 2) ** 0.5,
-                            2.5 * syn.PPC)
+            entry = new_entry("panicle_length", {"source": "review"}, 1)
+            entry.update(anchors={"base": list(facts["base"]), "tip": list(facts["tip"])}, edited=True,
+                         reviewed=True, fit=False)
             result["traits"]["panicle_length"].append(entry)
             remeasure(result, rgb=rgb)
-            value = result["decisions"]["panicle_length"]["value_cm"]
-            self.assertAlmostEqual(value, facts["panicle_cm"], delta=0.06 * facts["panicle_cm"])
-            self.assertIn("SAM outline", result["traits"]["panicle_length"][0]["method"])
-            # dragging an end drops the outline and the route is simply traced between the two points
-            entry["polygon"] = None
-            entry["edited"] = True
+            chord = float(np.hypot(*(np.array(facts["tip"]) - np.array(facts["base"])))) / syn.PPC
+            self.assertAlmostEqual(entry["value_cm"], chord, delta=0.05)               # straight: the chord
+            self.assertIn("straight", entry["method"])
+            entry["fit"], entry["edited"] = True, True                                  # Fit to plant
             remeasure(result, rgb=rgb)
-            self.assertAlmostEqual(result["decisions"]["panicle_length"]["value_cm"], facts["panicle_cm"],
-                                   delta=0.06 * facts["panicle_cm"])
+            self.assertAlmostEqual(entry["value_cm"], facts["panicle_cm"], delta=0.06 * facts["panicle_cm"])
+            self.assertGreater(entry["value_cm"], chord + 1.0)                          # the arc, not the chord
+            self.assertIn("geodesic", entry["method"])
+            axis = [(facts["sheet"][0] + syn.px(x), facts["sheet"][1] + syn.px(y)) for x, y in syn.panicle_points()]
+            entry["via"] = [list(axis[len(axis) // 2])]                                 # a point on the panicle
+            entry["edited"] = True
+            remeasure(result, rgb=rgb)                                                  # fitted through the point
+            self.assertAlmostEqual(entry["value_cm"], facts["panicle_cm"], delta=0.06 * facts["panicle_cm"])
+            entry["fit"], entry["edited"] = False, True                                 # Straighten
+            remeasure(result, rgb=rgb)
+            self.assertLess(entry["value_cm"], facts["panicle_cm"])
+            self.assertIn("straight lines through", entry["method"])
         finally:
             shutil.rmtree(folder, ignore_errors=True)
-
-    def test_a_sheet_without_a_scale_asks_for_one(self):
-        from program.measure.pipeline import panicle_from_outline
-
-        result = {"calibration": {"px_per_cm": None, "source": "none"}, "traits": {"panicle_length": []}}
-        with self.assertRaises(ValueError):
-            panicle_from_outline(result, None, [[0, 0], [10, 0], [10, 10]])
