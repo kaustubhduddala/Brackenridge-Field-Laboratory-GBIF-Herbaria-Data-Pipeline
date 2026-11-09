@@ -20,6 +20,22 @@ def _cv2():
     return cv2
 
 
+def paper_reference(light, a, b):
+    """(L, a, b) of the sheet's paper in LAB (OpenCV 0-255 scale), from the commonest bright, uncoloured colour.
+
+    Paper may be cream or neutral white, and a sheet is mostly paper, so the peak of the brightness histogram among
+    bright, weakly coloured pixels is the paper whatever the tint. (Taking pixels that look cream, as this used to,
+    picks out stains and plants on a white sheet and puts the paper too dark.)
+    """
+    bright = (light > 120) & (np.abs(a - 128) < 16) & (b > 118) & (b < 175)
+    if bright.sum() < 100:
+        return 220.0, 128.0, 136.0
+    hist = np.bincount(light[bright].astype(np.int64), minlength=256)
+    peak = int(np.convolve(hist, np.ones(5), mode="same").argmax())
+    near = bright & (np.abs(light - peak) <= 12)
+    return float(np.median(light[near])), float(np.median(a[near])), float(np.median(b[near]))
+
+
 def plant_mask(rgb, exclude_boxes=(), sheet_box=None):
     """Pixels that are plant material (darker or more yellow/green than the paper), as uint8 0/1.
 
@@ -30,9 +46,7 @@ def plant_mask(rgb, exclude_boxes=(), sheet_box=None):
     cv2 = _cv2()
     lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.int16)
     light, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
-    paper_like = (light > 120) & (b >= 130)
-    paper_l = np.median(light[paper_like]) if paper_like.any() else 220
-    paper_b = np.median(b[paper_like]) if paper_like.any() else 136
+    paper_l, _, paper_b = paper_reference(light, a, b)
     chroma = np.hypot(a - 128, b - 128)
     mask = ((light < paper_l - 30) | (b > paper_b + 14)) & (light > 25)
     mask &= ~((chroma < 8) & (light < paper_l - 30))
@@ -63,11 +77,9 @@ def faint_mask(rgb, exclude_boxes=(), sheet_box=None):
     cv2 = _cv2()
     lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.int16)
     light, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
-    paper_like = (light > 120) & (b >= 130)
-    paper_l = np.median(light[paper_like]) if paper_like.any() else 220
-    paper_b = np.median(b[paper_like]) if paper_like.any() else 136
+    paper_l, paper_a, paper_b = paper_reference(light, a, b)
     chroma = np.hypot(a - 128, b - 128)
-    paper_chroma = np.median(chroma[paper_like]) if paper_like.any() else 8
+    paper_chroma = float(np.hypot(paper_a - 128, paper_b - 128))
     mask = ((light < paper_l - 12) | (b > paper_b + 7) | (chroma > paper_chroma + 10)) & (light > 25)
     mask &= ~(a > 150)
     mask &= ~(b < 120)

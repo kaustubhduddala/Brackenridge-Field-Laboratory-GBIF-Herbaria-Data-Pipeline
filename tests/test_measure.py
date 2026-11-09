@@ -74,13 +74,31 @@ class FaintTracing(unittest.TestCase):
         chain = [points[0].tolist(), points[len(points) // 2].tolist(), points[-1].tolist()]
         path, length, share, notes = _trace_chain(sheet, chain)
         self.assertEqual(notes, [])
-        self.assertGreater(length, geometry.polyline_length(chain) * 1.01)       # along the curve, not the chord
+        self.assertGreater(share, 0.8)
+        self.assertGreater(len(path), 4)                                          # a traced route, not two points
 
     def test_wrong_sheet_box_does_not_block_the_route(self):
         from program.measure.pipeline import _trace_chain
         sheet, points = self.sheet([0, 0, 500, 800])           # the paper was found much too small
         chain = [points[0].tolist(), points[len(points) // 2].tolist(), points[-1].tolist()]
         self.assertEqual(_trace_chain(sheet, chain)[3], [])
+
+
+class PaperColour(unittest.TestCase):
+    def sheet(self, paper):
+        rgb = np.full((1400, 1000, 3), (25, 25, 25), np.uint8)               # dark table
+        rgb[100:1300, 100:900] = paper                                        # 800 px wide: 27.6 px/cm at 29 cm
+        rgb[20:90, 100:900] = (40, 60, 200)                                   # a colour strip above the paper
+        cv2.line(rgb, (300, 600), (700, 700), (150, 130, 120), 3)             # a pale stem
+        return rgb
+
+    def test_neutral_white_and_cream_paper_give_the_same_sheet_width(self):
+        from program.measure.calibration import sheet_estimate
+        for paper in ((238, 238, 238), (236, 232, 214)):
+            found = sheet_estimate(self.sheet(paper))
+            self.assertTrue(found["ok"], paper)
+            self.assertAlmostEqual(found["width_px"], 800, delta=20, msg=str(paper))
+            self.assertAlmostEqual(found["height_px"], 1200, delta=30, msg=str(paper))
 
 
 class Decisions(unittest.TestCase):

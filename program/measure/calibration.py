@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .geometry import paper_reference
+
 SHEET_WIDTH_CM = 29.0
 SHEET_HEIGHT_CM = 42.0
 # Without an AI hint a CV-found ruler only refines the sheet estimate (within 5%), unless it is a
@@ -117,7 +119,9 @@ def sheet_estimate(rgb):
     small = cv2.resize(rgb, (max(1, int(w0 * scale)), max(1, int(h0 * scale))), interpolation=cv2.INTER_AREA)
     lab = cv2.cvtColor(small, cv2.COLOR_RGB2LAB).astype(np.int16)
     light, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
-    paper = (light > 120) & (b >= 131) & (b < 175) & (a > 115) & (a < 145)
+    ref_l, ref_a, ref_b = paper_reference(light, a, b)       # cream or neutral white: found from the pixels
+    paper = ((light > 120) & (np.abs(light - ref_l) < 45) & (b >= ref_b - 12) & (b < ref_b + 28)
+             & (np.abs(a - ref_a) < 15))
     h, w = paper.shape
 
     def longest_run(flags):
