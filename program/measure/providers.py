@@ -9,13 +9,16 @@ import base64
 import io
 import json
 import re
+import socket
+import threading
+import time
 from dataclasses import dataclass, field
 
 import requests
 
 from config import (DEFAULT_TOKEN_LIMIT, LMSTUDIO_MODEL, LMSTUDIO_URL, MIN_CONTEXT_LENGTH, REQUEST_TIMEOUT_S,
                     ai_api_key)
-from .utils import check
+from ..utils import ItemSkipped, check
 
 PROVIDERS = {
     "lmstudio": {"label": "LM Studio (this computer)", "base_url": LMSTUDIO_URL, "needs_key": False, "env": (),
@@ -54,6 +57,7 @@ class ModelSettings:
     model: str = ""
     token_limit: int = DEFAULT_TOKEN_LIMIT
     reasoning_effort: str | None = None
+    image_side: int = 0             # longest side of the images sent, in px; 0 uses the provider's default
     extra: dict = field(default_factory=dict)
 
     @property
@@ -82,8 +86,13 @@ def settings_from_app(saved, provider=None, model=None):
         token_limit = max(int(saved.get("token_limit", DEFAULT_TOKEN_LIMIT)), 0)
     except (TypeError, ValueError):
         token_limit = DEFAULT_TOKEN_LIMIT
+    try:
+        image_side = max(int(saved.get("image_side", 0) or 0), 0)
+    except (TypeError, ValueError):
+        image_side = 0
     return ModelSettings(provider=provider, base_url=server, model=model or models.get(provider, ""),
-                         token_limit=token_limit, reasoning_effort=THINKING_CHOICES.get(saved.get("thinking")))
+                         token_limit=token_limit, reasoning_effort=THINKING_CHOICES.get(saved.get("thinking")),
+                         image_side=image_side)
 
 
 def provider_key(settings):
@@ -199,6 +208,97 @@ def model_warnings(model):
     return warnings
 
 
+# --------------------------------------------------------------------------- watching a request
+
+LOOP_EVERY = 100            # look for repetition every this many tokens
+LOOP_TAIL = 240             # a model is looping when its last 240 characters have already come this often
+LOOP_REPEATS = 3
+
+
+def is_repeating(text):
+    """True when the end of the text is a block that has already appeared LOOP_REPEATS times."""
+    return len(text) >= LOOP_TAIL * LOOP_REPEATS and text.count(text[-LOOP_TAIL:]) >= LOOP_REPEATS
+
+
+def find_socket(response, skip=("_pool", "_client", "_request"), limit=4000):
+    """The network socket under an open streaming response, or None.
+
+    The http library keeps it several objects deep and gives no way to reach it. Closing a response from
+    another thread does not wake a read that is waiting on it, but shutting its socket down does, which is
+    what lets Cancel work while a model is still reading an image. The search stays inside this response
+    (not the connection pool) so that it never picks another request's socket.
+    """
+    seen, queue = set(), [response]
+    while queue and len(seen) < limit:
+        obj = queue.pop(0)
+        if id(obj) in seen or isinstance(obj, (str, bytes, int, float, bool, type(None))):
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, socket.socket):
+            return obj
+        if isinstance(obj, dict):
+            queue.extend(v for k, v in list(obj.items()) if k not in skip)
+        elif isinstance(obj, (list, tuple)):
+            queue.extend(list(obj))
+        else:
+            attrs = getattr(obj, "__dict__", None)
+            if isinstance(attrs, dict):
+                queue.extend(v for k, v in list(attrs.items()) if k not in skip)
+            for name in getattr(type(obj), "__slots__", ()) or ():
+                if name not in skip and hasattr(obj, name):
+                    queue.append(getattr(obj, name))
+    return None
+
+
+class _Watcher:
+    """Runs beside an open request. It cuts the request off the moment Cancel or Skip is pressed, even while
+    the model is still reading the image and sending nothing back (the loop that reads chunks cannot notice
+    that), and shows how long the wait has been."""
+
+    TICK_S = 0.4
+
+    def __init__(self, close, control, status, stage, response=None):
+        self.close, self.control, self.status, self.stage, self.response = close, control, status, stage, response
+        self.done, self.interrupted, self.streaming = threading.Event(), False, False
+        self.started = time.monotonic()
+
+    def __enter__(self):
+        threading.Thread(target=self._run, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self.done.set()
+        return False
+
+    def _stop_wanted(self):
+        control = self.control
+        return bool(control) and (control.cancelled or control.skip_event.is_set())
+
+    def _cut_off(self):
+        try:
+            sock = find_socket(self.response) if self.response is not None else None
+            if sock is not None:
+                sock.shutdown(socket.SHUT_RDWR)                 # wakes a read that is waiting for the model
+        except Exception:
+            pass
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _run(self):
+        last = -1
+        while not self.done.wait(self.TICK_S):
+            if self._stop_wanted():
+                self.interrupted = True
+                self._cut_off()                                # and again on the next tick until the read is over
+                continue
+            waited = int(time.monotonic() - self.started)
+            if self.status and not self.streaming and waited >= 3 and waited != last:
+                last = waited
+                self.status(f"{self.stage or 'Waiting'}: the model is reading the image, {waited} s")
+
+
 # --------------------------------------------------------------------------- OpenAI-compatible client
 
 class OpenAICompatibleClient:
@@ -214,7 +314,7 @@ class OpenAICompatibleClient:
 
         self.settings, self.log = settings, log
         self.provider = settings.provider
-        self.max_image_side = settings.info["max_image_side"]
+        self.max_image_side = settings.image_side or settings.info["max_image_side"]
         key, _ = provider_key(settings)
         if settings.info["needs_key"] and not key:
             raise ProviderError(f"No {settings.label} API key is saved. Add one with the API key… button "
@@ -232,6 +332,22 @@ class OpenAICompatibleClient:
             self.model_id = settings.model.strip()
         if not self.model_id:
             raise ProviderError(f"Choose a {settings.label} model first (use Refresh to list the available ones).")
+        if self.provider == "lmstudio":
+            self._check_can_read_images()
+
+    def _text_only_error(self, vision_ids=()):
+        return ProviderError(f"{self.model_id} is a text-only model and cannot read images. Choose a vision model"
+                             + (f" (for example {', '.join(vision_ids[:3])})" if vision_ids else "") + ".")
+
+    def _check_can_read_images(self):
+        """Stop before the run, not after every sheet has failed, when LM Studio says the model has no vision."""
+        try:
+            models = _lmstudio_models(self.settings.url)
+        except (requests.RequestException, ValueError):
+            return                                          # unreachable: the first request will say so
+        info = next((m for m in models if m.get("id") == self.model_id), None)
+        if info and info.get("type") == "llm":
+            raise self._text_only_error([m["id"] for m in models if m.get("type") == "vlm"])
 
     def _request(self, images, system, text, schema, name):
         content = [{"type": "text", "text": text}]
@@ -254,7 +370,40 @@ class OpenAICompatibleClient:
             request.pop(option, None)
         return request
 
+    MEMORY_WORDS = ("insufficient memory", "outofmemory", "out of memory")
+    MIN_IMAGE_SIDE = 896
+
+    def _out_of_memory(self, exc):
+        text = str(exc).lower()
+        return any(word in text for word in self.MEMORY_WORDS)
+
+    def _shrink_images(self):
+        """Send smaller images after the server ran out of memory. False once they cannot get smaller."""
+        smaller = int(self.max_image_side * 0.65)
+        if smaller < self.MIN_IMAGE_SIDE:
+            return False
+        self.log(f"    {self.settings.label} ran out of memory; sending images no larger than {smaller} px "
+                 f"(was {self.max_image_side}) and trying again")
+        self.max_image_side = smaller
+        return True
+
     def ask_json(self, images, system, text, schema=None, name="answer", control=None, status=None, stage=""):
+        """Ask once; when the server runs out of memory, retry with smaller images before giving up."""
+        while True:
+            try:
+                return self._ask_json_once(images, system, text, schema, name, control, status, stage)
+            except ProviderError:
+                raise
+            except Exception as exc:
+                if not self._out_of_memory(exc):
+                    raise
+                if not self._shrink_images():
+                    raise ProviderError(
+                        f"{self.settings.label} keeps running out of memory, even with small images. Load a "
+                        f"smaller model (for example a 4B or 8B vision model), or lower its context length "
+                        f"in LM Studio.") from exc
+
+    def _ask_json_once(self, images, system, text, schema=None, name="answer", control=None, status=None, stage=""):
         from openai import APIConnectionError, AuthenticationError, BadRequestError, NotFoundError, PermissionDeniedError
 
         request = self._request(images, system, text, schema, name)
@@ -263,6 +412,8 @@ class OpenAICompatibleClient:
                 return self._stream(request, control, status, stage)
             except BadRequestError as exc:
                 message = str(exc).lower()
+                if "image" in message and "not support" in message:
+                    raise self._text_only_error() from exc
                 if "max_tokens" in message and "max_tokens" in request:
                     request["max_completion_tokens"] = request.pop("max_tokens")
                     continue
@@ -282,33 +433,57 @@ class OpenAICompatibleClient:
 
     def _stream(self, request, control, status, stage):
         content, reasoning = [], []
-        finish_reason, model, tokens, reported = None, self.model_id, 0, 0
+        finish_reason, model, tokens, reported, checked = None, self.model_id, 0, 0, 0
+        started, first, looping = time.monotonic(), None, False
         stream = self.client.chat.completions.create(**request)
+        watch = _Watcher(stream.close, control, status, stage, getattr(stream, "response", None))
         try:
-            for chunk in stream:
-                check(control)
-                model = getattr(chunk, "model", None) or model
-                if not chunk.choices:
-                    continue
-                choice = chunk.choices[0]
-                delta = choice.delta
-                if delta is not None:
-                    if delta.content:
-                        content.append(delta.content)
-                        tokens += 1
-                    thought = _extra(delta, "reasoning_content") or _extra(delta, "reasoning")
-                    if thought:
-                        reasoning.append(thought)
-                        tokens += 1
-                finish_reason = choice.finish_reason or finish_reason
-                if status and tokens - reported >= 20:
-                    reported = tokens
-                    status(f"{stage or 'Thinking'}: {'writing answer' if content else 'thinking'}, about {tokens} tokens")
+            with watch:
+                for chunk in stream:
+                    check(control)
+                    model = getattr(chunk, "model", None) or model
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    if delta is not None:
+                        if delta.content:
+                            content.append(delta.content)
+                            tokens += 1
+                        thought = _extra(delta, "reasoning_content") or _extra(delta, "reasoning")
+                        if thought:
+                            reasoning.append(thought)
+                            tokens += 1
+                    if first is None and tokens:
+                        first, watch.streaming = time.monotonic() - started, True
+                    finish_reason = choice.finish_reason or finish_reason
+                    if status and tokens - reported >= 20:
+                        reported = tokens
+                        status(f"{stage or 'Thinking'}: {'writing answer' if content else 'thinking'}, "
+                               f"about {tokens} tokens")
+                    if tokens - checked >= LOOP_EVERY:
+                        checked = tokens
+                        if is_repeating("".join(content)) or is_repeating("".join(reasoning)):
+                            looping = True
+                            break
+        except ItemSkipped:
+            raise
+        except Exception:
+            if watch.interrupted:                           # Cancel or Skip closed the request under us
+                raise ItemSkipped() from None
+            raise
         finally:
             stream.close()
+        if watch.interrupted:
+            raise ItemSkipped()
         text = "".join(content)
         raw = {"provider": self.provider, "model": model, "finish_reason": finish_reason, "approx_tokens": tokens,
+               "seconds": round(time.monotonic() - started, 1), "first_token_s": None if first is None else round(first, 1),
                "structured_output": "response_format" in request, "content": text, "reasoning": "".join(reasoning)}
+        if looping:
+            raise ModelOutputError(
+                f"The model is repeating itself (about {tokens} tokens of the same text), so it was stopped. "
+                "Set Thinking to Off or Low, or use a different model.", raw)
         try:
             raw["parsed"] = parse_json(text if text.strip() else raw["reasoning"])
         except ValueError as exc:
@@ -404,7 +579,7 @@ class ClaudeClient:
     def __init__(self, settings, log=print):
         self.settings, self.log = settings, log
         self.provider = "anthropic"
-        self.max_image_side = settings.info["max_image_side"]
+        self.max_image_side = settings.image_side or settings.info["max_image_side"]
         self.client = _client(settings)
         self.model_id = settings.model.strip() or DEFAULT_MODEL
         self.warnings = []
@@ -458,14 +633,26 @@ class ClaudeClient:
     def _stream(self, params, control, status, stage):
         events, reported = 0, 0
         with self.client.beta.messages.stream(**params) as stream:
-            for event in stream:
-                check(control)
-                if getattr(event, "type", "") in ("text", "thinking"):
-                    events += 1
-                if status and events - reported >= 20:
-                    reported = events
-                    status(f"{stage or 'Thinking'}: about {events} chunks received")
-            message = stream.get_final_message()
+            watch = _Watcher(stream.close, control, status, stage, getattr(stream, "response", None))
+            try:
+                with watch:
+                    for event in stream:
+                        check(control)
+                        if getattr(event, "type", "") in ("text", "thinking"):
+                            events += 1
+                            watch.streaming = True
+                        if status and events - reported >= 20:
+                            reported = events
+                            status(f"{stage or 'Thinking'}: about {events} chunks received")
+                    if watch.interrupted:
+                        raise ItemSkipped()
+                    message = stream.get_final_message()
+            except ItemSkipped:
+                raise
+            except Exception:
+                if watch.interrupted:
+                    raise ItemSkipped() from None
+                raise
         text = "".join(block.text for block in message.content if block.type == "text")
         raw = {"provider": self.provider, "model": message.model, "finish_reason": message.stop_reason,
                "approx_tokens": getattr(message.usage, "output_tokens", None),

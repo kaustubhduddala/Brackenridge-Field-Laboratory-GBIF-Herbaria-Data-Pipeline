@@ -2,11 +2,11 @@ import re
 import sys
 from pathlib import Path
 
-from .measurements_csv import join_measurements
 from config import PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, load_settings
 from .gbif_download import download_dataset
-from .sheet_measurement import measure_images
 from .image_download import download_media
+from .measure.pipeline import measure_images
+from .measure.records import join_measurements
 from .dataset_cleaning import phase_1_clean_and_merge, phase_2_finalize_dataset, phase_3_select_columns, run_cleaning
 from .download_folders import list_workspaces, resolve_input, workspace_by_name, workspace_of
 
@@ -37,10 +37,6 @@ def _ask_workspace():
     return _workspace(_ask("Download folder", spaces[0].name if spaces else ""))
 
 
-def _confirm():
-    return input("Review the CSV, then press Enter to run phase 2, or type n to stop: ").strip().lower() != "n"
-
-
 def _download():
     query = _ask("Species name or DOI")
     if not query:
@@ -61,7 +57,7 @@ def _clean():
         folder, ws = resolve_input(_ask("Data folder or ZIP path"))
     else:
         folder, ws = None, _ask_workspace()
-    master = run_cleaning(ws, folder, phases, _confirm)
+    master = run_cleaning(ws, folder, phases)
     if master:
         print(f"Final dataset: {master}")
 
@@ -69,7 +65,7 @@ def _clean():
 def _full():
     folder = _download()
     if folder:
-        master = run_cleaning(resolve_input(folder)[1], folder, (1, 2, 3), _confirm)
+        master = run_cleaning(resolve_input(folder)[1], folder, (1, 2, 3))
         if master:
             print(f"Final dataset: {master}")
 
@@ -99,7 +95,7 @@ def _measure():
     ws = _ask_workspace()
     only = _ids(_ask("gbifIDs to measure (blank for all new images)"))
     measure_images(_ask("Image folder", ws.media_dir), _ask("Measurements CSV", ws.measurements_csv),
-                   only_ids=only, force=bool(only), settings=_model_settings([]))
+                   only_ids=only, force=bool(only), settings=_model_settings([]), options=_detector_options([]))
 
 
 def _join():
@@ -182,12 +178,37 @@ def _positional(args, value_options=()):
 
 def _model_settings(args):
     """The provider and model saved in the app, overridden by --provider and --model."""
-    from .vision_providers import settings_from_app
+    from .measure.providers import settings_from_app
 
     return settings_from_app(load_settings(), _option(args, "--provider"), _option(args, "--model"))
 
 
-MODEL_OPTIONS = ("--provider", "--model")
+def _detector_options(args):
+    """The Detector options saved in the app, overridden by --detector, --no-sam and --second-opinion."""
+    from .measure.detectors import DetectorOptions
+
+    options = DetectorOptions.from_settings(load_settings())
+    mode = _option(args, "--detector")
+    if mode:
+        if mode not in ("auto", "vision", "trained"):
+            raise ValueError("--detector must be auto, vision or trained")
+        options.mode = mode
+    if "--no-sam" in args:
+        options.refine_masks = False
+    if "--second-opinion" in args:
+        options.second_opinion = True
+    if "--no-labels" in args:
+        options.read_labels = False
+    reader = _option(args, "--labels")
+    if reader:
+        if reader not in ("auto", "ocr", "vision", "off"):
+            raise ValueError("--labels must be auto, ocr, vision or off")
+        options.read_labels = reader != "off"
+        options.label_reader = "auto" if reader == "off" else reader
+    return options
+
+
+MODEL_OPTIONS = ("--provider", "--model", "--detector", "--labels")
 
 
 def measure_command(args):
@@ -196,23 +217,100 @@ def measure_command(args):
     only = _ids(_option(args, "--ids"))
     measure_images(positional[0] if positional else ws.media_dir,
                    positional[1] if len(positional) > 1 else ws.measurements_csv,
-                   only_ids=only, force=bool(only) or "--redo" in args, settings=_model_settings(args))
+                   only_ids=only, force=bool(only) or "--redo" in args, settings=_model_settings(args),
+                   options=_detector_options(args))
 
 
 def benchmark_command(args):
-    from .accuracy_benchmark import BENCHMARK_DIR_NAME, run_benchmark
+    from .measure.benchmark import BENCHMARK_DIR_NAME, run_benchmark
 
-    positional = _positional(args, ("--measurements", "--ids", "--download", "--label", "--key", *MODEL_OPTIONS))
+    positional = _positional(args, ("--measurements", "--ids", "--download", "--label", "--key", "--split",
+                                    *MODEL_OPTIONS))
     if not positional:
         print("Usage: python main.py benchmark <hand_measurements_csv> [--measure | --measurements file.csv] "
-              "[--ids 123,456] [--label NAME] [--key gbifID] [--provider NAME] [--model ID] [--download NAME]")
+              "[--ids 123,456] [--split test] [--label NAME] [--key gbifID] [--provider NAME] [--model ID] "
+              "[--detector auto|vision|trained] [--download NAME]")
         sys.exit(1)
     ws = _workspace(_option(args, "--download"))
+    only = _ids(_option(args, "--ids"))
+    split = _option(args, "--split")
+    if split:
+        from .measure.training import latest_splits
+
+        held_out = {gbif_id for gbif_id, name in latest_splits().items() if name == split}
+        if not held_out:
+            raise ValueError(f"No training set has a '{split}' split yet. Train a model first.")
+        only = held_out if only is None else only & held_out
     run_benchmark(positional[0], ws.media_dir, ws.root / BENCHMARK_DIR_NAME,
                   measurements_csv=_option(args, "--measurements") or ws.measurements_csv,
-                  measure="--measure" in args, only_ids=_ids(_option(args, "--ids")),
+                  measure="--measure" in args, only_ids=only,
                   label=_option(args, "--label") or "", reference_key=_option(args, "--key") or "gbifID",
-                  settings=_model_settings(args))
+                  settings=_model_settings(args), options=_detector_options(args))
+
+
+def models_command(args):
+    """python main.py models [status | install | download-sam | download-weights | install-ocr]"""
+    from .measure import trained
+
+    action = (args or ["status"])[0]
+    if action == "install":
+        trained.install()
+    elif action == "download-sam":
+        trained.download_sam()
+    elif action == "download-weights":
+        trained.download_base_weights()
+    elif action == "install-ocr":
+        from .measure import ocr
+        ocr.install()
+    elif action != "status":
+        print("Usage: python main.py models [status | install | download-sam | download-weights | install-ocr]")
+        sys.exit(1)
+    from .measure import ocr as label_reader
+    print("\n".join(trained.status() + ["Label reader (OCR): " + ("installed" if label_reader.available()
+                                                                  else "not installed (python main.py models install-ocr)")]))
+    if not trained.available():
+        print("To install the add-on yourself, run these in the app's Python environment:")
+        for command in trained.install_commands("python"):
+            print("  " + " ".join(command))
+
+
+def labels_command(args):
+    """python main.py labels export [--prelabels] [--output file.json] | import file.json"""
+    from .measure import labels
+
+    positional = _positional(args, ("--output", "--download"))
+    ws = _workspace(_option(args, "--download"))
+    if positional[:1] == ["export"]:
+        labels.export_coco(ws.measurements_csv, _option(args, "--output"), reviewed_only="--prelabels" not in args)
+    elif positional[:1] == ["import"] and len(positional) > 1:
+        labels.import_coco(positional[1], ws.measurements_csv, ws.media_dir)
+    else:
+        print("Usage:\n  python main.py labels export [--prelabels] [--output file.json] [--download NAME]\n"
+              "  python main.py labels import corrected_coco.json [--download NAME]")
+        sys.exit(1)
+
+
+def train_command(args):
+    """python main.py train [pose | seg | all] [--epochs N] [--imgsz N] [--batch N] [--base weights.pt]"""
+    from .measure import training
+
+    positional = _positional(args, ("--epochs", "--imgsz", "--batch", "--base"))
+    tasks = {"pose": ["pose"], "seg": ["seg"], "all": ["pose", "seg"]}.get((positional or ["pose"])[0])
+    if not tasks:
+        print("Usage: python main.py train [pose | seg | all] [--epochs N] [--imgsz N] [--batch N] [--base weights.pt]")
+        sys.exit(1)
+    for task in tasks:
+        training.train(task, base=_option(args, "--base"), epochs=_option(args, "--epochs"),
+                       imgsz=_option(args, "--imgsz"), batch=_option(args, "--batch"))
+
+
+def export_mof_command(args):
+    """python main.py export-mof [measurements_csv] [--output file.csv] [--download NAME]"""
+    from .measure.records import export_measurement_or_fact
+
+    positional = _positional(args, ("--output", "--download"))
+    csv_path = positional[0] if positional else _workspace(_option(args, "--download")).measurements_csv
+    export_measurement_or_fact(csv_path, _option(args, "--output"))
 
 
 def join_command(args):

@@ -19,3 +19,5 @@ site_logins.json.*
 gbif_account.json
 
 ai_keys.json
+/program/measure/__pycache__
+/tests/__pycache__

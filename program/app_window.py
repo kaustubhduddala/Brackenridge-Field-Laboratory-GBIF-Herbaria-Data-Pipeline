@@ -18,6 +18,7 @@ from config import (APP_NAME, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA
 
 from . import browser_sign_in, image_download
 from .analysis_tab import AnalysisTab
+from .csv_editor_tab import EditTab
 from .dataset_cleaning import REQUIRED_COLUMNS, available_columns, run_cleaning
 from .download_folders import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_by_name,
                                workspace_of)
@@ -26,12 +27,16 @@ from .gui_widgets import (CSV_TYPES, THEME_CHOICES, ColumnChecklist, CsvSource, 
                           _set_entry, _set_text, apply_theme, resolve_theme, set_title_bar, style_text)
 from .image_download import download_media, media_status
 from .keep_awake import KeepAwake
-from .measurements_csv import (RESULT_COLUMNS, check_connection, count_matches, csv_columns, join_measurements,
-                               measurement_status)
+from .measure import ocr, trained
+from .measure.detectors import DETECTOR_CHOICES, LABEL_CHOICES, DetectorOptions
+from .measure.model_setup import ModelSetupDialog
+from .measure.pipeline import measure_images
+from .measure.providers import DEFAULT_PROVIDER, PROVIDERS, describe_key, list_models, settings_from_app
+from .measure.records import (RESULT_COLUMNS, check_connection, count_matches, csv_columns,
+                              export_measurement_or_fact, join_measurements, measurement_status)
+from .measure.review_tab import ReviewTab
 from .modify_tab import ModifyTab
-from .sheet_measurement import measure_images
 from .utils import TaskControl, find_dwca_files, open_path, scan_issues
-from .vision_providers import DEFAULT_PROVIDER, PROVIDERS, describe_key, list_models, settings_from_app
 
 ISSUE_ACTIONS = ("Remove", "Inspect", "Nothing")
 DEFAULT_PRESET = "Default"
@@ -1070,13 +1075,22 @@ class PipelineApp:
         self.server_var = tk.StringVar(value=self.servers.get(self.provider) or PROVIDERS[self.provider]["base_url"])
         self.model_var = tk.StringVar(value=self.models.get(self.provider, ""))
         self.token_var = tk.StringVar(value=str(get("token_limit", DEFAULT_TOKEN_LIMIT)))
+        self.image_side_var = tk.StringVar(value=str(get("image_side", 0)))
         self.thinking_var = tk.StringVar(value=get("thinking", "Model default"))
+        detector = DetectorOptions.from_settings(self.settings)
+        self.detector_var = tk.StringVar(value=next(label for label, mode in DETECTOR_CHOICES.items()
+                                                    if mode == detector.mode))
+        self.refine_masks_var = tk.BooleanVar(value=detector.refine_masks)
+        self.second_opinion_var = tk.BooleanVar(value=detector.second_opinion)
+        self.label_var = tk.StringVar(value=next(
+            label for label, mode in LABEL_CHOICES.items()
+            if mode == (detector.label_reader if detector.read_labels else "off")))
         self.fill_blanks_var = tk.BooleanVar(value=get("fill_blanks", False))
         self.keep_awake_var = tk.BooleanVar(value=get("keep_awake", False))
         self.awake = KeepAwake()
 
         root.title(f"GBIF Herbaria Data Pipeline {APP_VERSION}")
-        root.geometry(f"{min(1040, root.winfo_screenwidth() - 40)}x{min(960, root.winfo_screenheight() - 110)}")
+        root.geometry(f"{min(1180, root.winfo_screenwidth() - 40)}x{min(960, root.winfo_screenheight() - 110)}")
         root.minsize(800, 680)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._create_fonts()
@@ -1135,6 +1149,7 @@ class PipelineApp:
 
         file_menu = tk.Menu(menubar, tearoff=False)
         file_menu.add_command(label="GBIF account…", command=self._open_account)
+        file_menu.add_command(label="Model setup…", command=self.open_model_setup)
         file_menu.add_separator()
         file_menu.add_command(label="Open this download's folder", command=self._open_workspace)
         file_menu.add_command(label="Open data folder", command=lambda: self._open(DATA_DIR))
@@ -1233,8 +1248,12 @@ class PipelineApp:
         self.notebook.add(self._build_clean_tab(), text="Clean")
         self.notebook.add(self._build_images_tab(), text="Images")
         self.notebook.add(self._build_measure_tab(), text="Measure")
+        self.review_tab = ReviewTab(self.notebook, self)
+        self.edit_tab = EditTab(self.notebook, self, self.csv_source)
         self.modify_tab = ModifyTab(self.notebook, self, self.csv_source)
         self.analysis_tab = AnalysisTab(self.notebook, self, self.csv_source)
+        self.notebook.add(self.review_tab, text="Review")
+        self.notebook.add(self.edit_tab, text="Edit")
         self.notebook.add(self.modify_tab, text="Modify")
         self.notebook.add(self.analysis_tab, text="Analysis")
         self.notebook.bind("<<NotebookTabChanged>>", self._tab_changed)
@@ -1387,7 +1406,8 @@ class PipelineApp:
         self.column_summary.grid(row=0, column=1, sticky="w", padx=12)
         self._refresh_column_summary()
 
-        self.clean_status = self._action(tab, 4, [("Run", self._run_clean)], columnspan=2)
+        self.clean_status = self._action(tab, 4, [("Run", self._run_clean),
+                                                   ("Edit flagged records…", self._edit_flagged)], columnspan=2)
         return tab
 
     def _build_images_tab(self):
@@ -1444,16 +1464,73 @@ class PipelineApp:
         ttk.Label(options, text="Thinking").pack(side="left")
         ttk.Combobox(options, textvariable=self.thinking_var, values=list(THINKING_CHOICES), state="readonly",
                      width=14).pack(side="left", padx=6)
+        ttk.Spinbox(options, textvariable=self.image_side_var, from_=0, to=4096, increment=256, width=6).pack(
+            side="left", padx=(20, 0))
+        ttk.Label(options, text="px longest image side (0 for the default; smaller is faster)",
+                  style="Muted.TLabel").pack(side="left", padx=6)
         ttk.Label(model, text="Options").grid(row=7, column=0, sticky="w")
-        self.measure_status = self._action(model, 8, [("Measure new images", self._run_measurements),
-                                                      ("Choose images…", self._choose_measurements)])
+        # How structures are found and checked: trained models take over from the vision model as they appear.
+        ttk.Label(model, text="Find with").grid(row=8, column=0, sticky="w", padx=(0, 10))
+        finder = ttk.Frame(model)
+        finder.grid(row=8, column=1, columnspan=3, sticky="w", pady=3)
+        ttk.Combobox(finder, textvariable=self.detector_var, values=list(DETECTOR_CHOICES), state="readonly",
+                     width=38).pack(side="left", padx=(0, 14))
+        for text, var in (("SAM 2 outlines", self.refine_masks_var), ("Second-opinion checks", self.second_opinion_var)):
+            ttk.Checkbutton(finder, text=text, variable=var).pack(side="left", padx=(0, 14))
+        ttk.Label(model, text="Read labels").grid(row=9, column=0, sticky="w", padx=(0, 10))
+        reader = ttk.Frame(model)
+        reader.grid(row=9, column=1, columnspan=3, sticky="w", pady=3)
+        ttk.Combobox(reader, textvariable=self.label_var, values=list(LABEL_CHOICES), state="readonly",
+                     width=38).pack(side="left", padx=(0, 14))
+        ttk.Button(reader, text="Model setup…", command=self.open_model_setup).pack(side="left")
+        self.detector_hint = ttk.Label(model, style="Muted.TLabel", wraplength=760, justify="left")
+        self.detector_hint.grid(row=10, column=1, columnspan=3, sticky="w")
+        self._refresh_detector_hint()
+        self.measure_status = self._action(model, 11, [("Measure new images", self._run_measurements),
+                                                       ("Choose images…", self._choose_measurements)])
         self._update_provider_widgets()
 
-        join = self._section(tab, "Add results to the dataset", 2)
+        join = self._section(tab, "Use the results", 2)
         self._field(join, 0, "Dataset CSV", variable=self.dataset_var, openable=True, kind="csv",
                     browse=lambda: filedialog.askopenfilename(title="Select dataset CSV", filetypes=CSV_TYPES))
-        self.join_status = self._action(join, 2, [("Join into dataset…", self._run_join)])
+        self.join_status = self._action(join, 2, [("Join into dataset…", self._run_join),
+                                                  ("Export Darwin Core records", self._export_mof)])
         return tab
+
+    def _refresh_detector_hint(self):
+        lines = trained.status() + ["Label reader (OCR): " + ("installed" if ocr.available() else "not installed")]
+        self.detector_hint.configure(text=" · ".join(lines) + ". Models only find things; the numbers come from "
+                                     "the image geometry, and doubtful ones go to the Review tab.")
+
+    def _detector_options(self):
+        label = LABEL_CHOICES.get(self.label_var.get(), "auto")
+        return DetectorOptions(mode=DETECTOR_CHOICES.get(self.detector_var.get(), "auto"),
+                               refine_masks=self.refine_masks_var.get(),
+                               second_opinion=self.second_opinion_var.get(), read_labels=label != "off",
+                               label_reader="auto" if label == "off" else label)
+
+    def open_model_setup(self):
+        dialog = ModelSetupDialog(self)
+        self.root.wait_window(dialog)
+
+    def model_setup_changed(self):
+        """Called by the Model setup window after something was installed, downloaded or chosen."""
+        self._refresh_detector_hint()
+
+    def _export_mof(self):
+        measurements_csv = self._measurements_csv()
+        if not measurements_csv or self.running:
+            return
+        if not Path(measurements_csv).is_file():
+            messagebox.showwarning("No measurements yet", f"{measurements_csv} does not exist yet. "
+                                   "Measure some images first.", parent=self.root)
+            return
+
+        def work():
+            path, count = export_measurement_or_fact(measurements_csv, log=self._log)
+            return f"{count} records saved to {path.name}"
+
+        self._start(self.join_status, "Exporting…", work)
 
     def _workspace_labels(self):
         return {ws.title: ws for ws in list_workspaces()}
@@ -1498,7 +1575,7 @@ class PipelineApp:
 
     def _tab_changed(self, _event=None):
         tab = self.root.nametowidget(self.notebook.select())
-        if tab in (self.modify_tab, self.analysis_tab):
+        if tab in (self.review_tab, self.edit_tab, self.modify_tab, self.analysis_tab):
             tab.on_show()
 
     def _browse(self, entry, ask):
@@ -1728,16 +1805,6 @@ class PipelineApp:
 
         threading.Thread(target=runner, daemon=True).start()
 
-    def _ask_yesno(self, title, message):
-        answer = queue.Queue()
-        self.root.after(0, lambda: answer.put(messagebox.askyesno(title, message, parent=self.root)))
-        return answer.get()
-
-    def _confirm_phase_2(self):
-        return self._ask_yesno("Run phase 2?", f"Phase 1 is done. Review {INSPECT_NAME} now if needed "
-                                               "(type Remove in the Action column to drop a record), "
-                                               "then choose Yes to run phase 2.")
-
     def _skip_menu(self):
         self.skip_menu.entryconfigure("Skip this website", state="normal" if self.site_skip_ok else "disabled")
         button = self.skip_btn
@@ -1768,6 +1835,7 @@ class PipelineApp:
     def _save_settings(self):
         self.settings.update(
             theme=self.theme_var.get(), **self._model_settings_dict(), fill_blanks=self.fill_blanks_var.get(),
+            detector=vars(self._detector_options()),
             dataset_csv=self.dataset_var.get().strip(), media_dir=self.media_dir_var.get().strip(),
             measurements_csv=self.measurements_var.get().strip(), keep_awake=self.keep_awake_var.get(),
             master_columns=self.master_columns, workspace=self.workspace.name if self.workspace else "",
@@ -1791,10 +1859,22 @@ class PipelineApp:
         if self.running and not messagebox.askyesno("Quit", "A task is still running. Quit anyway?",
                                                     parent=self.root):
             return
+        if not self.edit_tab.confirm_close():
+            return
+        if self.review_tab.has_unsaved_changes() and not messagebox.askyesno(
+                "Quit", "The sheet open on the Review tab has edits that were not accepted. Quit anyway?",
+                parent=self.root):
+            return
         self.control.cancel_event.set()
         self._save_settings()
         self.awake.disable()
         self.root.destroy()
+
+    def _image_side(self):
+        try:
+            return max(int(self.image_side_var.get()), 0)
+        except ValueError:
+            return 0
 
     def _token_limit(self):
         try:
@@ -1833,7 +1913,7 @@ class PipelineApp:
             folder = download_dataset(*inputs, log=self._log)
             ws = workspace_of(folder)
             self._ui(self._set_workspace, ws)
-            master = run_cleaning(ws, folder, (1, 2, 3), self._confirm_phase_2, self._log,
+            master = run_cleaning(ws, folder, (1, 2, 3), self._log,
                                   master_columns=columns, **options)
             if not master:
                 return "Stopped after phase 1"
@@ -1864,7 +1944,7 @@ class PipelineApp:
                 self._ui(self._set_workspace, ws)
             else:
                 folder, ws = None, workspace
-            master = run_cleaning(ws, folder, phases, self._confirm_phase_2, self._log,
+            master = run_cleaning(ws, folder, phases, self._log,
                                   column_chooser=self._choose_columns_blocking, **options)
             if not master:
                 return "Stopped after phase 1" if 1 in phases else "Done"
@@ -1872,6 +1952,16 @@ class PipelineApp:
             return "Finalized"
 
         self._start(self.clean_status, "Running…", work)
+
+    def _edit_flagged(self):
+        """Open the records phase 1 flagged in the Edit tab, to put Remove in the Action column."""
+        path = self.workspace.inspect_csv if self.workspace else None
+        if not path or not path.is_file():
+            messagebox.showinfo("Flagged records", "Run phase 1 first: it writes the list of flagged records.",
+                                parent=self.root)
+            return
+        self.csv_source.select(str(path))
+        self.notebook.select(self.edit_tab)
 
     def _dataset_csv(self):
         csv_path = self.dataset_var.get().strip()
@@ -1981,14 +2071,16 @@ class PipelineApp:
             return
         self._save_settings()
         settings = settings_from_app(self.settings)
+        options = self._detector_options()
 
         def work():
             r = measure_images(media_dir, measurements_csv, self._log, self.control, self._progress, self._detail,
-                               settings=settings, only_ids=only_ids, force=force)
+                               settings=settings, only_ids=only_ids, force=force, options=options)
+            self.csv_source.forget(measurements_csv)
             if r["cancelled"]:
                 return "Cancelled"
-            return (f"{r['measured']} measured, {r['skipped']} already done, "
-                    f"{r['skipped_by_user']} skipped, {r['failed']} failed")
+            return (f"{r['measured']} measured, {r['skipped']} already done, {r['skipped_by_user']} skipped, "
+                    f"{r['failed']} failed; {r['needs_review']} need review (Review tab)")
 
         self._start(self.measure_status, "Measuring…", work, cancellable=True)
 
@@ -2010,7 +2102,7 @@ class PipelineApp:
         self._remember_provider_fields()
         return {"provider": self.provider, "servers": dict(self.servers), "models": dict(self.models),
                 "server": self.servers.get("lmstudio", LMSTUDIO_URL), "thinking": self.thinking_var.get(),
-                "token_limit": self._token_limit()}
+                "token_limit": self._token_limit(), "image_side": self._image_side()}
 
     def _remember_provider_fields(self):
         server = self.server_var.get().strip()

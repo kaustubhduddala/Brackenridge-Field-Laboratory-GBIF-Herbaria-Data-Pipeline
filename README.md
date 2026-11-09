@@ -17,7 +17,7 @@ Cristopher Ferreon, Kat Tisshaw, Aaron Rhodes, and Kaustubh Duddala.
 2. Installation
 3. Starting the application
 4. Workflow
-5. Measuring images with LM Studio
+5. Measuring images
 6. Presets and filters
 7. Output files
 8. Command line
@@ -49,13 +49,18 @@ build.py
 requirements.txt
 program/
     __init__.py
-    accuracy_benchmark.py  analysis_tab.py  app_window.py  browser_sign_in.py
-    command_line.py  csv_editing.py  csv_statistics.py  dataset_cleaning.py
+    analysis_tab.py  app_window.py  browser_sign_in.py  command_line.py
+    csv_editing.py  csv_editor_tab.py  csv_statistics.py  dataset_cleaning.py
     download_folders.py  gbif_download.py  gui_widgets.py  image_download.py
-    keep_awake.py  measurements_csv.py  modify_tab.py  plant_geometry.py
-    scale_calibration.py  sheet_measurement.py  utils.py  vision_locator.py
-    vision_providers.py
-    reference/  (example figures from the lab protocol)
+    keep_awake.py  modify_tab.py  utils.py
+    measure/     (everything that measures images)
+        benchmark.py  calibration.py  decision.py  detectors.py  downloads.py
+        geometry.py  labels.py  locator.py  model_setup.py  occlusion.py  ocr.py
+        overlay.py  pipeline.py  providers.py  records.py  review_tab.py
+        taxa.py  trained.py  training.py
+        reference/  (example figures from the lab protocol)
+tests/           (drawn sheets with known measurements; python -m unittest discover tests)
+requirements-models.txt   (optional PyTorch add-on)
 .github/workflows/release.yml
 ```
 
@@ -159,8 +164,7 @@ extracts it into that folder's `raw/` subfolder. When you paste a DOI,
 the download ID is read from the link and the species is looked up
 from GBIF.
 
-"Run full workflow" does the download, phase 1 and phase 2 in one go,
-pausing for your manual review in between.
+"Run full workflow" does the download, phase 1 and phase 2 in one go.
 
 ### Tab 2: Clean
 
@@ -182,9 +186,14 @@ folder (or a ZIP) and:
 9. Adds an empty `Action` column and saves
    `GBIFdownload_inspectFlags.csv`.
 
-Open that CSV, review the flagged records, and type `Remove` in the
+Open that CSV ("Edit flagged records..." on the Clean tab opens it in
+the Edit tab), review the flagged records, and type `Remove` in the
 `Action` column for any record that should be dropped (cultivated
 specimens, botanic garden records, suspicious localities and so on).
+
+Running the steps together does not pause between phase 1 and phase 2.
+To review first, run phase 1 on its own (untick the others), edit the
+flagged records, then run phase 2.
 
 Phase 2 then:
 
@@ -224,10 +233,20 @@ column and listed in `<dataset>_failed_media.csv`.
 
 ### Tab 4: Measure
 
-"Measure new images" sends every image in the image folder that has
-not been measured yet to the model. Images that failed before are
-retried. The file name (without extension) is used as the gbifID, and
-only images in the image folder are measured.
+"Measure new images" measures every image in the image folder that has
+not been measured yet. Images that failed before are retried. The file
+name (without extension) is used as the gbifID, and only images in the
+image folder are measured.
+
+Models only find things on the sheet (the ruler, labels, panicles,
+leaves, seeds). The numbers come from the image geometry, and every
+value gets a status: accept, needs review, lower bound or not
+measurable. Section 5 explains how. "Find with" chooses what does the
+finding: trained models when there are any, otherwise the vision model
+chosen under Provider. "Read labels" chooses what transcribes the label:
+the built-in OCR when it is installed, otherwise the vision model.
+"Model setup..." (also under File) installs and downloads everything
+optional; see "Model setup" in section 5.
 
 Results go to a separate `measurements.csv`, one row per gbifID.
 "Choose images..." opens the checklist so you can measure specific
@@ -258,6 +277,75 @@ voucher label" copies voucher details (for example `locality`,
 the matching voucher_ columns checked. It never overwrites a value
 that is already there, and the filled column names are recorded in
 `voucher_filled_columns` so you can review them.
+
+### Review
+
+Lists the measured sheets that need a person, least confident first: a
+trait needs review, or is only a lower bound. Choose a sheet to see
+what was measured drawn on it.
+
+- Drag a point to correct a measurement. Scroll to zoom, drag the sheet
+  to move it, double-click to fit it in the window.
+- "Panicle", "Leaf" and "Seed" add a measurement from two clicks (base
+  then tip, or the two margins of a leaf). Delete removes the selected
+  one.
+- "Panicle from a box (SAM)..." is the quick way to a panicle: click two
+  opposite corners of a box around it, SAM 2 cuts the panicle out from
+  the leaves and stems around it (about 3 s), and the route is traced
+  along the plant inside that outline. It needs the add-on and the SAM 2
+  download from Model setup. The two ends are only a first guess, the
+  extremes of the outline along its long axis, so a long side branch or
+  a stretch of bare stem can pull them off the lowest panicle node: drag
+  them to where they belong. No tool finds the panicle by itself without
+  a model; leaves, stems and the panicle are all connected plant, and a
+  route traced across them wanders over the sheet.
+- The checkboxes mark the selected measurement as folded (not
+  measurable), as having a hidden end (its value becomes a lower
+  bound), or leave it out.
+- "Scale..." sets the scale from two points a known distance apart,
+  like Set Scale in ImageJ. Every value on the sheet is recomputed.
+- "Accept sheet" stores the sheet as reviewed, rewrites its row in
+  `measurements.csv` and saves a label in the download's `labels/`
+  folder. Objects the pipeline rejected stay out unless you corrected
+  them.
+
+**Untouched sheets.** The drop-down above the list also offers
+"Untouched sheets", the images that were never measured. Opening one
+finds the scale from the ruler or the sheet width (image analysis, no
+model), and you click the measurements yourself: Panicle (base, then
+tip), Leaf (the two margins) and Seed (the two ends). The panicle is
+traced along the plant between your two points; a leaf or seed is the
+distance between them. "Accept sheet" stores them like any reviewed
+sheet, so measuring sheets by hand is also how you build training data
+from scratch, with or without LM Studio.
+
+**Your hand values.** "Hand values..." loads a CSV of your own
+measurements (columns `gbifID`, `Panicle length (cm)`, `Leaf width
+(cm)`, `Seed length (cm)`; a file with "CFmeasurements" or
+"hand_measurements" in its name in the download's folder is picked up
+automatically). Each sheet then shows your value beside the measured
+one, with the difference in percent, so you can check your clicks. A
+table of lengths alone cannot train the landmark model, because it needs
+to know where the points are, which is why the clicks are what is saved.
+
+The buttons at the bottom right exchange labels with CVAT, Label
+Studio or Roboflow as COCO files ("Export pre-labels..." writes what
+the pipeline found so it can be corrected there, "Import labels..."
+reads the corrections back) and train the models on the reviewed
+sheets (section 5).
+
+### Edit
+
+Opens any CSV as a spreadsheet. Type in a cell to change it; copy,
+paste, undo and find use the usual keys; right-click for sorting and
+for inserting or deleting rows and columns; double-click a heading to
+rename a column. "Filter rows" shows only the rows containing a text.
+
+Every cell is kept as text exactly as it is in the file, so an "NA"
+stays "NA" and an ID keeps its leading zeros. "Save" keeps the previous
+version in `backups/` first ("Undo last change" on the Modify tab
+brings it back); "Save as..." writes a new file. The Edit, Modify and
+Analysis tabs share the same file.
 
 ### Modify
 
@@ -417,105 +505,208 @@ soon as you uncheck it or close the app. It uses
 `SetThreadExecutionState` on Windows, `caffeinate` on macOS and
 `systemd-inhibit` on Linux; if none is available the box is disabled.
 
-## 5. Measuring images with LM Studio
+## 5. Measuring images
+
+### How a sheet is measured
+
+1. Scale first. The ruler is found and its tick spacing measured; with
+   no usable ruler the standard 29 cm sheet width is used and the
+   scale is marked uncertain. The DPI stored in the file is never
+   trusted. With no scale, nothing on the sheet is measured.
+2. Finding. A detector points at each panicle (base and tip), leaf
+   (the two margins at the widest point) and seed (a box). It never
+   produces a number.
+3. Measuring, from the pixels:
+   - Panicle length is the path along the plant between base and tip,
+     so a curved panicle is not shortened to its straight-line distance.
+   - Leaf width is the blade's width at its widest point, from its
+     outline when there is one, otherwise from the blade's edges on the
+     plant mask.
+   - Seed length is the long axis of each spikelet; the sheet's value
+     is the median, reported with the number of seeds measured.
+4. Hidden ends. A panicle end that stops at a label, envelope or the
+   edge of the sheet gives a lower bound, written to its own
+   `..._lower_bound_cm` column and never to the value column.
+5. Checks. Folded or overlapping leaves, tips placed part-way along a
+   panicle, paths that leave the plant, objects of too few pixels and
+   values outside the range for the taxon are flagged. With
+   "Second-opinion checks" the vision model is also asked yes/no
+   questions (is this tip hidden? is this leaf folded? is this one
+   whole seed?); its answer counts as one vote and never changes a
+   number.
+6. Status, by rules written out in `program/measure/decision.py`:
+
+| Status | When |
+|---|---|
+| accept | Found with confidence, clean geometry, enough resolution |
+| needs review | Unusual value, two methods disagree, uncertain scale, few seeds, low confidence |
+| lower bound | An end of the panicle is hidden |
+| not measurable | No scale, too low resolution, folded, nothing found |
+
+Each sheet also gets `responses/<gbifID>_overlay.jpg`, the sheet with
+every outline, measured path and value drawn on it, and
+`responses/<gbifID>.json` with every point and the raw model answers.
+
+### The vision model (LM Studio and others)
 
 1. In LM Studio, load a vision model and start the local server (the
    Developer tab, or `lms server start`).
 2. In the Measure tab, check that the server address is correct
    (default `http://localhost:1234/v1`) and choose "Test connection".
-   The log shows which model will be used and its context length, and
-   warns if the context is too small or the model cannot read images.
 3. Choose "Measure new images".
 
-You do not choose a model name in the app. LM Studio needs one in each
-request, because with its default just-in-time loading the name decides
-which model answers (or which one gets loaded). So before each run the
-app asks LM Studio which models are loaded and uses that model,
-preferring a vision model if several are loaded. The name is
-saved in the `ai_model` column. If nothing is loaded, the run stops
-with a message instead of loading a model on its own.
+Leave Model empty to use the vision model loaded in LM Studio; the app
+asks LM Studio which models are loaded before each run. OpenAI, Google
+Gemini, Anthropic Claude and any OpenAI-compatible server can be used
+instead by choosing them under Provider and saving an API key.
 
-You do not need to set anything in LM Studio's Structured Output
-panel. Each request includes its own JSON schema, so the model's
-answer always has the expected fields. If a server does not support
-this, the app falls back to asking for JSON in the prompt.
+- Context length: set this when loading the model in LM Studio; 16,384
+  or more is recommended.
+- Token limit per image: stops a model that gets stuck. Set 0 for no
+  limit; a model that starts repeating the same text is stopped anyway.
+- Image size: the longest side, in pixels, of the images sent (0 uses the
+  provider's default, 2560 for LM Studio). Large models spend most of
+  their time reading the image, so a smaller size (1280 to 1792) can be
+  much faster. If LM Studio runs out of memory the app retries with
+  smaller images by itself.
+- A model that cannot read images (LM Studio lists it as text-only) stops
+  the run with a message instead of failing every sheet. Cancel and Skip
+  work while the model is still reading; the status line shows how long
+  it has been waiting.
+- Thinking: "Low" or "Off" asks the model to reason less, where the
+  server supports it.
 
-### Settings that matter
+A vision-language model is good at reading labels and at yes/no
+questions, and poor at placing points precisely. It is the starting
+point; trained models take over as sheets are reviewed.
 
-- Context length: set this when loading the model in LM Studio. The
-  image and instructions use roughly 3,000 to 5,000 tokens, and a
-  thinking model needs room to reason and answer. 16,384 or more is
-  recommended; 8,192 is often too small.
-- Token limit per image: the most the model may generate for one
-  image. It stops a model that gets stuck repeating its reasoning. Set
-  0 for no limit.
-- Thinking: "Low" or "Off" asks the model to reason less. Not every
-  model or LM Studio version supports this; if the server rejects it,
-  the app continues without it and says so in the log.
+### Model setup
 
-### What the model returns
+File > Model setup... (or the button on the Measure tab) is one window for
+everything optional, like the site logins window. Each item shows whether
+it is ready, how big it is, and an Install or Download button; "Get
+everything that is missing" does them all. Nothing is installed or
+downloaded until you press a button, downloads can be cancelled and
+resume where they stopped, and the window shows the free disk space.
 
-Each answer is a JSON object like this, shortened:
+| Item | Size | What it is for |
+|---|---|---|
+| Training and outlines add-on (PyTorch + Ultralytics) | about 2-3 GB | Runs trained models and SAM 2, and trains new ones |
+| Label reader (RapidOCR) | about 140 MB | Reads labels on this computer, with no vision model |
+| SAM 2 outlines | about 160 MB | Precise outlines of leaves and seeds |
+| Starting weights | about 90 MB | The pretrained models your own models are trained from |
+
+The same steps are available from the command line:
 
 ```
-{
-  "calibration": "Kew ruler on the right edge, 1 cm ticks",
-  "panicle_length_1_cm": 24.5, "panicle_length_1_confidence": 0.8,
-  "panicle_length_2_cm": null, "panicle_length_2_confidence": null,
-  "leaf_width_1_cm": 1.2, "leaf_width_1_confidence": 0.7,
-  "notes": "Only one panicle visible; no seeds.",
-  "voucher_text": "Bivona, Sic. Manip. IV. 6 (1816) ...",
-  "voucher": {"catalogNumber": "K000674307", "locality": "Monte Pellegrino", "...": ""}
-}
+python main.py models install            # PyTorch + Ultralytics
+python main.py models install-ocr        # the label reader
+python main.py models download-sam
+python main.py models download-weights
 ```
 
-### Raw responses
+The packaged app cannot install packages; run from source for these.
+(Ultralytics and RapidOCR are installed without their dependency lists so
+that a second copy of OpenCV is not installed on top of the one the app
+uses.) Ultralytics is licensed AGPL-3.0; check that this suits how you
+distribute the app. RapidOCR is Apache-2.0.
 
-Every answer is also saved unchanged as `<download folder>/responses/<gbifID>.json`,
-including answers that could not be read. Each file holds the model
-name, why the model stopped, the raw answer text, the model's
-reasoning if it produced any, and the parsed values. Use these to check
-a result or to see why one failed. In "Choose images...", select an
-image and choose "Open raw model response".
+### The built-in label reader
 
-Before values are written to `measurements.csv` they are tidied:
+RapidOCR is an open-source text reader (PaddleOCR models converted to
+ONNX) that runs on the CPU, with its models inside the package, so it
+needs no vision model and no internet once installed. It reads one label
+in about a second.
 
-- Text is put on one line. The label transcription keeps its line
-  breaks as " | ", so each record is one line in the CSV.
-- Dates are written as YYYY-MM-DD, YYYY-MM or YYYY. A model answer such
-  as 1929-03-00 becomes 1929-03.
-- A confidence without a measurement is dropped, and confidences are
-  kept between 0 and 1.
+It reads printed text well: typed labels, stamps, barcode numbers. It
+reads handwriting poorly and sometimes slips on single characters. It
+returns the label text (`voucher_text`), and simple rules pull these
+fields out of the text: catalogNumber, eventDate, scientificName,
+recordedBy, recordNumber, county, locality and habitat. The rules need
+the field name printed on the label (for example "LOCALITY"); every other
+field stays empty and nothing is guessed. A vision model understands a
+label better, so it stays available: "Read labels" on the Measure tab
+chooses between the two. "Automatic" uses the OCR when it is installed.
+With trained models and the label reader installed, a run needs no
+vision model at all.
 
-The CSV files are saved as UTF-8 with a byte-order mark, so Excel shows
-accented characters in names and localities correctly.
+### Trained models
 
-Tidying cannot fix a wrong reading. Small models in particular may put
-a value in the wrong field or misread a date, so check the voucher
-fields before relying on them.
+Small models fine-tuned on your own reviewed sheets find structures
+faster and far more consistently than a vision-language model. They need
+the add-on from Model setup. With it installed:
+
+- SAM 2 outlines each object the detector points at, which gives the
+  leaf and seed measurements a precise outline.
+- "Train models..." on the Review tab (or `python main.py train pose`)
+  fine-tunes a landmark model on the reviewed sheets: panicle base and
+  tip, leaf margins, seed ends. At least 10 reviewed sheets are needed;
+  100 to 200 that include the hard cases is a sensible first target.
+  Sheets are split 70/15/15 into training, validation and test by
+  specimen.
+- `python main.py train seg` trains an outline model (panicle, leaf,
+  seed, label, ruler, envelope, colour chart). It needs labels with
+  outlines, which come from SAM 2 or from labels drawn in CVAT.
+- Seeds are trained and found on full-resolution tiles, because on a
+  downsized sheet they are only a few pixels long.
+
+Trained models live in `models/` with a `registry.json`; the version
+used is saved with every measurement in `ai_detector`. After training,
+score the held-out sheets against hand measurements:
+
+```
+python main.py benchmark hand_measurements.csv --measure --split test
+```
+
+### Checking accuracy
+
+`python main.py benchmark <hand measurements csv>` compares
+`measurements.csv` with hand measurements (columns `gbifID`,
+`Panicle length (cm)`, `Leaf width (cm)`, `Seed length (cm)`). For each
+trait it reports error and bias for accepted values and for values sent
+to review, how many of the values more than 20% off were sent to
+review, how often no value was given where the hand sheet says NA, and
+whether each lower bound really is below the hand value. `--measure`
+measures the hand-measured images into `benchmark/<run>/` first.
 
 ### Measurement columns
 
 | Column | Contents |
 |---|---|
 | `ai_image` | Image file that was measured |
-| `ai_<trait>_1_cm`, `ai_<trait>_2_cm` | Two independent measurements, in cm |
-| `ai_<trait>_1_confidence`, `ai_<trait>_2_confidence` | Model confidence from 0 to 1 |
-| `ai_<trait>_mean_cm` | Mean of the available measurements |
-| `ai_calibration` | How the model calibrated the scale |
-| `ai_notes` | Model notes, including why a value is missing |
-| `voucher_text` | Transcribed label text |
-| `voucher_<field>` | Label details in Darwin Core terms |
-| `ai_model`, `ai_measured_at` | Model that answered and when |
-| `ai_error` | Why the last attempt failed, empty on success |
+| `ai_<trait>_cm` | The value in cm (accepted or needing review) |
+| `ai_panicle_length_lower_bound_cm` | The minimum length when an end is hidden |
+| `ai_<trait>_status` | accept, needs review, lower bound or not measurable |
+| `ai_<trait>_confidence` | 0 to 1: detector score x geometric quality x scale quality, reduced for each review flag |
+| `ai_<trait>_n`, `ai_<trait>_values_cm` | How many objects the value is built from, and their values |
+| `ai_<trait>_method`, `ai_<trait>_flags` | How it was measured, and the flag codes raised |
+| `ai_px_per_cm`, `ai_scale_source`, `ai_calibration` | The scale and where it came from (ruler, sheet, manual) |
+| `ai_notes` | Why a value is missing or needs review, in words |
+| `ai_review` | auto, or reviewed once accepted on the Review tab |
+| `voucher_text`, `voucher_<field>` | Transcribed label text and details in Darwin Core terms |
+| `ai_model`, `ai_detector`, `ai_pipeline` | Vision model, trained model versions and label reader (`labels=rapidocr`; `manual=reviewer` for sheets measured by hand), pipeline version |
+| `ai_measured_at`, `ai_error` | When, and why the last attempt failed (empty on success) |
 
 The traits are `panicle_length`, `leaf_width` and `seed_length`.
-Measurement definitions follow the project protocol: panicle length
-from the lowest panicle node to the tip, leaf width at the broadest
-point, seed length from the branch point to the tip.
+Definitions follow the project protocol: panicle length from the lowest
+panicle node to the tip, leaf width from margin to margin at the widest
+point (of the widest leaf measured), seed length from the branch point
+to the tip. The plausible ranges for the taxon are in
+`program/measure/taxa.py`.
 
-Automated measurements should be checked against manual ones before
-they are used in analysis.
+A `measurements.csv` written by an earlier version is renamed to
+`measurements_legacy.csv` (and `responses/` to `responses_legacy/`) the
+first time images are measured, and a new file is started.
+
+"Export Darwin Core records" (or `python main.py export-mof`) writes
+`measurement_or_fact.csv`, one record per value using the Darwin Core
+MeasurementOrFact terms. A lower bound is its own measurementType
+("minimum panicle length").
+
+Label transcriptions are tidied (one line, dates as YYYY-MM-DD) but a
+small model may still misread a field, so check the voucher columns
+before relying on them. CSV files are saved as UTF-8 with a byte-order
+mark so Excel shows accented characters correctly.
 
 ## 6. Presets and filters
 
@@ -581,6 +772,10 @@ All files are written to the active download's folder,
 | `master_cleaned_failed_media.csv` | Records whose image could not be downloaded |
 | `media/` | Downloaded images named by gbifID |
 | `measurements.csv` | Image measurements, one row per gbifID |
+| `measurement_or_fact.csv` | The same values as Darwin Core MeasurementOrFact records |
+| `responses/` | Per image: the full result with every point (`.json`) and the overlay picture |
+| `labels/` | Reviewed labels, the training data for the models |
+| `backups/` | Earlier versions of CSV files replaced on the Edit and Modify tabs |
 | `responses/` | The raw model answer for each image, as `<gbifID>.json` |
 | `master_cleaned_before_join.csv` | The dataset as it was before the last join into it |
 | `backups/` | Earlier versions of CSVs replaced from the Modify tab |
@@ -611,6 +806,15 @@ Measurements:
 
 ```
 python main.py measure [image_folder] [measurements_csv] [--ids 123,456] [--redo]
+                     [--provider NAME] [--model ID] [--detector auto|vision|trained]
+                     [--no-sam] [--second-opinion] [--labels auto|ocr|vision|off]
+python main.py benchmark hand_measurements.csv [--measure | --measurements file.csv]
+                     [--ids 123,456] [--split test] [--label NAME]
+python main.py export-mof [measurements_csv] [--output file.csv]
+python main.py models [status | install | download-sam | download-weights | install-ocr]
+python main.py labels export [--prelabels] [--output file.json]
+python main.py labels import corrected_coco.json
+python main.py train [pose | seg | all] [--epochs N] [--imgsz N] [--batch N]
 python main.py join [dataset_csv] [measurements_csv] [--fill-blanks] [--matched-only]
                      [--key gbifID] [--measurement-key gbifID] [--columns a,b,c] [--output file.csv]
 ```
@@ -651,7 +855,7 @@ Environment variables: `GBIF_USER`, `GBIF_PASSWORD`, `GBIF_EMAIL`
 a specific model, for example with a server other than LM Studio.
 
 The prompts and answer formats for the vision model are in
-`program/vision_locator.py` (`SYSTEM` and the `*_SCHEMA` constants).
+`program/measure/locator.py` (`SYSTEM` and the `*_SCHEMA` constants).
 
 ## 10. Project layout
 
@@ -668,13 +872,26 @@ them in this list, so there are no circular imports.
 | `program/dataset_cleaning.py` | Phases 1-3 and coordinate cleaning tests |
 | `program/image_download.py` | Image downloading: saved site sign-ins, browser-like retries, site-specific downloaders |
 | `program/browser_sign_in.py` | The browser window used to sign in to a site (needs Playwright) |
-| `program/vision_providers.py` | Vision-model providers: LM Studio, OpenAI, Gemini, Claude, custom servers |
-| `program/vision_locator.py` | Asks the model where the sheet, ruler and plant structures are |
-| `program/scale_calibration.py` | Pixels per centimetre from the ruler or the sheet width |
-| `program/plant_geometry.py` | Plant mask; traces lengths and measures widths on the pixels |
-| `program/measurements_csv.py` | The measurements CSV and joining it into the dataset |
-| `program/sheet_measurement.py` | Measures one sheet, or a folder of sheets into the measurements CSV |
-| `program/accuracy_benchmark.py` | Scores measurements against hand measurements |
+| `program/measure/taxa.py` | The traits, and the plausible ranges for each taxon |
+| `program/measure/providers.py` | Vision-model providers: LM Studio, OpenAI, Gemini, Claude, custom servers |
+| `program/measure/locator.py` | Asks the vision model where things are, and yes/no check questions |
+| `program/measure/downloads.py` | Downloads and package installs with progress, retries, resume and cancel |
+| `program/measure/ocr.py` | The built-in label reader (RapidOCR) and the rules that pull fields out of label text |
+| `program/measure/model_setup.py` | The Model setup window |
+| `program/measure/trained.py` | The optional PyTorch add-on: trained YOLO seg/pose models, SAM 2, the model registry |
+| `program/measure/detectors.py` | One interface over the vision model and the trained models |
+| `program/measure/calibration.py` | Pixels per centimetre from the ruler, the sheet width or a reviewer |
+| `program/measure/geometry.py` | Plant mask, geodesic paths, skeletons, widths, fold checks, spikelet axes |
+| `program/measure/occlusion.py` | Whether an end is real or hidden by a label or the sheet edge |
+| `program/measure/decision.py` | Flags, confidence and the accept / review / lower bound / not measurable rules |
+| `program/measure/pipeline.py` | Measures one sheet, or a folder of sheets into the measurements CSV |
+| `program/measure/overlay.py` | The picture of what was measured |
+| `program/measure/records.py` | The measurements CSV, joining it into the dataset, Darwin Core export |
+| `program/measure/labels.py` | Reviewed labels; COCO export and import |
+| `program/measure/training.py` | Builds training sets from the labels and trains the models |
+| `program/measure/benchmark.py` | Scores values and flags against hand measurements |
+| `program/measure/review_tab.py` | The Review tab |
+| `program/csv_editor_tab.py` | The Edit tab (spreadsheet) |
 | `program/csv_editing.py` | Editing any CSV: columns, joins, rows, combining, backups |
 | `program/csv_statistics.py` | Summaries used by the Analysis tab |
 | `program/gui_widgets.py` | Shared widgets, the shared CSV picker, light and dark themes |

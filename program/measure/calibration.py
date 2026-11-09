@@ -43,19 +43,26 @@ class Calibration:
     ruler_line: list | None = None           # [[x, y], [x, y]] along the measured ruler span
     ruler_span_cm: float | None = None
     flags: list = field(default_factory=list)
+    uncertain: list = field(default_factory=list)   # reasons the scale should be checked by a person
 
     def describe(self):
         if not self.px_per_cm:
             return "No scale: " + ("; ".join(self.flags) or "no ruler and the sheet edges are not visible")
         what = {"ruler": f"printed ruler ({self.ruler_span_cm:.0f} cm span)" if self.ruler_span_cm else "printed ruler",
-                "sheet": f"sheet width = {SHEET_WIDTH_CM:g} cm"}[self.source]
+                "manual": f"a {self.ruler_span_cm:g} cm length marked by a reviewer" if self.ruler_span_cm
+                else "a reviewer",
+                "sheet": f"sheet width = {SHEET_WIDTH_CM:g} cm"}.get(self.source, self.source)
         text = f"{self.px_per_cm:.1f} px/cm from {what}"
         if self.source == "ruler" and self.sheet_px_per_cm:
             text += f" (sheet width gives {self.sheet_px_per_cm:.1f})"
         return text + ("; " + "; ".join(self.flags) if self.flags else "")
 
-    def allows(self, trait):
-        return bool(self.px_per_cm) and self.px_per_cm >= MIN_PX_PER_CM[trait]
+    def allows(self, trait, minimum=None):
+        return bool(self.px_per_cm) and self.px_per_cm >= (minimum or MIN_PX_PER_CM)[trait]
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**{k: v for k, v in (data or {}).items() if k in cls.__dataclass_fields__})
 
     def as_dict(self):
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -311,8 +318,8 @@ def ruler_from_hint(gray, box, rough_px_per_cm):
 def calibrate(rgb, ruler_hint=None, sheet_hint=None):
     """Calibration for an RGB numpy image.
 
-    `ruler_hint` = {"box": [...], "px_per_cm": rough} and `sheet_hint` = [x0, y0, x1, y1] come from
-    the AI layout pass; the sheet hint is only used when the paper colour cannot be found.
+    `ruler_hint` = {"box": [...], "px_per_cm": rough or None} and `sheet_hint` = [x0, y0, x1, y1] come
+    from the layout pass; the sheet hint is only used when the paper colour cannot be found.
     """
     import cv2
 
@@ -336,8 +343,9 @@ def calibrate(rgb, ruler_hint=None, sheet_hint=None):
     prior = sheet_px or max(rgb.shape[:2]) / SHEET_HEIGHT_CM
 
     hinted = None
-    if ruler_hint and ruler_hint.get("box") and ruler_hint.get("px_per_cm"):
-        hinted = ruler_from_hint(gray, ruler_hint["box"], float(ruler_hint["px_per_cm"]))
+    if ruler_hint and ruler_hint.get("box"):
+        # A trained model gives only the ruler's box; the sheet width then says roughly what to expect.
+        hinted = ruler_from_hint(gray, ruler_hint["box"], float(ruler_hint.get("px_per_cm") or prior))
         if hinted is None:
             flags.append("AI-marked ruler could not be measured")
         elif sheet_px:
@@ -365,21 +373,39 @@ def calibrate(rgb, ruler_hint=None, sheet_hint=None):
         other = found if ruler is hinted else hinted
         flags.append(f"two ruler readings disagree ({other['px_per_cm']:.1f} px/cm not used)")
 
+    uncertain = []
     result = Calibration(px_per_cm=None, source="none", sheet_px_per_cm=sheet_px,
-                         sheet_box=sheet.get("box") if sheet.get("ok") else None, flags=flags)
+                         sheet_box=sheet.get("box") if sheet.get("ok") else None, flags=flags, uncertain=uncertain)
     if ruler:
         result.px_per_cm, result.source = ruler["px_per_cm"], "ruler"
         result.ruler_px_per_cm, result.ruler_line, result.ruler_span_cm = (ruler["px_per_cm"], ruler["line"],
                                                                            ruler["span_cm"])
         if sheet_px and abs(ruler["px_per_cm"] / sheet_px - 1) > RULER_AGREEMENT:
             flags.append(f"sheet width disagrees with the ruler by {100 * (sheet_px / ruler['px_per_cm'] - 1):+.0f}%")
+            if not sheet["touches_border"]:
+                uncertain.append("the ruler and the sheet width disagree")
     elif sheet_px:
         # The lab protocol also uses the sheet when it touches the image border; it is flagged above.
         result.px_per_cm, result.source = sheet_px, "sheet"
+        uncertain += [f for f in flags if f.startswith(("sheet edge touches", "sheet is not standard",
+                                                       "sheet edges taken from", "AI-marked ruler",
+                                                       "ruler-like pattern"))]
     for trait, minimum in MIN_PX_PER_CM.items():
         if result.px_per_cm and result.px_per_cm < minimum:
             flags.append(f"resolution too low for {trait.replace('_', ' ')} ({result.px_per_cm:.0f} < {minimum:g} px/cm)")
     return result
+
+
+def manual_calibration(previous, a, b, length_cm):
+    """A scale set by a person: two points a known distance apart (like Set Scale in ImageJ)."""
+    span_px = math.hypot(b[0] - a[0], b[1] - a[1])
+    if length_cm <= 0 or span_px < 5:
+        raise ValueError("Mark two points a known distance apart")
+    data = dict(previous or {})
+    data.update(px_per_cm=span_px / length_cm, source="manual", ruler_px_per_cm=span_px / length_cm,
+                ruler_line=[list(a), list(b)], ruler_span_cm=float(length_cm), uncertain=[],
+                flags=[f for f in data.get("flags", []) if not f.startswith("resolution too low")])
+    return Calibration.from_dict(data)
 
 
 def load_rgb(path):
