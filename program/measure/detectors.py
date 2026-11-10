@@ -223,7 +223,7 @@ def build_detector(model_settings=None, options=None, log=print):
     if options.mode == "trained" and models is None:
         raise DetectorError("No trained model is available. " + (
             "Review some sheets and train a model first (Review tab)." if trained.available()
-            else "Install the model add-on first: python main.py models install"))
+            else "Install the model add-on first (File > Model setup, or python main.py models install)"))
     if options.read_labels and options.label_reader == "ocr" and not ocr.available():
         raise DetectorError("The built-in label reader is not installed. Install it in Model setup, or choose "
                             "the vision model for labels.")
@@ -251,7 +251,7 @@ def build_detector(model_settings=None, options=None, log=print):
     if options.refine_masks and trained.available():
         if trained.sam_weights() is None:
             log("  SAM 2 outlines are skipped: its weights are not downloaded yet "
-                "(run python main.py models download-sam once). Using the colour-based plant mask instead.")
+                "(download it in File > Model setup, or run python main.py models download-sam, once). Using the colour-based plant mask instead.")
         else:
             try:
                 sam = trained.SamRefiner()

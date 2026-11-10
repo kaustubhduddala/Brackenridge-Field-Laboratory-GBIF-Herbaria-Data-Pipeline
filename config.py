@@ -43,6 +43,25 @@ SETTINGS_FILE = BASE_DIR / "settings.json"
 SITE_LOGINS_FILE = BASE_DIR / "site_logins.json"
 BROWSER_PROFILE_DIR = BASE_DIR / "browser_profile"
 BROWSERS_DIR = BASE_DIR / "browsers"  # Playwright's Chromium, downloaded on demand
+ADDONS_DIR = BASE_DIR / "addons"      # packaged app only: the optional PyTorch and label-reader packages (see below)
+
+
+def activate_addons():
+    """Let the packaged app import the optional packages installed into ADDONS_DIR.
+
+    The packaged app cannot add packages to itself (its own folder is signed and may be read-only, and it
+    carries no Python to run pip with), so Model setup installs them into Documents/Graas/addons instead.
+    The folder goes last on sys.path: what is already bundled (numpy, OpenCV...) is always the copy used,
+    and the add-ons only supply what the bundle lacks. Does nothing from source, where pip installs into the
+    environment, or while the folder does not exist yet.
+    """
+    if FROZEN and ADDONS_DIR.is_dir() and str(ADDONS_DIR) not in sys.path:
+        sys.path.append(str(ADDONS_DIR))
+        import importlib
+        importlib.invalidate_caches()
+
+
+activate_addons()
 BROWSER_USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/126.0.0.0 Safari/537.36")
 

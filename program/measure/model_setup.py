@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from tkinter import messagebox, ttk
 from typing import Callable
 
-from config import BASE_DIR, FROZEN
+from config import ADDONS_DIR, BASE_DIR, FROZEN
 from . import downloads, ocr, trained
 from .detectors import DETECTOR_CHOICES, LABEL_CHOICES
 from ..gui_widgets import HelpTip, help_label, set_title_bar, style_text, tip
@@ -74,14 +74,14 @@ def _trained_status():
 
 
 def components():
-    packaged = " The packaged app cannot install it; run the app from source." if FROZEN else ""
+    where = f" Installed into {ADDONS_DIR}." if FROZEN else ""
     return [
         Component("addon", "Training and outlines add-on (PyTorch + Ultralytics)",
                   "Runs trained models and SAM 2, and trains new ones. Not needed to measure with the vision model."
-                  + packaged, "about 2-3 GB", _addon_status, None if FROZEN else trained.install),
+                  + where, "about 2-3 GB", _addon_status, trained.install),
         Component("ocr", "Label reader (RapidOCR, open source)",
                   "Reads printed label text on this computer, with no vision model. Handwriting is read poorly."
-                  + packaged, "about 140 MB", _ocr_status, None if FROZEN else ocr.install),
+                  + where, "about 140 MB", _ocr_status, ocr.install),
         Component("sam", "SAM 2 outlines", "Precise outlines of leaves and seeds, used with the add-on.",
                   "about 160 MB", _sam_status, trained.download_sam, "Download"),
         Component("weights", "Starting weights for training",

@@ -258,6 +258,40 @@ class Setup(unittest.TestCase):
             trained.download_base_weights(lambda text: None, threading.Event())
         self.assertEqual(asked, [trained.BASE_WEIGHTS["pose"], trained.BASE_WEIGHTS["seg"]])
 
+    def test_the_packaged_app_installs_into_the_addons_folder_with_its_own_pip(self):
+        """There is no Python in the packaged app: it runs itself with --pip, wheels only, into addons/."""
+        with mock.patch.object(downloads, "FROZEN", True), mock.patch.object(downloads.sys, "executable", "/App/Graas"):
+            command = downloads.pip_command(["six"])
+        self.assertEqual(command[:3], ["/App/Graas", "--pip", "install"])
+        self.assertIn("--only-binary=:all:", command)
+        self.assertEqual(command[command.index("--target") + 1], str(downloads.ADDONS_DIR))
+        self.assertEqual(command[-1], "six")
+        command = downloads.pip_command(["six"], python="py")
+        self.assertEqual(command[:4], ["py", "-m", "pip", "install"])
+        self.assertNotIn("--target", command)
+
+    def test_the_packaged_app_can_install_the_add_ons(self):
+        with mock.patch.object(model_setup, "FROZEN", True):
+            installable = {c.key: bool(c.install) for c in model_setup.components()}
+            detail = {c.key: c.detail for c in model_setup.components()}
+        self.assertTrue(installable["addon"] and installable["ocr"])
+        self.assertNotIn("cannot install", detail["addon"] + detail["ocr"])
+
+    def test_installed_add_ons_must_load_in_the_packaged_app(self):
+        def finished(code, err=""):
+            return mock.Mock(returncode=code, stdout="", stderr=err)
+
+        with mock.patch.object(downloads, "FROZEN", True), mock.patch.object(downloads.subprocess, "run",
+                                                                              return_value=finished(1, "ImportError: libx")):
+            with self.assertRaisesRegex(RuntimeError, "(?s)cannot be loaded.*libx"):
+                downloads.verify_imports(("torch",), lambda text: None)
+        with mock.patch.object(downloads, "FROZEN", True), mock.patch.object(downloads.subprocess, "run",
+                                                                              return_value=finished(0)):
+            downloads.verify_imports(("torch",), lambda text: None)
+        with mock.patch.object(downloads.subprocess, "run") as run:          # from source, pip is trusted
+            downloads.verify_imports(("torch",), lambda text: None)
+            run.assert_not_called()
+
     def test_install_commands_never_pull_in_a_second_opencv(self):
         for steps in (trained.INSTALL_STEPS, ocr.INSTALL_STEPS):
             self.assertIn("--no-deps", steps[-1])

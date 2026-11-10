@@ -231,7 +231,7 @@ def train(task, labelled=None, base=None, epochs=None, imgsz=None, batch=None, l
     if task not in ("pose", "seg"):
         raise ValueError("Train 'pose' (landmarks) or 'seg' (outlines)")
     if not trained.available():
-        raise RuntimeError("The model add-on is not installed. Run: python main.py models install")
+        raise RuntimeError("The model add-on is not installed. Install it in File > Model setup, or run: python main.py models install")
     dataset = build_dataset(task, labelled, groups=groups, log=log)
     from ultralytics import YOLO
 

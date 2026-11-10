@@ -11,7 +11,7 @@ from pathlib import Path
 
 import requests
 
-from config import HEADERS
+from config import ADDONS_DIR, FROZEN, HEADERS, activate_addons
 
 CONNECT_TIMEOUT_S, READ_TIMEOUT_S = 15, 30
 REPORT_EVERY = 0.1                  # log progress every 10% of a file
@@ -91,10 +91,36 @@ def fetch(url, dest, log=print, cancel=None, retries=4, chunk=1 << 18, backoff=4
     raise RuntimeError(f"Could not download {name}: {error}")
 
 
+def pip_command(args, python=None):
+    """The command that runs `pip install <args>`.
+
+    From source that is the Python the app runs from. The packaged app has no Python, so it runs itself with
+    --pip (pip is bundled and run in that second process, which keeps Cancel working) and installs into
+    ADDONS_DIR, only from wheels, because there is no compiler to build anything from source.
+    """
+    common = ["--progress-bar", "off", "--disable-pip-version-check", "--no-input"]
+    if FROZEN:
+        return [sys.executable, "--pip", "install", *common, "--only-binary=:all:", "--target", str(ADDONS_DIR), *args]
+    return [python or sys.executable, "-m", "pip", "install", *common, *args]
+
+
+def verify_imports(modules, log=print):
+    """After an install in the packaged app: really import the packages, in a second process, so a package that
+    installed but cannot load (a missing library, a blocked binary) is reported now and not as a green tick.
+    From source there is nothing to check beyond what pip did."""
+    if not FROZEN:
+        return
+    result = subprocess.run([sys.executable, "--import-check", *modules], capture_output=True, text=True,
+                            timeout=300)
+    if result.returncode:
+        raise RuntimeError("installed, but it cannot be loaded:\n" + "\n".join(
+            (result.stderr or result.stdout).strip().splitlines()[-6:]))
+    log("Checked: " + ", ".join(modules) + " load correctly.")
+
+
 def run_pip(args, log=print, cancel=None, python=None):
-    """pip install <args> in the environment the app runs from, streaming the main lines to `log`."""
-    command = [python or sys.executable, "-m", "pip", "install", "--progress-bar", "off",
-               "--disable-pip-version-check", *args]
+    """pip install <args> for the environment the app runs from, streaming the main lines to `log`."""
+    command = pip_command(args, python)
     log("Installing " + " ".join(a for a in args if not a.startswith("-")) + "...")
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     stop = threading.Event()
@@ -122,3 +148,4 @@ def run_pip(args, log=print, cancel=None, python=None):
     _check(cancel)
     if process.returncode:
         raise RuntimeError("pip failed:\n" + "\n".join(tail[-6:]))
+    activate_addons()

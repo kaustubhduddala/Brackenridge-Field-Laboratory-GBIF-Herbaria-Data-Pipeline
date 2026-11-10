@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import shutil
@@ -14,6 +15,11 @@ NAME = "Graas"
 SLUG = "Graas"
 BUNDLE_ID = "edu.utexas.bfl-graas-app"
 HIDDEN_IMPORTS = ["program.app_window", "program.command_line", "bs4", "PIL._tkinter_finder"]
+# PyInstaller bundles only the standard library modules the app's own code imports. The optional add-ons
+# (PyTorch, Ultralytics, ...) are installed later and need others (graphlib, for one), so the whole standard
+# library goes in, except what only developers use.
+NOT_NEEDED_STDLIB = {"test", "idlelib", "turtledemo", "lib2to3", "ensurepip", "venv", "antigravity", "this",
+                     "__main__", "__phello__", "_test_multiphase", "_testcapi", "_testinternalcapi"}
 ENTITLEMENTS = ROOT / "assets" / "entitlements.plist"
 MACHO_MAGIC = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
@@ -57,9 +63,15 @@ def build(version):
         "--collect-data", "pygbif",
         "--collect-submodules", "keyring",
         "--collect-all", "playwright",
+        "--collect-all", "pip",             # Model setup installs the PyTorch and label-reader add-ons with it
     ]
     for module in HIDDEN_IMPORTS:
         args += ["--hidden-import", module]
+    for module in sorted(set(sys.stdlib_module_names) - NOT_NEEDED_STDLIB):
+        args += ["--hidden-import", module]
+        spec = importlib.util.find_spec(module) if not module.startswith("_") else None
+        if spec is not None and spec.submodule_search_locations:         # a package: unittest.mock, xml.dom, ...
+            args += ["--collect-submodules", module]
     icon_name = {"win32": "icon.ico", "darwin": "icon.icns"}.get(sys.platform)     # Linux has no icon option
     icon = ROOT / "assets" / icon_name if icon_name else None
     if icon and icon.exists():

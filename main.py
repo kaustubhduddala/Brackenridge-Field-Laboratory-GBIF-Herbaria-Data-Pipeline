@@ -70,6 +70,7 @@ def self_test():
                                      providers, records, taxa, trained, training)
         import bs4, cv2, keyring, numpy, openai, pandas, PIL.Image, pygbif, requests, skimage, tksheet  # noqa: F401
         import tkinter  # noqa: F401
+        import pip._internal.cli.main  # noqa: F401  (Model setup installs the add-ons with the bundled pip)
         from program import browser_sign_in
         if not browser_sign_in.available():
             raise ImportError('playwright is not installed or was not bundled')
@@ -80,6 +81,22 @@ def self_test():
         print(f"Self-test failed: {exc!r}", file=sys.stderr)
         sys.exit(1)
     print(f"Self-test passed ({APP_VERSION})")
+
+
+def run_pip(pip_args):
+    """`Graas --pip install ...`: the packaged app has no Python to run `python -m pip` with, so Model setup runs
+    the app itself this way (see downloads.pip_command). Not listed in the usage: it is internal."""
+    import os
+
+    for name, fd in (("stdout", 1), ("stderr", 2)):         # a windowed Windows app starts with these set to None
+        if getattr(sys, name) is None:
+            try:
+                setattr(sys, name, open(fd, "w", encoding="utf-8", errors="replace", closefd=False))
+            except OSError:
+                setattr(sys, name, open(os.devnull, "w"))
+    from pip._internal.cli.main import main as pip_main
+
+    sys.exit(pip_main(pip_args))
 
 
 def run_cli():
@@ -98,6 +115,17 @@ def main(argv=None):
         print(APP_VERSION)
     elif command == "--self-test":
         self_test()
+    elif command == "--pip":
+        run_pip(args[1:])
+    elif command == "--import-check":        # internal: downloads.verify_imports
+        import importlib
+
+        try:
+            for name in args[1:]:
+                importlib.import_module(name)
+        except Exception as exc:
+            print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif command == "--gui":
         run_gui()
     elif command == "--cli":
