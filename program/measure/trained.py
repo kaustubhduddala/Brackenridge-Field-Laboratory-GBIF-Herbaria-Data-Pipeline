@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from config import BASE_DIR, FROZEN
+from config import BASE_DIR
 from . import downloads
 
 MODELS_DIR = BASE_DIR / "models"
@@ -51,13 +51,12 @@ def install_commands(python=None):
 
 
 def install(log=print, cancel=None):
-    """Install the add-on into the Python environment the app is running from."""
-    if FROZEN:
-        raise RuntimeError("The packaged app cannot install the model add-on. Run the app from source "
-                           "(python main.py) to use trained models and SAM 2.")
+    """Install the add-on: into the Python environment the app runs from, or, in the packaged app, into the
+    addons folder beside the app's data (downloads.pip_command)."""
     for step in INSTALL_STEPS:
         downloads.run_pip(step, log, cancel)
     importlib.invalidate_caches()
+    downloads.verify_imports(("torch", "ultralytics"), log)
     log("Model add-on installed.")
 
 

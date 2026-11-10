@@ -649,7 +649,11 @@ python main.py models download-sam
 python main.py models download-weights
 ```
 
-The packaged app cannot install packages; run from source for these.
+The packaged app installs them too: it has no Python of its own, so it runs
+its bundled pip on itself and puts the packages in the `addons` folder next
+to its other data (Documents/Graas/addons), never inside the app. Only
+prebuilt wheels are used, and after the install the app loads the packages
+once to check that they work. Delete the `addons` folder to remove them.
 (Ultralytics and RapidOCR are installed without their dependency lists so
 that a second copy of OpenCV is not installed on top of the one the app
 uses.) Ultralytics is licensed AGPL-3.0; check that this suits how you

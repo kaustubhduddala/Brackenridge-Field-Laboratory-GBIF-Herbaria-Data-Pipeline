@@ -2,7 +2,7 @@ import re
 import sys
 from pathlib import Path
 
-from config import APP_TITLE, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, load_settings
+from config import APP_TITLE, FROZEN, PRECISION_NONE, PRECISION_RELAXED, PRECISION_STRICT, load_settings
 from .gbif_download import download_dataset
 from .image_download import download_media
 from .measure.pipeline import measure_images
@@ -269,7 +269,7 @@ def models_command(args):
     from .measure import ocr as label_reader
     print("\n".join(trained.status() + ["Label reader (OCR): " + ("installed" if label_reader.available()
                                                                   else "not installed (python main.py models install-ocr)")]))
-    if not trained.available():
+    if not trained.available() and not FROZEN:
         print("To install the add-on yourself, run these in the app's Python environment:")
         for command in trained.install_commands("python"):
             print("  " + " ".join(command))

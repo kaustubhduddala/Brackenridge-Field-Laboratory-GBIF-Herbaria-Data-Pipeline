@@ -17,7 +17,6 @@ from datetime import date
 
 import numpy as np
 
-from config import FROZEN
 from . import downloads
 from .locator import VOUCHER_FIELDS
 
@@ -45,12 +44,10 @@ def install_commands(python=None):
 
 
 def install(log=print, cancel=None):
-    if FROZEN:
-        raise RuntimeError("The packaged app cannot install the label reader. Run the app from source "
-                           "(python main.py) to use it.")
     for step in INSTALL_STEPS:
         downloads.run_pip(step, log, cancel)
     importlib.invalidate_caches()
+    downloads.verify_imports(("rapidocr_onnxruntime",), log)
     log("Label reader installed.")
 
 
