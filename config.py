@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Graas"      # short name: used for folders, keychain entries and records, so no spaces or punctuation
-APP_TITLE = "Graas: Grass Research & Analysis Automation System"   # shown in the window title and About box
+APP_TITLE = "Graas: Grass Research & Analysis Automation Suite"   # shown in the window title and About box
 LEGACY_APP_NAME = "GBIF Herbaria Pipeline"                          # what earlier versions were called
 FROZEN = getattr(sys, "frozen", False)
 CODE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -36,9 +36,10 @@ elif FROZEN:
     BASE_DIR = _packaged_home()
 else:
     BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DEFAULT_DATA_DIR = BASE_DIR / "data"
+DATA_DIR = DEFAULT_DATA_DIR     # where the download folders are kept; File > Choose data folder can point it elsewhere
 RESPONSES_DIR_NAME = "responses"
-LOG_FILE = DATA_DIR / "pipeline.log"
+LOG_FILE = DEFAULT_DATA_DIR / "pipeline.log"     # always in the default folder, whichever data folder is chosen
 SETTINGS_FILE = BASE_DIR / "settings.json"
 SITE_LOGINS_FILE = BASE_DIR / "site_logins.json"
 BROWSER_PROFILE_DIR = BASE_DIR / "browser_profile"
@@ -290,6 +291,19 @@ def save_settings(settings):
         SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
     except OSError:
         pass
+
+
+def set_data_dir(path=None):
+    """Use `path` as the data folder (the default one when empty). A saved folder that no longer exists, such as
+    an unplugged drive, is ignored. Read it as config.DATA_DIR, never `from config import DATA_DIR`, which would
+    keep the value from import time."""
+    global DATA_DIR
+    chosen = Path(str(path)).expanduser() if path else None
+    DATA_DIR = chosen if chosen is not None and chosen.is_dir() else DEFAULT_DATA_DIR
+    return DATA_DIR
+
+
+set_data_dir(load_settings().get("data_dir"))
 
 
 BAD_GEOSPATIAL_ISSUES = []

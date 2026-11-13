@@ -8,7 +8,7 @@ from tkinter import filedialog, ttk
 
 import pandas as pd
 
-from config import DATA_DIR
+import config
 from .csv_editing import load_table
 from .csv_statistics import numbers
 from .utils import save_csv
@@ -502,7 +502,7 @@ def path_label(path, workspace=None):
     path = str(path or "").strip()
     if not path:
         return ""
-    for base in ([workspace.root] if workspace else []) + [DATA_DIR]:
+    for base in ([workspace.root] if workspace else []) + [config.DATA_DIR]:
         try:
             return str(Path(path).resolve().relative_to(base.resolve())) or path
         except (ValueError, OSError):
@@ -649,7 +649,7 @@ class CsvPicker(ttk.Frame):
         current = Path(self.variable.get().strip() or ".")
         ws = self.app.workspace
         start = current.parent if current.parent.is_dir() and self.variable.get().strip() else (
-            ws.root if ws else DATA_DIR)
+            ws.root if ws else config.DATA_DIR)
         path = filedialog.askopenfilename(parent=self.winfo_toplevel(), title="Select a CSV file",
                                           initialdir=str(start), filetypes=CSV_TYPES)
         if path:

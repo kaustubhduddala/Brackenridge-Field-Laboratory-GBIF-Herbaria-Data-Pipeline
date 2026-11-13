@@ -9,7 +9,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from config import DATA_DIR, HEADERS, RESPONSES_DIR_NAME
+import config
+from config import HEADERS, RESPONSES_DIR_NAME
 from .utils import extract_archive, find_dwca_files
 
 INFO_FILE = "workspace.json"
@@ -98,9 +99,9 @@ def _is_workspace(path):
 
 
 def list_workspaces():
-    if not DATA_DIR.is_dir():
+    if not config.DATA_DIR.is_dir():
         return []
-    found = [Workspace(p) for p in DATA_DIR.iterdir() if _is_workspace(p)]
+    found = [Workspace(p) for p in config.DATA_DIR.iterdir() if _is_workspace(p)]
     return sorted(found, key=lambda w: (w.info.get("created", ""), w.name), reverse=True)
 
 
@@ -112,20 +113,26 @@ def find_workspace(download_id):
     return None
 
 
+def workspace_at(path):
+    """The workspace that is the folder `path` itself, or None."""
+    path = Path(path)
+    return Workspace(path) if _is_workspace(path) else None
+
+
 def workspace_by_name(name):
-    path = DATA_DIR / str(name or "")
+    path = config.DATA_DIR / str(name or "")
     return Workspace(path) if name and _is_workspace(path) else None
 
 
 def workspace_of(path):
     """The workspace that contains `path`, or None."""
     try:
-        relative = Path(path).resolve().relative_to(DATA_DIR.resolve())
+        relative = Path(path).resolve().relative_to(config.DATA_DIR.resolve())
     except (ValueError, OSError):
         return None
     if not relative.parts:
         return None
-    candidate = DATA_DIR / relative.parts[0]
+    candidate = config.DATA_DIR / relative.parts[0]
     return Workspace(candidate) if _is_workspace(candidate) else None
 
 
@@ -136,7 +143,7 @@ def create_workspace(download_id, species="", **info):
         raise ValueError("A download ID is needed to create a data folder")
     ws = find_workspace(download_id)
     if ws is None:
-        ws = Workspace(DATA_DIR / folder_name(download_id, species))
+        ws = Workspace(config.DATA_DIR / folder_name(download_id, species))
         ws.update_info(download_id=download_id, created=datetime.now().isoformat(timespec="seconds"))
     ws.update_info(**info)
     if species and not ws.species:

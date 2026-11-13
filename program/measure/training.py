@@ -21,13 +21,18 @@ The honest test of a model is not its detection score but the end measurement: a
 """
 import hashlib
 import json
+import os
+import platform
 import shutil
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
-from config import DATA_DIR
+import config
+from config import load_settings
 from . import trained
 from .labels import LABELS_DIR_NAME, load_labels
 from .trained import CLASSES, KEYPOINT_NAMES, MODELS_DIR, POSE_CLASSES, TILE
@@ -39,6 +44,96 @@ SHEET_MAX_SIDE = 2560           # whole sheets are stored at this size; labels a
 MIN_SHEETS = 10                 # fewer labelled sheets than this cannot be split and trained on sensibly
 SEED_PAD = 0.6                  # share of a seed box kept around it on a painted-out tile
 DEFAULTS = {"epochs": 150, "imgsz": 1280, "batch": 8}
+DEVICE_BATCH = {"mps": 2, "cpu": 4}     # Apple GPUs share memory with the system, so they run out first
+MIN_IMGSZ = 640
+DEVICE_CHOICES = {"auto": "Automatic", "mps": "Apple GPU", "cuda": "NVIDIA GPU", "cpu": "CPU"}
+IMGSZ_STEPS = (1280, 1120, 1024, 960, 800, 640)
+# Rough training memory for one image at 640 px with the medium models, and the share of a computer's memory
+# that training can count on (Apple GPUs and CPUs share it with everything else that is running).
+GB_PER_IMAGE_640 = 0.6
+MEMORY_SHARE = {"mps": 0.35, "cuda": 0.8, "cpu": 0.4}
+
+
+def system_memory_gb():
+    """Installed memory in GB, or None when it cannot be found."""
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5)
+            return int(out.stdout) / 1024 ** 3
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024 ** 3
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return None
+
+
+def hardware():
+    """What this computer can train on: {"device": "mps" | "cuda" | "cpu", "name", "memory_gb"} (memory is the GPU's
+    own for NVIDIA, the system's otherwise). Without PyTorch it assumes an Apple GPU on an Apple-silicon Mac."""
+    memory = system_memory_gb()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            return {"device": "cuda", "name": props.name, "memory_gb": props.total_memory / 1024 ** 3}
+        if torch.backends.mps.is_available():
+            return {"device": "mps", "name": "Apple GPU", "memory_gb": memory}
+        return {"device": "cpu", "name": "CPU", "memory_gb": memory}
+    except ImportError:
+        apple = sys.platform == "darwin" and platform.machine() == "arm64"
+        return {"device": "mps" if apple else "cpu", "name": "Apple GPU" if apple else "CPU", "memory_gb": memory}
+
+
+def recommend(device, memory_gb, train_images=None):
+    """Settings suited to a device with `memory_gb` and `train_images` training sheets (None when unknown):
+    the largest image size that still allows a batch of at least 2 (4 on an NVIDIA GPU), the largest
+    power-of-two batch that fits, and enough epochs for about 1500 steps."""
+    budget = (memory_gb or 8) * MEMORY_SHARE.get(device, 0.4)
+    smallest = 4 if device == "cuda" else 2
+
+    def fits(size):
+        return int(budget / (GB_PER_IMAGE_640 * (size / 640) ** 2))
+
+    size = next((s for s in IMGSZ_STEPS if fits(s) >= smallest), MIN_IMGSZ)
+    batch = 1
+    while batch * 2 <= min(fits(size), 16):
+        batch *= 2
+    epochs = DEFAULTS["epochs"]
+    if train_images:
+        epochs = min(300, max(50, round(1500 * batch / train_images / 10) * 10))
+    return {"device": "auto", "imgsz": size, "batch": batch, "epochs": epochs}
+
+
+def saved_settings():
+    """The ML settings saved from File > ML settings; anything missing is the default (batch None = by device)."""
+    saved = load_settings().get("training")
+    saved = saved if isinstance(saved, dict) else {}
+    settings = {**DEFAULTS, "batch": None, "device": "auto"}      # no batch saved: train() picks one for the device
+    for key in ("epochs", "imgsz", "batch"):
+        try:
+            if int(saved.get(key)) > 0:
+                settings[key] = int(saved[key])
+        except (TypeError, ValueError):
+            pass
+    if saved.get("device") in DEVICE_CHOICES:
+        settings["device"] = saved["device"]
+    return settings
+
+
+def is_out_of_memory(exc):
+    text = str(exc).lower()
+    return "out of memory" in text or "outofmemory" in text or "insufficient memory" in text
+
+
+def free_gpu_memory():
+    try:
+        import gc
+        import torch
+        gc.collect()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def split_of(gbif_id, group=None):
@@ -68,7 +163,7 @@ def assign_splits(ids, groups=None):
 def gather_labels(folders=None):
     """[(gbifID, label, image path)] from the label stores of the given downloads (all of them by default)."""
     if folders is None:
-        folders = [p for p in DATA_DIR.iterdir() if (p / LABELS_DIR_NAME).is_dir()] if DATA_DIR.is_dir() else []
+        folders = [p for p in config.DATA_DIR.iterdir() if (p / LABELS_DIR_NAME).is_dir()] if config.DATA_DIR.is_dir() else []
     found = []
     for folder in folders:
         folder = Path(folder)
@@ -222,7 +317,8 @@ def latest_splits():
     return {}
 
 
-def train(task, labelled=None, base=None, epochs=None, imgsz=None, batch=None, log=print, groups=None):
+def train(task, labelled=None, base=None, epochs=None, imgsz=None, batch=None, log=print, groups=None,
+          device=None):
     """Fine-tune a pretrained YOLO model on the labels and make it the current model for `task`.
 
     Starts from pretrained weights (never from scratch), with augmentations that mimic old scans:
@@ -243,14 +339,34 @@ def train(task, labelled=None, base=None, epochs=None, imgsz=None, batch=None, l
         if base:
             raise FileNotFoundError(f"The starting weights {base} do not exist")
         trained.fetch_asset(trained.BASE_WEIGHTS[task], log)       # about 45 MB, once
-    log(f"Training the {task} model from {start.name} on {trained.device()} "
+    saved = saved_settings()          # File > ML settings; what the caller passes wins over it
+    device = trained.device(device or saved["device"])
+    log(f"Training the {task} model from {start.name} on {device} "
         f"({dataset['counts']['train']['images']} training images). This takes a while.")
-    model = YOLO(str(start))
-    results = model.train(
-        data=str(dataset["yaml"]), imgsz=int(imgsz or DEFAULTS["imgsz"]),
-        epochs=int(epochs or DEFAULTS["epochs"]), batch=int(batch or DEFAULTS["batch"]), device=trained.device(),
-        project=str(MODELS_DIR / task), name=version, exist_ok=True, plots=False, verbose=False,
-        degrees=20.0, scale=0.4, hsv_v=0.3, hsv_s=0.4, fliplr=0.5, flipud=0.1, mosaic=0.3)
+    size = int(imgsz or saved["imgsz"])
+    epochs = int(epochs or saved["epochs"])
+    per_step = int(batch or saved["batch"] or DEVICE_BATCH.get(device, DEFAULTS["batch"]))
+    while True:
+        model = YOLO(str(start))
+        try:
+            results = model.train(
+                data=str(dataset["yaml"]), imgsz=size, epochs=epochs, batch=per_step,
+                device=device, project=str(MODELS_DIR / task), name=version, exist_ok=True, plots=False,
+                verbose=False, degrees=20.0, scale=0.4, hsv_v=0.3, hsv_s=0.4, fliplr=0.5, flipud=0.1, mosaic=0.3)
+            break
+        except Exception as exc:
+            if not is_out_of_memory(exc):
+                raise
+            del model
+            free_gpu_memory()
+            if per_step > 1:                       # first fewer images per step, then smaller images
+                per_step = max(1, per_step // 2)
+            elif size > MIN_IMGSZ:
+                size = max(MIN_IMGSZ, int(size * 0.75) // 32 * 32)
+            else:
+                raise RuntimeError("Training ran out of memory even at batch 1 and image size "
+                                   f"{MIN_IMGSZ}. Close other apps, or train on a computer with more memory.") from exc
+            log(f"Out of memory on {device}; trying again with batch {per_step} and image size {size}.")
     save_dir = Path(getattr(results, "save_dir", MODELS_DIR / task / version))
     weights = save_dir / "weights" / "best.pt"
     if not weights.is_file():

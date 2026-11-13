@@ -1,4 +1,4 @@
-# G.R.A.A.S - Grass Research & Analysis Automation System
+# G.R.A.A.S - Grass Research & Analysis Automation Suite
 
 This is an ongoing project I'm building for the Invasive Species Lab at 
 UT Austin's Brackenridge Field Laboratory. It's a python application for 
