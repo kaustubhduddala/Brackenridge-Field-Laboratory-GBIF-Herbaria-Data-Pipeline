@@ -986,8 +986,9 @@ class TrainDialog(tk.Toplevel):
         tip(ttk.Checkbutton(self, text="Outline model", variable=self.seg),
             "Finds the outlines (a segmentation model). It needs labels that have outlines, from SAM 2 or "
             "CVAT.").grid(row=2, column=0, columnspan=2, sticky="w")
-        self.epochs = tk.StringVar(value=str(training.DEFAULTS["epochs"]))
-        self.imgsz = tk.StringVar(value=str(training.DEFAULTS["imgsz"]))
+        saved = training.saved_settings()          # File > ML settings
+        self.epochs = tk.StringVar(value=str(saved["epochs"]))
+        self.imgsz = tk.StringVar(value=str(saved["imgsz"]))
         for row, (text, var, hint) in enumerate((
                 ("Epochs", self.epochs, "How many passes over the sheets. More takes longer and fits closer."),
                 ("Image size (px)", self.imgsz, "The size the sheets are trained at, at least 320. Larger sees "

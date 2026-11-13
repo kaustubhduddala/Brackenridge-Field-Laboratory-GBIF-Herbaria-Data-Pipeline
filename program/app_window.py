@@ -10,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from config import (APP_NAME, APP_TITLE, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DATA_DIR, DEFAULT_TOKEN_LIMIT,
+import config
+from config import (APP_NAME, APP_TITLE, APP_VERSION, BAD_GEOSPATIAL_ISSUES, BASE_DIR, DEFAULT_TOKEN_LIMIT,
                     GBIF_SIGNUP_URL, INSPECTION_ISSUES, LMSTUDIO_URL, LOG_FILE, PRECISION_NONE, PRECISION_RELAXED,
                     PRECISION_STRICT, PRESETS, THINKING_CHOICES, ai_api_key, gbif_credentials, load_settings,
                     password_store_name, remove_ai_api_key, remove_gbif_account, save_ai_api_key, save_gbif_account,
@@ -20,8 +21,8 @@ from . import browser_sign_in, image_download, updater
 from .analysis_tab import AnalysisTab
 from .csv_editor_tab import EditTab
 from .dataset_cleaning import REQUIRED_COLUMNS, available_columns, run_cleaning
-from .download_folders import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_by_name,
-                               workspace_of)
+from .download_folders import (FULL_MASTER_NAME, INSPECT_NAME, list_workspaces, resolve_input, workspace_at,
+                               workspace_by_name, workspace_of)
 from .gbif_download import check_gbif_login, download_dataset
 from .gui_widgets import (CSV_TYPES, THEME_CHOICES, ColumnChecklist, CsvSource, HelpTip, PathCombo, ScrollFrame,
                           _check_image, _set_entry, _set_text, apply_theme, help_label, placeholder, resolve_theme,
@@ -30,6 +31,7 @@ from .image_download import download_media, media_status
 from .keep_awake import KeepAwake
 from .measure import ocr, trained
 from .measure.detectors import DETECTOR_CHOICES, LABEL_CHOICES, DetectorOptions
+from .measure.ml_settings import MLSettingsDialog
 from .measure.model_setup import READY, ModelSetupDialog, components
 from .measure.pipeline import measure_images
 from .measure.providers import DEFAULT_PROVIDER, PROVIDERS, describe_key, list_models, settings_from_app
@@ -1176,11 +1178,14 @@ class PipelineApp:
         file_menu = tk.Menu(menubar, tearoff=False)
         file_menu.add_command(label="GBIF account…", command=self._open_account)
         file_menu.add_command(label="Model setup…", command=self.open_model_setup)
+        file_menu.add_command(label="ML settings…", command=self.open_ml_settings)
         file_menu.add_separator()
         file_menu.add_command(label="Site logins…", command=self._open_site_logins)
         file_menu.add_separator()
         file_menu.add_command(label="Open this download's folder", command=self._open_workspace)
-        file_menu.add_command(label="Open data folder", command=lambda: self._open(DATA_DIR))
+        file_menu.add_command(label="Open data folder", command=lambda: self._open(config.DATA_DIR))
+        file_menu.add_command(label="Choose data folder…", command=self._choose_data_dir)
+        file_menu.add_command(label="Use the default data folder", command=self._reset_data_dir)
         file_menu.add_command(label="Open log file", command=lambda: self._open(LOG_FILE))
         file_menu.add_separator()
         file_menu.add_command(label="Check for updates…", command=lambda: self.check_for_updates(manual=True))
@@ -1241,7 +1246,8 @@ class PipelineApp:
         tip(ttk.Button(header, text="Open folder", command=self._open_workspace),
             "Show this download's folder, with its CSV files, images and measurements").pack(side="left",
                                                                                               padx=(6, 0))
-        HelpTip(header, "Each GBIF download is kept in its own folder under data/, together with its cleaned CSV "
+        HelpTip(header, "Each GBIF download is kept in its own folder under the data folder (File > Choose data "
+                        "folder… to use another one), together with its cleaned CSV "
                         "files, images and measurements.\n\nEvery tab works on the download chosen here, and "
                         "choosing one fills in the file boxes on each tab. A new download or cleaning run becomes "
                         "the active one automatically.").pack(side="left", padx=(10, 0))
@@ -1643,6 +1649,10 @@ class PipelineApp:
         dialog = ModelSetupDialog(self)
         self.root.wait_window(dialog)
 
+    def open_ml_settings(self):
+        dialog = MLSettingsDialog(self)
+        self.root.wait_window(dialog)
+
     def model_setup_changed(self):
         """Called by the Model setup window after something was installed, downloaded or chosen."""
         self._refresh_detector_hint()
@@ -1683,6 +1693,7 @@ class PipelineApp:
             self._set_workspace(ws)
         else:
             self.workspace_var.set("No downloads yet")
+            self.workspace_box.configure(values=[])
 
     def _set_workspace(self, ws):
         """Make `ws` the active download and point the file boxes at its files."""
@@ -1701,7 +1712,38 @@ class PipelineApp:
         self._save_settings()
 
     def _open_workspace(self):
-        self._open(self.workspace.root if self.workspace else DATA_DIR)
+        self._open(self.workspace.root if self.workspace else config.DATA_DIR)
+
+    def _choose_data_dir(self):
+        """Pick the folder whose download folders are listed under Active download (and where new ones are kept)."""
+        folder = filedialog.askdirectory(parent=self.root, title="Choose the data folder", mustexist=True,
+                                         initialdir=str(config.DATA_DIR))
+        if not folder:
+            return
+        folder = Path(folder)
+        picked = workspace_at(folder)
+        if picked:                       # a single download folder was chosen: use its parent and open it
+            folder = folder.parent
+        self._apply_data_dir(folder, picked)
+
+    def _reset_data_dir(self):
+        self._apply_data_dir(None)
+
+    def _apply_data_dir(self, folder, picked=None):
+        config.set_data_dir(folder)
+        self.settings["data_dir"] = str(folder) if folder and config.DATA_DIR != config.DEFAULT_DATA_DIR else ""
+        self.workspace = None
+        if picked:
+            self._set_workspace(picked)
+        else:
+            self._restore_workspace()
+        self._save_settings()
+        found = len(list_workspaces())
+        self._log(f"Data folder: {config.DATA_DIR} ({found} download folder{'s' if found != 1 else ''} found)")
+        if not found:
+            messagebox.showinfo("Data folder", f"No download folders were found in {config.DATA_DIR}.\n\nA download "
+                                "folder is one made by this app (it has a workspace.json file). New downloads and "
+                                "cleaning runs will be kept here.", parent=self.root)
 
     def _tab_changed(self, _event=None):
         tab = self.root.nametowidget(self.notebook.select())

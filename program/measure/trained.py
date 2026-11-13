@@ -119,10 +119,16 @@ def download_base_weights(log=print, cancel=None, tasks=("pose", "seg")):
     return [fetch_asset(BASE_WEIGHTS[task], log, cancel) for task in tasks]
 
 
-def device():
+def device(prefer="auto"):
+    """The device to run on: "mps" (Apple GPU), "0" (the first NVIDIA GPU) or "cpu". `prefer` is "auto", "mps",
+    "cuda" or "cpu"; a GPU that is not there falls back to the best one that is."""
     import torch
 
-    if torch.backends.mps.is_available():
+    if prefer == "cpu":
+        return "cpu"
+    if prefer == "cuda" and torch.cuda.is_available():
+        return "0"
+    if torch.backends.mps.is_available() and prefer != "cuda":
         return "mps"
     return "0" if torch.cuda.is_available() else "cpu"
 

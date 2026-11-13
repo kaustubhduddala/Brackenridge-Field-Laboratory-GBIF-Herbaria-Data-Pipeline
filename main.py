@@ -1,6 +1,7 @@
 import sys
 
-from config import APP_VERSION, DATA_DIR
+import config
+from config import APP_VERSION
 
 USAGE = """Usage:
   python main.py                 open the app
@@ -106,7 +107,7 @@ def run_cli():
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     command = args[0] if args else "--gui"
     if command in ("-h", "--help"):

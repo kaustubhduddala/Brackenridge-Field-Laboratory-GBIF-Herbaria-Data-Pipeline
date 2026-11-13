@@ -4,9 +4,9 @@
   "token_limit": 0,
   "thinking": "Off",
   "fill_blanks": false,
-  "dataset_csv": "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/master_cleaned.csv",
-  "media_dir": "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/media",
-  "measurements_csv": "/Users/kaustubhduddala/Documents/Research/Invasive Species Lab - Brackenridge Field Laboratory (Kaustubh Duddala, KSD999)/data/0011409-260928105237408_Megathyrsus_maximus/measurements.csv",
+  "dataset_csv": "/Users/kaustubhduddala/Documents/GBIF Herbaria Pipeline/data/0011409-260928105237408_Megathyrsus_maximus/master_cleaned.csv",
+  "media_dir": "/Users/kaustubhduddala/Documents/GBIF Herbaria Pipeline/data/0011409-260928105237408_Megathyrsus_maximus/media",
+  "measurements_csv": "/Users/kaustubhduddala/Documents/GBIF Herbaria Pipeline/data/0011409-260928105237408_Megathyrsus_maximus/measurements.csv",
   "keep_awake": true,
   "master_columns": [
     "gbifID",
@@ -14,8 +14,10 @@
   ],
   "issue_presets": {},
   "column_presets": {},
-  "workspace": "",
-  "recent_csvs": [],
+  "workspace": "0011409-260928105237408_Megathyrsus_maximus",
+  "recent_csvs": [
+    "/Users/kaustubhduddala/Documents/GBIF Herbaria Pipeline/data/0011409-260928105237408_Megathyrsus_maximus/master_cleaned.csv"
+  ],
   "provider": "lmstudio",
   "servers": {
     "lmstudio": "http://localhost:1234/v1"
@@ -32,7 +34,14 @@
     "label_reader": "auto"
   },
   "image_side": 0,
-  "show_log": false,
+  "show_log": true,
   "check_updates": true,
-  "auto_install_updates": false
+  "auto_install_updates": false,
+  "data_dir": "/Users/kaustubhduddala/Documents/GBIF Herbaria Pipeline/data",
+  "training": {
+    "device": "auto",
+    "epochs": 300,
+    "imgsz": 1280,
+    "batch": 2
+  }
 }

@@ -62,6 +62,7 @@ def build(version):
         "--collect-submodules", "pygbif",
         "--collect-data", "pygbif",
         "--collect-submodules", "keyring",
+        "--collect-submodules", "PIL",      # the add-on's Ultralytics needs ImageEnhance, ImageDraw, ImageFont, ... which the app itself never imports
         "--collect-all", "playwright",
         "--collect-all", "pip",             # Model setup installs the PyTorch and label-reader add-ons with it
     ]
