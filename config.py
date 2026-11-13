@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Graas"      # short name: used for folders, keychain entries and records, so no spaces or punctuation
-APP_TITLE = "Graas: Grass Research & Analysis Automation System"   # shown in the window title and About box
+APP_TITLE = "Graas: Grass Research & Analysis Automation Suite"   # shown in the window title and About box
 LEGACY_APP_NAME = "GBIF Herbaria Pipeline"                          # what earlier versions were called
 FROZEN = getattr(sys, "frozen", False)
 CODE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
